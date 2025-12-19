@@ -133,6 +133,9 @@ class CartPole(BenchmarkEnv):
                  rew_exponential=True,
                  done_on_out_of_bound=True,
                  info_mse_metric_state_weight=None,
+                 x_dot_limit=None,
+                 theta_dot_limit=None,
+                 action_scale=10.0,
                  **kwargs
                  ):
         '''Initialize a cartpole environment.
@@ -148,6 +151,9 @@ class CartPole(BenchmarkEnv):
             rew_exponential (bool): If to exponentiate negative quadratic cost to positive, bounded [0,1] reward.
             done_on_out_of_bound (bool): If to termiante when state is out of bound.
             info_mse_metric_state_weight (list/ndarray): Quadratic weights for state in mse calculation for info dict.
+            x_dot_limit (float, optional): Maximum absolute velocity for cart (x_dot will be clipped to [-limit, +limit]).
+            theta_dot_limit (float, optional): Maximum absolute angular velocity for pole (theta_dot will be clipped to [-limit, +limit]).
+            action_scale (float): Maximum control force in Newtons, actions clipped to [-action_scale, +action_scale] (default: 10.0).
         '''
         self.obs_goal_horizon = obs_goal_horizon
         self.obs_wrap_angle = obs_wrap_angle
@@ -157,6 +163,9 @@ class CartPole(BenchmarkEnv):
         self.R = get_cost_weight_matrix(self.rew_act_weight, 1)
         self.rew_exponential = rew_exponential
         self.done_on_out_of_bound = done_on_out_of_bound
+        self.x_dot_limit = x_dot_limit
+        self.theta_dot_limit = theta_dot_limit
+        self.action_scale = action_scale
 
         if info_mse_metric_state_weight is None:
             self.info_mse_metric_state_weight = np.array([1, 0, 1, 0], ndmin=1, dtype=float)
@@ -255,6 +264,32 @@ class CartPole(BenchmarkEnv):
         self.state = np.hstack(
             (p.getJointState(self.CARTPOLE_ID, jointIndex=0,
                              physicsClientId=self.PYB_CLIENT)[0:2], p.getJointState(self.CARTPOLE_ID, jointIndex=1, physicsClientId=self.PYB_CLIENT)[0:2]))
+        # Apply velocity limits by clipping x_dot and theta_dot
+        velocity_clipped = False
+        if self.x_dot_limit is not None:
+            original_x_dot = self.state[1]
+            self.state[1] = np.clip(self.state[1], -self.x_dot_limit, self.x_dot_limit)
+            if self.state[1] != original_x_dot:
+                velocity_clipped = True
+        if self.theta_dot_limit is not None:
+            original_theta_dot = self.state[3]
+            self.state[3] = np.clip(self.state[3], -self.theta_dot_limit, self.theta_dot_limit)
+            if self.state[3] != original_theta_dot:
+                velocity_clipped = True
+        # Sync clipped velocities back to PyBullet to maintain consistency
+        if velocity_clipped:
+            p.resetJointState(
+                self.CARTPOLE_ID,
+                jointIndex=0,
+                targetValue=self.state[0],
+                targetVelocity=self.state[1],
+                physicsClientId=self.PYB_CLIENT)
+            p.resetJointState(
+                self.CARTPOLE_ID,
+                jointIndex=1,
+                targetValue=self.state[2],
+                targetVelocity=self.state[3],
+                physicsClientId=self.PYB_CLIENT)
         # Standard Gym return.
         obs = self._get_observation()
         rew = self._get_reward()
@@ -438,7 +473,7 @@ class CartPole(BenchmarkEnv):
 
     def _set_action_space(self):
         '''Sets the action space of the environment.'''
-        self.action_scale = 10
+        # action_scale is set in __init__, use it to define action bounds
         self.physical_action_bounds = (-1 * np.atleast_1d(self.action_scale), np.atleast_1d(self.action_scale))
         self.action_threshold = 1 if self.NORMALIZED_RL_ACTION_SPACE else self.action_scale
         self.action_space = spaces.Box(low=-self.action_threshold, high=self.action_threshold, shape=(1,))
@@ -664,8 +699,11 @@ class CartPole(BenchmarkEnv):
                 return True
         # Done if state is out-of-bounds.
         if self.done_on_out_of_bound:
-            x, _, theta, _ = self.state
-            if x < -self.x_threshold or x > self.x_threshold or theta < -self.theta_threshold_radians or theta > self.theta_threshold_radians:
+            x, x_dot, theta, theta_dot = self.state
+            if (x <= -self.x_threshold or x >= self.x_threshold or
+                x_dot <= -self.x_dot_threshold or x_dot >= self.x_dot_threshold or
+                theta <= -self.theta_threshold_radians or theta >= self.theta_threshold_radians or
+                theta_dot <= -self.theta_dot_threshold or theta_dot >= self.theta_dot_threshold):
                 self.out_of_bounds = True
                 return True
         self.out_of_bounds = False
