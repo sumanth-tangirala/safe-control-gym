@@ -1,0 +1,91 @@
+<?xml version="1.0" ?>
+<!-- Simple 2D quadrotor visual: horizontal bar with two rotor discs.
+     Designed for visualization only (no physics).
+     Arm length ~0.0397m per side, scaled by globalScaling at load time. -->
+<robot name="quad2d_visual">
+  <link name="base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+
+    <!-- Central body - small box -->
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.015 0.012"/>
+      </geometry>
+      <material name="body_color">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+
+    <!-- Left arm -->
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.025 0 0"/>
+      <geometry>
+        <box size="0.03 0.005 0.005"/>
+      </geometry>
+      <material name="arm_color">
+        <color rgba="0.15 0.15 0.15 1"/>
+      </material>
+    </visual>
+
+    <!-- Right arm -->
+    <visual>
+      <origin rpy="0 0 0" xyz="0.025 0 0"/>
+      <geometry>
+        <box size="0.03 0.005 0.005"/>
+      </geometry>
+      <material name="arm_color">
+        <color rgba="0.15 0.15 0.15 1"/>
+      </material>
+    </visual>
+
+    <!-- Left rotor disc -->
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.0397 0 0.004"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="rotor_color">
+        <color rgba="0.3 0.3 0.3 1"/>
+      </material>
+    </visual>
+
+    <!-- Right rotor disc -->
+    <visual>
+      <origin rpy="0 0 0" xyz="0.0397 0 0.004"/>
+      <geometry>
+        <cylinder radius="0.023" length="0.002"/>
+      </geometry>
+      <material name="rotor_color">
+        <color rgba="0.3 0.3 0.3 1"/>
+      </material>
+    </visual>
+
+    <!-- Left motor mount -->
+    <visual>
+      <origin rpy="0 0 0" xyz="-0.0397 0 0.001"/>
+      <geometry>
+        <cylinder radius="0.006" length="0.008"/>
+      </geometry>
+      <material name="body_color">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+
+    <!-- Right motor mount -->
+    <visual>
+      <origin rpy="0 0 0" xyz="0.0397 0 0.001"/>
+      <geometry>
+        <cylinder radius="0.006" length="0.008"/>
+      </geometry>
+      <material name="body_color">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+
+  </link>
+</robot>

@@ -385,6 +385,11 @@ class Quadrotor(BaseAviary):
 
         # Update BaseAviary internal variables before calling self._get_observation().
         self._update_and_store_kinematic_information()
+
+        # Initialize episode state flags (needed for _get_info() before first step)
+        self.out_of_bounds = False
+        self.goal_reached = False
+
         obs, info = self._get_observation(), self._get_reset_info()
         obs, info = super().after_reset(obs, info)
 
@@ -876,15 +881,20 @@ class Quadrotor(BaseAviary):
         # Done if state is out-of-bounds.
         if self.done_on_out_of_bound:
             if self.QUAD_TYPE == QuadType.ONE_D:
-                mask = np.array([1, 0])
+                # State order: [z, z_dot] - Check both
+                mask = np.array([1, 1])
             if self.QUAD_TYPE == QuadType.TWO_D:
-                mask = np.array([1, 0, 1, 0, 1, 0])
+                # State order: [x, x_dot, z, z_dot, theta, theta_dot]
+                # Check all Euclidean dimensions except theta (which is periodic)
+                mask = np.array([1, 1, 1, 1, 0, 1])
             if self.QUAD_TYPE == QuadType.THREE_D:
-                mask = np.array([1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0])
+                # State order: [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]
+                # Check all Euclidean dimensions except phi, theta, psi (which are periodic)
+                mask = np.array([1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1])
             # Element-wise or to check out-of-bound conditions.
             self.out_of_bounds = np.logical_or(self.state < self.state_space.low,
                                                self.state > self.state_space.high)
-            # Mask out un-included dimensions (i.e. velocities)
+            # Mask out angles (periodic variables that shouldn't cause termination)
             self.out_of_bounds = np.any(self.out_of_bounds * mask)
             # Early terminate if needed.
             if self.out_of_bounds:

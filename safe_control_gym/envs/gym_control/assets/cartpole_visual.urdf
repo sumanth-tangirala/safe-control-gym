@@ -1,0 +1,81 @@
+<?xml version="1.0"?>
+<!-- Cartpole visual for replay rendering (no physics).
+     Matches cartpole_template.urdf joint structure with refined geometry.
+     Use globalScaling at load time to adjust apparent size. -->
+<robot name="cartpole_visual">
+
+  <!-- Track / rail -->
+  <link name="slideBar">
+    <visual>
+      <geometry>
+        <box size="30 0.03 0.03"/>
+      </geometry>
+      <origin xyz="0 0 0"/>
+      <material name="rail_color">
+        <color rgba="0 0.8 0.8 1"/>
+      </material>
+    </visual>
+    <inertial>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+  </link>
+
+  <!-- Cart body -->
+  <link name="cart">
+    <visual>
+      <geometry>
+        <box size="0.45 0.35 0.15"/>
+      </geometry>
+      <origin xyz="0 0 0"/>
+      <material name="cart_color">
+        <color rgba="0 0 0.8 1"/>
+      </material>
+    </visual>
+    <!-- Pivot hub on top of cart -->
+    <visual>
+      <geometry>
+        <cylinder radius="0.035" length="0.06"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0.08"/>
+      <material name="hub_color">
+        <color rgba="0 0 0.6 1"/>
+      </material>
+    </visual>
+    <inertial>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+  </link>
+  <joint name="slider_to_cart" type="prismatic">
+    <axis xyz="1 0 0"/>
+    <origin xyz="0.0 0.0 0.0"/>
+    <parent link="slideBar"/>
+    <child link="cart"/>
+    <limit effort="1000.0" lower="-15" upper="15" velocity="5"/>
+  </joint>
+
+  <!-- Pole -->
+  <link name="pole">
+    <visual>
+      <geometry>
+        <cylinder radius="0.02" length="0.65"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0.325"/>
+      <material name="pole_color">
+        <color rgba="0.9 0.35 0.15 1"/>
+      </material>
+    </visual>
+    <inertial>
+      <mass value="0"/>
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+    </inertial>
+  </link>
+  <joint name="cart_to_pole" type="continuous">
+    <axis xyz="0 1 0"/>
+    <origin xyz="0.0 0.0 0"/>
+    <parent link="cart"/>
+    <child link="pole"/>
+  </joint>
+
+</robot>
