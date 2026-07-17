@@ -1,0 +1,4 @@
+# Sets the inverted_pendulum env noise to `gaussian_act_xxhigh`.
+# Use with: --task inverted_pendulum --overrides <this file>
+task_config:
+  noise: gaussian_act_xxhigh

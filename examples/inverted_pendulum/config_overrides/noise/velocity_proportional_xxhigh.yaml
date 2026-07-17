@@ -1,0 +1,4 @@
+# Sets the inverted_pendulum env noise to `velocity_proportional_xxhigh`.
+# Use with: --task inverted_pendulum --overrides <this file>
+task_config:
+  noise: velocity_proportional_xxhigh

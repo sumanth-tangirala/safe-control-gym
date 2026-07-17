@@ -65,3 +65,13 @@ def test_generate_is_resumable(tmp_path):
     # Re-run: existing sequence files should not be regenerated.
     generate('lqr', out, num_trajs=2, random_init=True, seed=2, episode_len_sec=2, parallel=False)
     assert os.path.getmtime(seq1) == mtime_before, 'existing trajectory should not be rewritten'
+
+
+def test_generate_with_noise_records_it(tmp_path):
+    from generate_inverted_pendulum_trajectories import generate
+    out = str(tmp_path / 'noisy')
+    stats = generate('lqr', out, num_trajs=3, random_init=True, seed=0,
+                     episode_len_sec=2, noise='gaussian_act_high')
+    _check_dataset(out, 'lqr', 3)
+    desc = json.load(open(os.path.join(out, 'dataset_description.json')))
+    assert desc['noise'] == 'gaussian_act_high'

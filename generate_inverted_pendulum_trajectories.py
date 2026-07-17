@@ -29,6 +29,7 @@ from multiprocessing import Pool, cpu_count
 import numpy as np
 from tqdm import tqdm
 
+from safe_control_gym.envs.gym_control.pendulum_noise import NOISE_PRESETS
 from safe_control_gym.utils.registration import make
 
 THETA_DOT_MAX = 2 * math.pi
@@ -75,7 +76,8 @@ def make_env_func(env_config):
                    episode_len_sec=env_config['episode_len_sec'],
                    cost='quadratic',
                    gui=False,
-                   randomized_init=False)
+                   randomized_init=False,
+                   noise=env_config.get('noise'))
 
 
 def make_controller(controller, env_func):
@@ -156,7 +158,7 @@ def _load_cache(output_dir):
 def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42,
              parallel=False, num_workers=None, episode_len_sec=10, resolution=0.1,
              theta_dot_max=THETA_DOT_MAX, skip_save=False, overwrite=False, max_steps=None,
-             batch_size=256, verbose=False):
+             batch_size=256, noise=None, verbose=False):
     '''Generate a dataset and return aggregate statistics.
 
     Resumable: trajectories whose ``sequence_<idx>.txt`` already exists (and whose
@@ -172,7 +174,8 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     if max_steps is None:
         max_steps = episode_len_sec * ctrl_freq
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
-                  'episode_len_sec': episode_len_sec, 'max_steps': max_steps}
+                  'episode_len_sec': episode_len_sec, 'max_steps': max_steps,
+                  'noise': noise}
 
     init_states = sample_initial_states(num_trajs, random_init, seed, theta_dot_max, resolution)
     n = len(init_states)
@@ -232,6 +235,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
         'episode_len_sec': episode_len_sec, 'max_steps': max_steps,
         'u_sat': U_SAT,
         'theta_dot_max': theta_dot_max,
+        'noise': noise if isinstance(noise, (str, type(None))) else str(noise),
         'random_init': random_init, 'seed': seed,
         'label_semantics': '1 = reached upright goal within horizon, 0 = timeout '
                            '(theta wrapped, theta_dot clipped -> no out-of-bounds failure)',
@@ -254,18 +258,22 @@ def main():
     parser.add_argument('--parallel', action='store_true')
     parser.add_argument('--num_workers', type=int, default=None)
     parser.add_argument('--episode_len_sec', type=int, default=10, help='Horizon (default 10 s = 1000 steps)')
+    parser.add_argument('--noise', type=str, default=None, choices=sorted(NOISE_PRESETS),
+                        help='Noise preset (default: none/deterministic). See envs/gym_control/pendulum_noise.py')
     parser.add_argument('--skip_save', action='store_true', help='Compute labels/stats without writing sequences')
     parser.add_argument('--overwrite', action='store_true', help='Regenerate even if sequence files exist')
     args = parser.parse_args()
 
+    noise = None if args.noise in (None, 'none') else args.noise
+    suffix = f'_{args.noise}' if noise else ''
     output_dir = args.output_dir or (
-        f'/common/users/shared/pracsys/genMoPlan/data_trajectories/inverted_pendulum_{args.controller}')
+        f'/common/users/shared/pracsys/genMoPlan/data_trajectories/inverted_pendulum_{args.controller}{suffix}')
 
     stats = generate(args.controller, output_dir, num_trajs=args.num_trajs,
                      random_init=args.random_init, seed=args.seed, parallel=args.parallel,
                      num_workers=args.num_workers, episode_len_sec=args.episode_len_sec,
                      resolution=args.resolution, skip_save=args.skip_save,
-                     overwrite=args.overwrite, verbose=True)
+                     overwrite=args.overwrite, noise=noise, verbose=True)
 
     print(f"\n{'=' * 70}")
     print(f"Controller:   {stats['controller']}")

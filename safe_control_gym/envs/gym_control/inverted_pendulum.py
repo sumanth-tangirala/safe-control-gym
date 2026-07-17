@@ -24,6 +24,7 @@ from gymnasium import spaces
 from safe_control_gym.controllers.lqr.lqr_utils import get_cost_weight_matrix
 from safe_control_gym.envs.benchmark_env import BenchmarkEnv, Cost, Task
 from safe_control_gym.envs.constraints import GENERAL_CONSTRAINTS
+from safe_control_gym.envs.gym_control.pendulum_noise import build_noise_model
 from safe_control_gym.math_and_models.symbolic_systems import SymbolicModel
 
 # Default u_sat matches the source system (ML4KP-derived control saturation).
@@ -72,6 +73,7 @@ class InvertedPendulum(BenchmarkEnv):
                  u_sat=U_SAT_DEFAULT,
                  theta_dot_max=2 * math.pi,
                  goal_threshold=0.075,
+                 noise=None,
                  # custom args
                  obs_goal_horizon=0,
                  rew_state_weight=1.0,
@@ -89,6 +91,9 @@ class InvertedPendulum(BenchmarkEnv):
             u_sat (float): control saturation; action clipped to ``[-u_sat, u_sat]``.
             theta_dot_max (float): angular-velocity bound; ``theta_dot`` clipped to it.
             goal_threshold (float): L2 goal tolerance around upright at rest.
+            noise: source-system noise config -- ``None`` (deterministic), a preset
+                name (e.g. ``'truncated_gaussian_act_med'``), a ``{'type': ...}``
+                dict, or a ``NoiseModel`` instance (see ``pendulum_noise``).
             obs_goal_horizon (int): future goal states appended to obs (RL).
             rew_state_weight, rew_act_weight (list/float): rl_reward quadratic weights.
             rew_exponential (bool): exponentiate the negative quadratic reward.
@@ -101,6 +106,8 @@ class InvertedPendulum(BenchmarkEnv):
         self.u_sat = float(u_sat)
         self.theta_dot_max = float(theta_dot_max)
         self.goal_threshold = float(goal_threshold)
+        # Optional source-system noise model (None -> deterministic no-op).
+        self.noise_model = build_noise_model(noise)
         self.obs_goal_horizon = obs_goal_horizon
         self.rew_state_weight = np.array(rew_state_weight, ndmin=1, dtype=float)
         self.rew_act_weight = np.array(rew_act_weight, ndmin=1, dtype=float)
@@ -163,6 +170,11 @@ class InvertedPendulum(BenchmarkEnv):
             thetaddot = (g / l) * math.sin(theta) + u / inertia - (b / inertia) * thetadot
             theta = theta + dt * thetadot
             thetadot = thetadot + dt * thetaddot
+            # Process (dynamics) noise, applied before wrap/clip so the state
+            # invariants still hold after perturbation (matches the source env).
+            noisy = self.noise_model.add_dynamics_noise(
+                self.np_random, np.array([theta, thetadot], dtype=np.float64), u)
+            theta, thetadot = float(noisy[0]), float(noisy[1])
             theta = _wrap_to_pi(theta)
             thetadot = float(np.clip(thetadot, -self.theta_dot_max, self.theta_dot_max))
             self.state = np.array([theta, thetadot], dtype=np.float64)
@@ -263,6 +275,9 @@ class InvertedPendulum(BenchmarkEnv):
             action = self.disturbances['action'].apply(action, self)
         if self.adversary_disturbance == 'action' and self.adv_action is not None:
             action = action + self.adv_action
+        # Source-system actuation noise, applied to the command before the u_sat clip.
+        u = self.noise_model.add_act_noise(self.np_random, float(np.asarray(action).reshape(-1)[0]))
+        action = np.array([u], dtype=np.float64)
         self.current_noisy_physical_action = action
         force = np.clip(action, self.physical_action_bounds[0], self.physical_action_bounds[1])
         self.current_clipped_action = force
@@ -285,6 +300,10 @@ class InvertedPendulum(BenchmarkEnv):
         obs = deepcopy(self.state)
         if 'observation' in self.disturbances:
             obs = self.disturbances['observation'].apply(obs, self)
+        # Source-system observation noise (on returned obs only, not on reset,
+        # so the true state used for goal checks stays clean).
+        if not self.at_reset:
+            obs = self.noise_model.add_obs_noise(self.np_random, obs)
         if self.at_reset:
             obs = self.extend_obs(obs, 1)
         else:

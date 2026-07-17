@@ -1,0 +1,4 @@
+# Sets the inverted_pendulum env noise to `truncated_gaussian_act_ultra`.
+# Use with: --task inverted_pendulum --overrides <this file>
+task_config:
+  noise: truncated_gaussian_act_ultra

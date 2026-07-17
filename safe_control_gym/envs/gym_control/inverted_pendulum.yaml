@@ -37,6 +37,9 @@ damping: 0.1
 u_sat: 0.6371781908344007
 theta_dot_max: 6.283185307179586
 goal_threshold: 0.075
+# Noise: null (deterministic), a preset name (e.g. truncated_gaussian_act_med),
+# or a {type: ..., ...params} dict. See envs/gym_control/pendulum_noise.py.
+noise: null
 # Reward parameters
 obs_goal_horizon: 0
 rew_state_weight: 1.0
