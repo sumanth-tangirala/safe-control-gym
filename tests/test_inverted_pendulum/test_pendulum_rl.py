@@ -9,6 +9,7 @@ import os
 
 import numpy as np
 import pytest
+import torch
 
 from safe_control_gym.controllers.pendulum_rl.pendulum_rl import PendulumRL
 from safe_control_gym.envs.gym_control.inverted_pendulum import InvertedPendulum
@@ -58,6 +59,20 @@ def test_obs_normalizer_is_identity_and_freezable():
     obs = np.array([0.3, -0.4])
     np.testing.assert_allclose(ctrl.obs_normalizer(obs), obs)
     ctrl.obs_normalizer.set_read_only()  # traj-gen scripts call this
+    ctrl.close()
+
+
+def test_policy_is_a_torch_module():
+    # Same kind of PyTorch implementation as the repo's native SAC controller:
+    # the policy is a torch nn.Module and inference runs under torch.
+    ctrl = PendulumRL(env_func, model_path='v1_strong')
+    assert isinstance(ctrl.actor, torch.nn.Module)
+    # No grad should be tracked through the policy (eval/inference only).
+    obs = np.array([2.0, 0.0])
+    with torch.no_grad():
+        pass
+    u = ctrl.select_action(obs)
+    assert np.asarray(u).shape == (1,)
     ctrl.close()
 
 

@@ -1,27 +1,31 @@
-'''SB3-free inverted-pendulum SAC controller.
+'''Inverted-pendulum SAC controller, in the repo's native PyTorch style.
 
-Wraps a trained SAC swing-up policy behind the safe-control-gym controller
-interface without depending on stable-baselines3 or torch 2.x. The actor MLP
-weights are loaded from a version-agnostic ``.npz`` (produced by
-``scripts/extract_pendulum_rl_policies.py``) and the deterministic policy is
-reproduced with a pure-NumPy forward pass::
+Like safe-control-gym's own ``sac``/``ppo`` controllers, the policy is a
+hand-written ``torch.nn.Module`` (built on the repo's ``MLP`` block) and
+inference runs under ``torch.no_grad()`` -- no stable-baselines3 dependency. The
+actor reproduces the trained SB3 SAC actor's *deterministic* forward:
 
-    h = [cos theta, sin theta, theta_dot / theta_dot_max]
-    for (W, b) in hidden layers: h = relu(W @ h + b)
-    mean = W_mu @ h + b_mu
-    action = clip(u_sat * tanh(mean), [-u_sat, u_sat])
+    net_out = relu(W2 @ relu(W1 @ [cos t, sin t, tdot/tdot_max] + b1) + b2)
+    action  = u_sat * tanh(mu(net_out))          # squash + symmetric unscale
 
-The policy is re-queried every ``action_repeat`` calls and the action held in
-between, matching the control cadence the policy was trained under. These are
-the *standalone* swing-up controllers (no LQR handoff).
+Note the actor differs from the repo's own ``MLPActor`` by one activation: SB3's
+``latent_pi`` applies ``relu`` *after* its last shared layer (before ``mu``),
+which we reproduce via ``MLP(..., output_act='relu')``. Weights are loaded from
+the version-agnostic ``.npz`` produced by
+``scripts/extract_pendulum_rl_policies.py``. The policy is re-queried every
+``action_repeat`` calls (the trained control cadence). These are the *standalone*
+swing-up controllers (no LQR handoff).
 '''
 
 import math
 import os
 
 import numpy as np
+import torch
+import torch.nn as nn
 
 from safe_control_gym.controllers.base_controller import BaseController
+from safe_control_gym.math_and_models.neural_networks import MLP
 from safe_control_gym.math_and_models.normalization import BaseNormalizer
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
@@ -38,6 +42,24 @@ def _resolve_model_path(model_path):
         return bundled
     raise FileNotFoundError(f'[ERROR] PendulumRL model not found: {model_path!r} '
                             f'(also tried {bundled!r}).')
+
+
+class PendulumActor(nn.Module):
+    '''Deterministic SAC actor: obs -> ``u_sat * tanh(mu(latent_pi(obs)))``.
+
+    Uses the repo's ``MLP`` for the shared body, with ``output_act`` set so a
+    ``relu`` follows the last shared layer (matching the trained SB3 policy).
+    '''
+
+    def __init__(self, obs_dim, act_dim, hidden_dims, u_sat, activation='relu'):
+        super().__init__()
+        self.net = MLP(obs_dim, hidden_dims[-1], hidden_dims[:-1],
+                       act=activation, output_act=activation)
+        self.mu_layer = nn.Linear(hidden_dims[-1], act_dim)
+        self.register_buffer('u_sat', torch.tensor(float(u_sat)))
+
+    def forward(self, obs):
+        return self.u_sat * torch.tanh(self.mu_layer(self.net(obs)))
 
 
 class PendulumRL(BaseController):
@@ -58,26 +80,32 @@ class PendulumRL(BaseController):
         # Identity normalizer -- the obs transform lives in select_action; this
         # only satisfies the trajectory scripts' ``obs_normalizer`` contract.
         self.obs_normalizer = BaseNormalizer()
+        self.actor = None
         self._action_repeat_override = action_repeat
-        self._layers = None
         self._count = 0
         self._held = None
         if model_path is not None:
             self.load(model_path)
 
     def load(self, path):
-        '''Load actor MLP weights + metadata from an extracted ``.npz``.'''
+        '''Build the torch actor and load actor weights + metadata from ``.npz``.'''
         data = np.load(_resolve_model_path(path), allow_pickle=False)
         n_hidden = int(data['n_hidden'])
-        self._layers = [
-            (data[f'hidden_{i}_weight'].astype(np.float32),
-             data[f'hidden_{i}_bias'].astype(np.float32))
-            for i in range(n_hidden)
-        ]
-        self._mu_w = data['mu_weight'].astype(np.float32)
-        self._mu_b = data['mu_bias'].astype(np.float32)
+        hidden_dims = [int(data[f'hidden_{i}_weight'].shape[0]) for i in range(n_hidden)]
+        obs_dim = int(data['hidden_0_weight'].shape[1])
+        act_dim = int(data['mu_weight'].shape[0])
         self._u_sat = float(data['u_sat'])
         self._theta_dot_max = float(data['theta_dot_max'])
+
+        self.actor = PendulumActor(obs_dim, act_dim, hidden_dims, self._u_sat)
+        with torch.no_grad():
+            for i in range(n_hidden):
+                self.actor.net.fcs[i].weight.copy_(torch.as_tensor(data[f'hidden_{i}_weight'], dtype=torch.float32))
+                self.actor.net.fcs[i].bias.copy_(torch.as_tensor(data[f'hidden_{i}_bias'], dtype=torch.float32))
+            self.actor.mu_layer.weight.copy_(torch.as_tensor(data['mu_weight'], dtype=torch.float32))
+            self.actor.mu_layer.bias.copy_(torch.as_tensor(data['mu_bias'], dtype=torch.float32))
+        self.actor.to(self.device).eval()
+
         stored_repeat = int(data['action_repeat'])
         self._action_repeat = max(1, int(self._action_repeat_override
                                           if self._action_repeat_override is not None
@@ -85,14 +113,13 @@ class PendulumRL(BaseController):
         self.reset()
 
     def _policy_action(self, obs):
-        '''Deterministic SAC forward: physical [theta, theta_dot] -> torque.'''
+        '''Deterministic torch forward: physical [theta, theta_dot] -> torque.'''
         theta, thetadot = float(obs[0]), float(obs[1])
-        h = np.array([math.cos(theta), math.sin(theta), thetadot / self._theta_dot_max],
-                     dtype=np.float32)
-        for w, b in self._layers:
-            h = np.maximum(0.0, w @ h + b)
-        mean = self._mu_w @ h + self._mu_b
-        u = self._u_sat * math.tanh(float(mean.reshape(-1)[0]))
+        feat = torch.as_tensor(
+            [math.cos(theta), math.sin(theta), thetadot / self._theta_dot_max],
+            dtype=torch.float32, device=self.device)
+        with torch.no_grad():
+            u = float(self.actor(feat).item())
         return float(np.clip(u, -self._u_sat, self._u_sat))
 
     def reset(self):
@@ -106,7 +133,7 @@ class PendulumRL(BaseController):
 
     def select_action(self, obs, info=None):
         '''Return the (repeat-held) policy torque for the current observation.'''
-        if self._layers is None:
+        if self.actor is None:
             raise RuntimeError('[ERROR] PendulumRL has no policy loaded; pass model_path or call load().')
         if self._count % self._action_repeat == 0:
             self._held = self._policy_action(np.asarray(obs, dtype=np.float64))
