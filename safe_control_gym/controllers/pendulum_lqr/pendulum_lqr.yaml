@@ -1,0 +1,4 @@
+# Cost parameters (normalized-coordinate LQR weights; identity Q, R matches the
+# source system's default).
+q_lqr: [1, 1]
+r_lqr: [1]

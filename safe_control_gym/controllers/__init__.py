@@ -6,6 +6,14 @@ register(idx='lqr',
          entry_point='safe_control_gym.controllers.lqr.lqr:LQR',
          config_entry_point='safe_control_gym.controllers.lqr:lqr.yaml')
 
+register(idx='pendulum_lqr',
+         entry_point='safe_control_gym.controllers.pendulum_lqr.pendulum_lqr:PendulumLQR',
+         config_entry_point='safe_control_gym.controllers.pendulum_lqr:pendulum_lqr.yaml')
+
+register(idx='pendulum_rl',
+         entry_point='safe_control_gym.controllers.pendulum_rl.pendulum_rl:PendulumRL',
+         config_entry_point='safe_control_gym.controllers.pendulum_rl:pendulum_rl.yaml')
+
 register(idx='ilqr',
          entry_point='safe_control_gym.controllers.lqr.ilqr:iLQR',
          config_entry_point='safe_control_gym.controllers.lqr:ilqr.yaml')

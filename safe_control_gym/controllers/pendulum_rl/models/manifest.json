@@ -1,0 +1,112 @@
+{
+  "u_sat": 0.6371781908344007,
+  "theta_dot_max": 6.283185307179586,
+  "action_repeat": 4,
+  "obs_transform": "[cos th, sin th, thdot/thdot_max]",
+  "models": [
+    {
+      "variant": "v1",
+      "strength": "strong",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v1_s0/model_best.zip",
+      "checkpoint_step": null,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 3.094556344507282e-07
+    },
+    {
+      "variant": "v1",
+      "strength": "weak",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v1_s0/checkpoints/step_90000.zip",
+      "checkpoint_step": 90000,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 3.578740216392262e-07
+    },
+    {
+      "variant": "v2",
+      "strength": "strong",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v2_s0/model_best.zip",
+      "checkpoint_step": null,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 6.498380076824795e-07
+    },
+    {
+      "variant": "v2",
+      "strength": "weak",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v2_s0/checkpoints/step_60000.zip",
+      "checkpoint_step": 60000,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 4.6373834011737003e-07
+    },
+    {
+      "variant": "v3",
+      "strength": "strong",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v3_s0/model_best.zip",
+      "checkpoint_step": null,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 3.966160008195274e-07
+    },
+    {
+      "variant": "v3",
+      "strength": "weak",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v3_s0/checkpoints/step_70000.zip",
+      "checkpoint_step": 70000,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 2.105520642281533e-07
+    },
+    {
+      "variant": "v4",
+      "strength": "strong",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v4_s0/model_best.zip",
+      "checkpoint_step": null,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 4.538933299214065e-07
+    },
+    {
+      "variant": "v4",
+      "strength": "weak",
+      "source_zip": "/common/users/shared/pracsys/st1122/inverted_pendulum/runs2x2/v4_s0/checkpoints/step_60000.zip",
+      "checkpoint_step": 60000,
+      "sb3_version": "2.9.0",
+      "torch_version": "2.5.1+cu121",
+      "net_arch": [
+        256,
+        256
+      ],
+      "forward_max_err": 2.5281618348804713e-07
+    }
+  ]
+}

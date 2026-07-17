@@ -1,0 +1,4 @@
+# Which bundled policy to load: v1_strong ... v4_weak, or a path to a .npz.
+model_path: null
+# Override the policy's baked-in action-repeat (null = use the trained value, 4).
+action_repeat: null

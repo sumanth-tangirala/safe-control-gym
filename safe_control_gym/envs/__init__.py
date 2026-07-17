@@ -9,3 +9,7 @@ register(idx='cartpole',
 register(idx='quadrotor',
          entry_point='safe_control_gym.envs.gym_pybullet_drones.quadrotor:Quadrotor',
          config_entry_point='safe_control_gym.envs.gym_pybullet_drones:quadrotor.yaml')
+
+register(idx='inverted_pendulum',
+         entry_point='safe_control_gym.envs.gym_control.inverted_pendulum:InvertedPendulum',
+         config_entry_point='safe_control_gym.envs.gym_control:inverted_pendulum.yaml')
