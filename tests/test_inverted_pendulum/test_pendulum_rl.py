@@ -62,6 +62,16 @@ def test_obs_normalizer_is_identity_and_freezable():
     ctrl.close()
 
 
+def test_models_stored_as_pt_state_dicts():
+    # Weights ship as native torch .pt state-dicts (not .npz).
+    from safe_control_gym.controllers.pendulum_rl.pendulum_rl import _resolve_model_path
+    path = _resolve_model_path('v1_strong')
+    assert path.endswith('.pt'), f'expected a .pt model, got {path}'
+    ckpt = torch.load(path, map_location='cpu')
+    assert 'actor_state_dict' in ckpt
+    assert 'mu_layer.weight' in ckpt['actor_state_dict']
+
+
 def test_policy_is_a_torch_module():
     # Same kind of PyTorch implementation as the repo's native SAC controller:
     # the policy is a torch nn.Module and inference runs under torch.

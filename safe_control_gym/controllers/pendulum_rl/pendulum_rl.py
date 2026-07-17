@@ -37,7 +37,7 @@ def _resolve_model_path(model_path):
         raise ValueError('[ERROR] PendulumRL requires a model_path (path or bundled name, e.g. "v1_strong").')
     if os.path.isfile(model_path):
         return model_path
-    bundled = os.path.join(MODELS_DIR, f'{model_path}.npz')
+    bundled = os.path.join(MODELS_DIR, f'{model_path}.pt')
     if os.path.isfile(bundled):
         return bundled
     raise FileNotFoundError(f'[ERROR] PendulumRL model not found: {model_path!r} '
@@ -88,28 +88,20 @@ class PendulumRL(BaseController):
             self.load(model_path)
 
     def load(self, path):
-        '''Build the torch actor and load actor weights + metadata from ``.npz``.'''
-        data = np.load(_resolve_model_path(path), allow_pickle=False)
-        n_hidden = int(data['n_hidden'])
-        hidden_dims = [int(data[f'hidden_{i}_weight'].shape[0]) for i in range(n_hidden)]
-        obs_dim = int(data['hidden_0_weight'].shape[1])
-        act_dim = int(data['mu_weight'].shape[0])
-        self._u_sat = float(data['u_sat'])
-        self._theta_dot_max = float(data['theta_dot_max'])
+        '''Build the torch actor and load its state-dict + metadata from ``.pt``.'''
+        ckpt = torch.load(_resolve_model_path(path), map_location=self.device)
+        self._u_sat = float(ckpt['u_sat'])
+        self._theta_dot_max = float(ckpt['theta_dot_max'])
 
-        self.actor = PendulumActor(obs_dim, act_dim, hidden_dims, self._u_sat)
-        with torch.no_grad():
-            for i in range(n_hidden):
-                self.actor.net.fcs[i].weight.copy_(torch.as_tensor(data[f'hidden_{i}_weight'], dtype=torch.float32))
-                self.actor.net.fcs[i].bias.copy_(torch.as_tensor(data[f'hidden_{i}_bias'], dtype=torch.float32))
-            self.actor.mu_layer.weight.copy_(torch.as_tensor(data['mu_weight'], dtype=torch.float32))
-            self.actor.mu_layer.bias.copy_(torch.as_tensor(data['mu_bias'], dtype=torch.float32))
+        self.actor = PendulumActor(int(ckpt['obs_dim']), int(ckpt['act_dim']),
+                                   list(ckpt['hidden_dims']), self._u_sat,
+                                   activation=ckpt.get('activation', 'relu'))
+        self.actor.load_state_dict(ckpt['actor_state_dict'])
         self.actor.to(self.device).eval()
 
-        stored_repeat = int(data['action_repeat'])
         self._action_repeat = max(1, int(self._action_repeat_override
                                           if self._action_repeat_override is not None
-                                          else stored_repeat))
+                                          else ckpt['action_repeat']))
         self.reset()
 
     def _policy_action(self, obs):

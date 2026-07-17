@@ -37,3 +37,6 @@ poetry.lock
 
 # OS
 .DS_Store
+
+# Pendulum RL policy weights: .npz is a transient extraction handoff; ship the .pt state-dicts.
+safe_control_gym/controllers/pendulum_rl/models/*.npz

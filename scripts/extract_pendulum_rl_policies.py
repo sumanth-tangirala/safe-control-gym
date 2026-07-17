@@ -7,9 +7,12 @@ load. It reads from the source system and writes into this (safe-control-gym)
 repo:
 
   * ``safe_control_gym/controllers/pendulum_rl/models/{variant}_{strength}.npz``
-    -- the SAC actor MLP weights, in a plain, version-agnostic NumPy format so
-    the safe-control-gym controller can reproduce ``predict(deterministic=True)``
-    with no stable-baselines3 / torch-2.x dependency.
+    -- the SAC actor MLP weights, in a plain, version-agnostic NumPy format. This
+    is a transient cross-env handoff: run ``scripts/convert_pendulum_models_to_pt.py``
+    (in the safe-control-gym env) to turn each ``.npz`` into the native torch
+    ``.pt`` state-dict the ``pendulum_rl`` controller actually loads. (The ``.pt``
+    must be written by safe-control-gym's own torch, so it cannot be produced
+    here directly.)
   * ``.../models/manifest.json`` -- provenance (source zip, checkpoint step,
     versions).
   * ``tests/test_inverted_pendulum/fixtures/*.json`` -- golden fixtures the
