@@ -13,6 +13,26 @@ from multiprocessing import Pool, cpu_count
 
 from safe_control_gym.utils.registration import make
 
+INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'invariant_sets', 'cartpole.npz')
+# Success ellipsoid (see plans/invariant-terminal-sets-recollection.md):
+# label 1 iff the terminal state satisfies (s - center)' P (s - center) <= c,
+# with s in internal order [x, x_dot, theta, theta_dot]. Loaded lazily so
+# worker processes each read it once.
+_INVARIANT_SET = None
+
+# Goal termination is disabled (tolerance 0): trajectories run to the fixed
+# horizon unless they go out of bounds first.
+TASK_INFO = {'stabilization_goal': [0], 'stabilization_goal_tolerance': 0.0}
+
+
+def get_invariant_set():
+    global _INVARIANT_SET
+    if _INVARIANT_SET is None:
+        data = np.load(INVARIANT_SET_PATH)
+        _INVARIANT_SET = (data['P'], data['center'], float(data['c']))
+    return _INVARIANT_SET
+
 
 def normalize_angle(angle):
     """
@@ -97,10 +117,12 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         max_steps: Maximum number of steps
 
     Returns:
-        tuple: (trajectory, success, timeout)
+        tuple: (trajectory, success, full_horizon, terminal_v_over_c)
             - trajectory: List of states in order [x, theta, x_dot, theta_dot]
-            - success: Boolean indicating if goal was reached (True) or terminated due to bounds (False)
-            - timeout: Boolean indicating if trajectory reached max_steps without terminating
+            - success: terminal state lies in the invariant success ellipsoid
+            - full_horizon: trajectory ran max_steps without going out of bounds
+            - terminal_v_over_c: Lyapunov value of the terminal state relative
+              to the ellipsoid level (<= 1 iff success)
     """
     import pybullet as p
 
@@ -134,9 +156,7 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
     # Normalize theta to [-pi, pi] range
     trajectory = [[x, normalize_angle(theta), x_dot, theta_dot]]
 
-    success = False
-    timeout = False
-
+    full_horizon = True
     for step in range(max_steps):
         # Get action from LQR controller
         action = ctrl.select_action(obs, info)
@@ -152,16 +172,20 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         current_state = [x, normalize_angle(theta), x_dot, theta_dot]
         trajectory.append(current_state)
 
-        # Check if episode naturally ends (goal reached or out of bounds)
+        # With goal termination disabled, done fires only on out-of-bounds:
+        # the first OOB state is recorded as the terminal state (failure).
         if done:
-            # Check if goal was reached (success) or out of bounds (failure)
-            success = info.get('goal_reached', False)
+            full_horizon = False
             break
-    else:
-        # Loop completed without breaking - trajectory timed out
-        timeout = True
 
-    return trajectory, success, timeout
+    # Label by terminal-state membership in the invariant ellipsoid.
+    P, center, c = get_invariant_set()
+    terminal = np.array([x, x_dot, normalize_angle(theta), theta_dot])
+    dev = terminal - center
+    terminal_v_over_c = float(dev @ P @ dev) / c
+    success = full_horizon and terminal_v_over_c <= 1.0
+
+    return trajectory, success, full_horizon, terminal_v_over_c
 
 
 def save_trajectory(trajectory, filepath):
@@ -200,6 +224,7 @@ def process_single_trajectory(args_tuple):
     env_func = partial(make,
                       'cartpole',
                       task=env_config['task'],
+                      task_info=TASK_INFO,
                       ctrl_freq=env_config['ctrl_freq'],
                       pyb_freq=env_config['pyb_freq'],
                       episode_len_sec=env_config['episode_len_sec'],
@@ -241,16 +266,18 @@ def process_single_trajectory(args_tuple):
     }
 
     # Run trajectory
-    trajectory, success, timeout = run_trajectory(env, ctrl, init_state, env_config['max_steps'])
+    trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
+        env, ctrl, init_state, env_config['max_steps'])
 
-    # Update success and timeout tracking
+    # Update success and full-horizon-without-success tracking
     traj_stats['total_count'] = 1
     if success:
         traj_stats['success_count'] = 1
-    if timeout:
+    if full_horizon and not success:
         traj_stats['timeout_count'] = 1
+    traj_stats['terminal_v_over_c'] = terminal_v_over_c if success else None
 
-    # Store ROA label: 1 for success, 0 for failure (timeout or out of bounds)
+    # Store ROA label: 1 iff terminal state in the invariant ellipsoid
     # Store initial state in order: [x, theta, x_dot, theta_dot] with normalized theta
     x, x_dot, theta, theta_dot = init_state
     traj_stats['init_state'] = [x, normalize_angle(theta), x_dot, theta_dot]
@@ -313,6 +340,7 @@ def process_trajectory_batch(args_tuple):
     env_func = partial(make,
                       'cartpole',
                       task=env_config['task'],
+                      task_info=TASK_INFO,
                       ctrl_freq=env_config['ctrl_freq'],
                       pyb_freq=env_config['pyb_freq'],
                       episode_len_sec=env_config['episode_len_sec'],
@@ -355,16 +383,17 @@ def process_trajectory_batch(args_tuple):
     # Process each trajectory in the batch
     for idx, init_state in batch_data:
         # Run trajectory
-        trajectory, success, timeout = run_trajectory(env, ctrl, init_state, env_config['max_steps'])
+        trajectory, success, full_horizon, _ = run_trajectory(
+            env, ctrl, init_state, env_config['max_steps'])
 
-        # Update success and timeout tracking
+        # Update success and full-horizon-without-success tracking
         batch_stats['total_count'] += 1
         if success:
             batch_stats['success_count'] += 1
-        if timeout:
+        if full_horizon and not success:
             batch_stats['timeout_count'] += 1
 
-        # Store ROA label: 1 for success, 0 for failure (timeout or out of bounds)
+        # Store ROA label: 1 iff terminal state in the invariant ellipsoid
         x, x_dot, theta, theta_dot = init_state
         init_state_normalized = [x, normalize_angle(theta), x_dot, theta_dot]
         roa_label = 1 if success else 0
@@ -423,8 +452,10 @@ def main():
                         help='Symmetric bound for theta angle, range: [-theta_bound, +theta_bound] (default: pi)')
     parser.add_argument('--theta_dot_bound', type=float, default=20.0,
                         help='Symmetric bound for theta velocity, range: [-theta_dot_bound, +theta_dot_bound] (default: 20.0)')
-    parser.add_argument('--max_steps', type=int, default=500,
-                        help='Maximum steps per trajectory (default: 500)')
+    parser.add_argument('--max_steps', type=int, default=700,
+                        help='Fixed horizon: trajectories run exactly this many steps unless '
+                             'they go out of bounds first (default: 700 = old max success '
+                             'length 613 + settle buffer)')
     parser.add_argument('--episode_len_sec', type=int, default=10,
                         help='Episode length in seconds (default: 10)')
     parser.add_argument('--x_termination', type=float, default=None,
@@ -543,6 +574,7 @@ def main():
 
     # Collect ROA labels for all trajectories
     roa_labels = []  # List of (init_state, label) tuples
+    terminal_v_ratios = []  # Terminal V/c of successful trajectories (margin diagnostic)
 
     if args.parallel:
         # Parallel execution
@@ -587,6 +619,8 @@ def main():
 
             # Collect ROA label
             roa_labels.append((traj_stats['init_state'], traj_stats['roa_label']))
+            if traj_stats['terminal_v_over_c'] is not None:
+                terminal_v_ratios.append(traj_stats['terminal_v_over_c'])
 
     else:
         # Sequential execution
@@ -596,6 +630,7 @@ def main():
         env_func = partial(make,
                           'cartpole',
                           task=env_config['task'],
+                          task_info=TASK_INFO,
                           ctrl_freq=env_config['ctrl_freq'],
                           pyb_freq=env_config['pyb_freq'],
                           episode_len_sec=env_config['episode_len_sec'],
@@ -624,16 +659,18 @@ def main():
         # Process trajectories sequentially
         for i, init_state in enumerate(tqdm(initial_states, desc="Generating trajectories")):
             # Run trajectory
-            trajectory, success, timeout = run_trajectory(env, ctrl, init_state, env_config['max_steps'])
+            trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
+                env, ctrl, init_state, env_config['max_steps'])
 
-            # Update success and timeout tracking
+            # Update success and full-horizon-without-success tracking
             stats['total_count'] += 1
             if success:
                 stats['success_count'] += 1
-            if timeout:
+                terminal_v_ratios.append(terminal_v_over_c)
+            if full_horizon and not success:
                 stats['timeout_count'] += 1
 
-            # Store ROA label: 1 for success, 0 for failure (timeout or out of bounds)
+            # Store ROA label: 1 iff terminal state in the invariant ellipsoid
             x, x_dot, theta, theta_dot = init_state
             init_state_normalized = [x, normalize_angle(theta), x_dot, theta_dot]
             roa_label = 1 if success else 0
@@ -700,11 +737,16 @@ def main():
     print(f"\n{'='*80}")
     print(f"Trajectory Statistics:")
     print(f"{'='*80}")
-    print(f"  Total trajectories:     {stats['total_count']}")
-    print(f"  Successful (goal):      {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds): {failed_count} ({failed_rate:.2f}%)")
-    print(f"  Timeout (max steps):    {stats['timeout_count']} ({timeout_rate:.2f}%)")
-    print(f"  Max trajectory length:  {stats['max_traj_length']} states")
+    print(f"  Total trajectories:       {stats['total_count']}")
+    print(f"  Successful (in ellipsoid):{stats['success_count']} ({success_rate:.2f}%)")
+    print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
+    print(f"  Full horizon, no success: {stats['timeout_count']} ({timeout_rate:.2f}%)")
+    print(f"  Max trajectory length:    {stats['max_traj_length']} states")
+    if terminal_v_ratios:
+        v = np.array(terminal_v_ratios)
+        print(f"  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} "
+              f"p95={np.percentile(v, 95):.4f} max={v.max():.4f} "
+              f"(a tail near 1 = late arrivals; consider a larger --max_steps)")
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")

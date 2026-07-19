@@ -10,6 +10,15 @@ from safe_control_gym.math_and_models.distributions import Categorical, Normal
 from safe_control_gym.math_and_models.neural_networks import MLP
 
 
+def _tensor_to_numpy(tensor):
+    '''Tensor -> ndarray; torch<2 raises on .numpy() when built against numpy 1.x
+    but running under numpy 2.x, so fall back to going through Python lists.'''
+    try:
+        return tensor.detach().cpu().numpy()
+    except RuntimeError:
+        return np.asarray(tensor.detach().cpu().tolist())
+
+
 class SafePPOAgent(ppo_utils.PPOAgent):
     '''A PPO class that encapsulates models, optimizers and update functions.'''
 
@@ -146,7 +155,7 @@ class MLPActorCritic(ppo_utils.MLPActorCritic):
         a = dist.sample()
         logp_a = dist.log_prob(a)
         v = self.critic(obs)
-        return a.numpy(), v.numpy(), logp_a.numpy()
+        return _tensor_to_numpy(a), _tensor_to_numpy(v), _tensor_to_numpy(logp_a)
 
     def act(self,
             obs,
@@ -154,7 +163,7 @@ class MLPActorCritic(ppo_utils.MLPActorCritic):
             ):
         dist, _ = self.actor(obs, c=c)
         a = dist.mode()
-        return a.numpy()
+        return _tensor_to_numpy(a)
 
 
 class SafePPOBuffer(ppo_utils.PPOBuffer):

@@ -23,6 +23,21 @@ try:
 except ImportError:
     pass
 
+INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'invariant_sets', 'quad3d.npz')
+# Success ellipsoid (see plans/invariant-terminal-sets-recollection.md):
+# label 1 iff the terminal state satisfies (s - center)' P (s - center) <= c,
+# with s in env order [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r].
+_INVARIANT_SET = None
+
+
+def get_invariant_set():
+    global _INVARIANT_SET
+    if _INVARIANT_SET is None:
+        data = np.load(INVARIANT_SET_PATH)
+        _INVARIANT_SET = (data['P'], data['center'], float(data['c']))
+    return _INVARIANT_SET
+
 
 def normalize_angle(angle):
     """
@@ -316,10 +331,12 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         max_steps: Maximum number of steps
 
     Returns:
-        tuple: (trajectory, success, timeout)
+        tuple: (trajectory, success, full_horizon, terminal_v_over_c)
             - trajectory: List of states in order [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
-            - success: Boolean indicating if goal was reached (True) or terminated due to bounds (False)
-            - timeout: Boolean indicating if trajectory reached max_steps without terminating
+            - success: terminal state lies in the invariant success ellipsoid
+            - full_horizon: trajectory ran max_steps without going out of bounds
+            - terminal_v_over_c: Lyapunov value of the terminal state relative
+              to the ellipsoid level (<= 1 iff success)
     """
     # Reset environment first
     obs, info = env.reset()
@@ -367,8 +384,7 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         ]
     ]
 
-    success = False
-    timeout = False
+    full_horizon = True
 
     for step in range(max_steps):
         # Get action from LQR controller
@@ -397,16 +413,25 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         ]
         trajectory.append(current_state)
 
-        # Check if episode naturally ends (goal reached or out of bounds)
+        # With goal termination disabled, done fires only on out-of-bounds:
+        # the first OOB state is recorded as the terminal state (failure).
         if done:
-            # Check if goal was reached (success) or out of bounds (failure)
-            success = info.get("goal_reached", False)
+            full_horizon = False
             break
-    else:
-        # Loop completed without breaking - trajectory timed out
-        timeout = True
 
-    return trajectory, success, timeout
+    # Label by terminal-state membership in the invariant ellipsoid
+    # (env order [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]).
+    P, center, c = get_invariant_set()
+    terminal = np.array([
+        x, x_dot, y, y_dot, z, z_dot,
+        normalize_angle(phi), normalize_angle(theta), normalize_angle(psi),
+        p_body, q_body, r_body,
+    ])
+    dev = terminal - center
+    terminal_v_over_c = float(dev @ P @ dev) / c
+    success = full_horizon and terminal_v_over_c <= 1.0
+
+    return trajectory, success, full_horizon, terminal_v_over_c
 
 
 def save_trajectory(trajectory, filepath):
@@ -445,7 +470,7 @@ def process_single_trajectory(args_tuple):
     # For 3D quadrotor, need to set stabilization_goal with 3 elements [x, y, z]
     task_info = {
         "stabilization_goal": [0, 0, 1],  # Stabilize at x=0, y=0, z=1
-        "stabilization_goal_tolerance": 0.05,
+        "stabilization_goal_tolerance": 0.0,  # disables goal termination (fixed horizon)
     }
 
     env_func = partial(
@@ -541,18 +566,19 @@ def process_single_trajectory(args_tuple):
     )
 
     # Run trajectory
-    trajectory, success, timeout = run_trajectory(
+    trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
         env, ctrl, init_state, env_config["max_steps"]
     )
 
-    # Update success and timeout tracking
+    # Update success and full-horizon-without-success tracking
     traj_stats["total_count"] = 1
     if success:
         traj_stats["success_count"] = 1
-    if timeout:
+    if full_horizon and not success:
         traj_stats["timeout_count"] = 1
+    traj_stats["terminal_v_over_c"] = terminal_v_over_c if success else None
 
-    # Store ROA label: 1 for success, 0 for failure (timeout or out of bounds)
+    # Store ROA label: 1 iff terminal state in the invariant ellipsoid
     # Store initial state with normalized angles
     # Input order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r = init_state
@@ -668,17 +694,16 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path):
             if len(states) < 2:
                 continue  # Skip trajectories with less than 2 states
 
-            # Determine if trajectory was successful
-            # Success: final state is near goal [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            # (x=0, y=0, z=1, angles=0, velocities=0)
-            # State order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
-            final_state = states[-1]
-            goal_state = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            tolerance = 0.05
-
-            is_success = (
-                np.linalg.norm(np.array(final_state) - np.array(goal_state)) < tolerance
-            )
+            # Determine if trajectory was successful: terminal state in the
+            # invariant success ellipsoid (env order [x, x_dot, y, y_dot, z,
+            # z_dot, phi, theta, psi, p, q, r]; file order [x, y, z, phi,
+            # theta, psi, x_dot, y_dot, z_dot, p, q, r]).
+            P, center, c = get_invariant_set()
+            fs = states[-1]
+            terminal = np.array([fs[0], fs[6], fs[1], fs[7], fs[2], fs[8],
+                                 fs[3], fs[4], fs[5], fs[9], fs[10], fs[11]])
+            dev = terminal - center
+            is_success = float(dev @ P @ dev) <= c
             label = 1 if is_success else 0
 
             if is_success:
@@ -878,12 +903,13 @@ def main():
         help="Termination threshold for yaw rate (default: copies r_body_bound)",
     )
 
-    # Simulation parameters (high max_steps to avoid timeouts - trajectories run until success or out-of-bounds)
+    # Fixed horizon: trajectories run exactly this many steps unless they go
+    # out of bounds first (old max success length 636 + settle buffer).
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=100000,
-        help="Maximum steps per trajectory (default: 100000, effectively no timeout)",
+        default=800,
+        help="Fixed horizon in steps (default: 800)",
     )
     parser.add_argument(
         "--episode_len_sec",
@@ -1148,6 +1174,7 @@ def main():
     stats.update(
         {"success_count": 0, "total_count": 0, "timeout_count": 0, "max_traj_length": 0}
     )
+    terminal_v_ratios = []  # Terminal V/c of successful trajectories (margin diagnostic)
 
     if args.parallel:
         # Parallel execution
@@ -1191,20 +1218,25 @@ def main():
                     stats[key]["max"] = traj_stats[key]["max"]
                     stats[key]["prev_at_max"] = traj_stats[key]["prev_at_max"]
 
-            # Aggregate success and timeout counts
+            # Aggregate success and full-horizon counts
             stats["success_count"] += traj_stats["success_count"]
             stats["total_count"] += traj_stats["total_count"]
             stats["timeout_count"] += traj_stats["timeout_count"]
             stats["max_traj_length"] = max(
                 stats["max_traj_length"], traj_stats["max_traj_length"]
             )
+            if traj_stats["terminal_v_over_c"] is not None:
+                terminal_v_ratios.append(traj_stats["terminal_v_over_c"])
 
     else:
         # Sequential execution
         print(f"Generating trajectories sequentially (single core)...")
 
         # For 3D quadrotor, need to set stabilization_goal with 3 elements [x, y, z]
-        task_info = {"stabilization_goal": [0, 0, 1]}  # Stabilize at x=0, y=0, z=1
+        task_info = {
+            "stabilization_goal": [0, 0, 1],  # Stabilize at x=0, y=0, z=1
+            "stabilization_goal_tolerance": 0.0,  # disables goal termination (fixed horizon)
+        }
 
         # Create environment and controller once for sequential execution
         env_func = partial(
@@ -1268,15 +1300,16 @@ def main():
             tqdm(initial_states, desc="Generating trajectories")
         ):
             # Run trajectory
-            trajectory, success, timeout = run_trajectory(
+            trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
                 env, ctrl, init_state, env_config["max_steps"]
             )
 
-            # Update success and timeout tracking
+            # Update success and full-horizon-without-success tracking
             stats["total_count"] += 1
             if success:
                 stats["success_count"] += 1
-            if timeout:
+                terminal_v_ratios.append(terminal_v_over_c)
+            if full_horizon and not success:
                 stats["timeout_count"] += 1
 
             # Update trajectory length tracking
@@ -1375,11 +1408,16 @@ def main():
     print(f"\n{'='*80}")
     print(f"Trajectory Statistics:")
     print(f"{'='*80}")
-    print(f"  Total trajectories:     {stats['total_count']}")
-    print(f"  Successful (goal):      {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds): {failed_count} ({failed_rate:.2f}%)")
-    print(f"  Timeout (max steps):    {stats['timeout_count']} ({timeout_rate:.2f}%)")
-    print(f"  Max trajectory length:  {stats['max_traj_length']} states")
+    print(f"  Total trajectories:       {stats['total_count']}")
+    print(f"  Successful (in ellipsoid):{stats['success_count']} ({success_rate:.2f}%)")
+    print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
+    print(f"  Full horizon, no success: {stats['timeout_count']} ({timeout_rate:.2f}%)")
+    print(f"  Max trajectory length:    {stats['max_traj_length']} states")
+    if terminal_v_ratios:
+        v = np.array(terminal_v_ratios)
+        print(f"  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} "
+              f"p95={np.percentile(v, 95):.4f} max={v.max():.4f} "
+              f"(a tail near 1 = late arrivals; consider a larger --max_steps)")
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")
