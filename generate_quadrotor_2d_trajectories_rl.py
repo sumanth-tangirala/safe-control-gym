@@ -440,7 +440,7 @@ def get_default_model_path(algo, models_dir):
     return os.path.join(models_dir, algo, model_name)
 
 
-def run_trajectory(env, ctrl, init_state, algo, max_steps=1000):
+def run_trajectory(env, ctrl, init_state, algo, max_steps=1000, invariant=False):
     """
     Run a single trajectory with given initial state using RL controller.
 
@@ -494,6 +494,7 @@ def run_trajectory(env, ctrl, init_state, algo, max_steps=1000):
     trajectory = [[x, z, normalize_angle(theta), x_dot, z_dot, theta_dot]]
 
     full_horizon = True
+    success = False
 
     for step in range(max_steps):
         # Apply observation normalization (critical for RL controllers)
@@ -514,20 +515,24 @@ def run_trajectory(env, ctrl, init_state, algo, max_steps=1000):
         current_state = [x, z, normalize_angle(theta), x_dot, z_dot, theta_dot]
         trajectory.append(current_state)
 
-        # With goal termination disabled, done fires only on out-of-bounds:
-        # the first OOB state is recorded as the terminal state (failure).
+        # Default: done = goal reached (success) or out of bounds (failure).
+        # Invariant mode: goal termination is disabled, done = out of bounds
+        # only; the first OOB state is recorded as the terminal state.
         if done:
             full_horizon = False
+            success = info.get('goal_reached', False)
             break
 
-    # Label by terminal-state membership in the invariant ellipsoid
-    # (env order [x, x_dot, z, z_dot, theta, theta_dot], centered at the
-    # policy's attractor).
-    P, center, c = get_invariant_set()
-    terminal = np.array([x, x_dot, z, z_dot, normalize_angle(theta), theta_dot])
-    dev = terminal - center
-    terminal_v_over_c = float(dev @ P @ dev) / c
-    success = full_horizon and terminal_v_over_c <= 1.0
+    terminal_v_over_c = None
+    if invariant:
+        # Label by terminal-state membership in the invariant ellipsoid
+        # (env order [x, x_dot, z, z_dot, theta, theta_dot], centered at the
+        # policy's attractor).
+        P, center, c = get_invariant_set()
+        terminal = np.array([x, x_dot, z, z_dot, normalize_angle(theta), theta_dot])
+        dev = terminal - center
+        terminal_v_over_c = float(dev @ P @ dev) / c
+        success = full_horizon and terminal_v_over_c <= 1.0
 
     return trajectory, success, full_horizon, terminal_v_over_c
 
@@ -582,7 +587,7 @@ def process_single_trajectory(args_tuple):
             'randomized_init': False,
             'task_info': {
                 'stabilization_goal': [0, 1],  # Goal position [x, z]
-                'stabilization_goal_tolerance': 0.0,  # disables goal termination (fixed horizon)
+                'stabilization_goal_tolerance': 0.0 if env_config.get('invariant') else env_config['goal_tolerance'],
             },
         }
 
@@ -637,7 +642,8 @@ def process_single_trajectory(args_tuple):
 
         # Run trajectory
         trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
-            env, ctrl, init_state, algo, env_config['max_steps'])
+            env, ctrl, init_state, algo, env_config['max_steps'],
+            invariant=env_config.get('invariant', False))
 
         # Update success and full-horizon-without-success tracking
         traj_stats['total_count'] = 1
@@ -703,7 +709,7 @@ def _process_trajectory_file(args):
            -1 = timeout (neither success nor out-of-bounds)
         or None if trajectory has < 2 states.
     """
-    traj_file, goal_tolerance, termination_thresholds = args
+    traj_file, goal_tolerance, termination_thresholds, invariant = args
 
     states = []
     with open(traj_file, 'r') as f_in:
@@ -720,14 +726,20 @@ def _process_trajectory_file(args):
     final_state = states[-1]
     filename = os.path.basename(traj_file)
 
-    # Check success: terminal state in the invariant ellipsoid
-    # (file order [x, z, theta, x_dot, z_dot, theta_dot] -> env order
-    # [x, x_dot, z, z_dot, theta, theta_dot]).
-    P, center, c = get_invariant_set()
-    fs = final_state
-    terminal = np.array([fs[0], fs[3], fs[1], fs[4], fs[2], fs[5]])
-    dev = terminal - center
-    if float(dev @ P @ dev) <= c:
+    # Check success
+    if invariant:
+        # Terminal state in the invariant ellipsoid (file order [x, z, theta,
+        # x_dot, z_dot, theta_dot] -> env order [x, x_dot, z, z_dot, theta,
+        # theta_dot]).
+        P, center, c = get_invariant_set()
+        fs = final_state
+        terminal = np.array([fs[0], fs[3], fs[1], fs[4], fs[2], fs[5]])
+        dev = terminal - center
+        is_success = float(dev @ P @ dev) <= c
+    else:
+        goal_state = np.array([0, 1, 0, 0, 0, 0])
+        is_success = np.linalg.norm(np.array(final_state) - goal_state) < goal_tolerance
+    if is_success:
         return initial_state, final_state, 1, filename
 
     # Check out-of-bounds: final state exceeds any Euclidean termination threshold
@@ -746,7 +758,7 @@ def _process_trajectory_file(args):
 
 
 def generate_roa_labels_from_trajectories(trajectories_dir, output_path, goal_tolerance=0.05,
-                                          termination_thresholds=None):
+                                          termination_thresholds=None, invariant=False):
     """
     Generate ROA labels from saved trajectory files using multiprocessing.
 
@@ -772,7 +784,7 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, goal_to
     num_workers = get_available_cpus()
     print(f"Processing {len(traj_files)} trajectory files with {num_workers} workers...")
 
-    worker_args = [(f, goal_tolerance, termination_thresholds) for f in traj_files]
+    worker_args = [(f, goal_tolerance, termination_thresholds, invariant) for f in traj_files]
     results = []
     with Pool(processes=num_workers) as pool:
         for result in tqdm(pool.imap(_process_trajectory_file, worker_args, chunksize=1000),
@@ -801,7 +813,7 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, goal_to
 
 
 def generate_eval_states_and_labels(trajectories_dir, output_dir, goal_tolerance=0.05,
-                                    termination_thresholds=None):
+                                    termination_thresholds=None, invariant=False):
     """
     Generate eval_states.txt and trajectory_labels.txt from saved trajectory files
     using multiprocessing.
@@ -830,7 +842,7 @@ def generate_eval_states_and_labels(trajectories_dir, output_dir, goal_tolerance
     num_workers = get_available_cpus()
     print(f"Processing {len(traj_files)} trajectory files with {num_workers} workers...")
 
-    worker_args = [(f, goal_tolerance, termination_thresholds) for f in traj_files]
+    worker_args = [(f, goal_tolerance, termination_thresholds, invariant) for f in traj_files]
     results = []
     with Pool(processes=num_workers) as pool:
         for result in tqdm(pool.imap(_process_trajectory_file, worker_args, chunksize=1000),
@@ -926,7 +938,12 @@ def generate_dataset_description(output_dir, args, stats, algo, model_path):
                 "termination": "none on success: trajectories run the fixed horizon (max_steps) "
                                "unless out of bounds; label = terminal-state membership",
                 "reference": "plans/invariant-terminal-sets-recollection.md"
-            })(get_invariant_set()),
+            })(get_invariant_set()) if args.invariant_terminal_sets else {
+                "type": "radius",
+                "threshold": args.goal_tolerance,
+                "description": f"Success if ||state - goal|| < {args.goal_tolerance}; "
+                               "trajectories terminate at (and include) the first such state"
+            },
             "sampling_method": {
                 "type": "stratified_grid" if args.stratified else ("random" if args.random_init else "discretized_grid"),
                 "discretizations": {
@@ -1038,9 +1055,16 @@ def main():
                         help='Symmetric bound for theta velocity, range: [-theta_dot_bound, +theta_dot_bound] (default: 8.0)')
 
     # Simulation parameters (high max_steps to avoid timeouts - trajectories run until success or out-of-bounds)
-    parser.add_argument('--max_steps', type=int, default=1500,
-                        help='Fixed horizon: trajectories run exactly this many steps unless '
-                             'they go out of bounds first (default: 1500 = old cap 1200 + settle buffer)')
+    parser.add_argument('--max_steps', type=int, default=None,
+                        help='Maximum steps per trajectory (default: 100000, effectively no timeout; '
+                             'with --invariant_terminal_sets: 1500 = old cap 1200 + settle buffer, '
+                             'run in full unless out of bounds)')
+    parser.add_argument('--invariant_terminal_sets', action='store_true',
+                        help='Disable goal termination: run every non-OOB trajectory for the full '
+                             'horizon and label by terminal-state membership in the invariant '
+                             'ellipsoid centered at the policy attractor '
+                             '(plans/invariant-terminal-sets-recollection.md). Default: terminate '
+                             'at first entry into the goal_tolerance ball.')
     parser.add_argument('--episode_len_sec', type=int, default=1000,
                         help='Episode length in seconds (default: 1000, effectively no timeout)')
 
@@ -1107,6 +1131,9 @@ def main():
 
     args = parser.parse_args()
 
+    if args.max_steps is None:
+        args.max_steps = 1500 if args.invariant_terminal_sets else 100000
+
     # Set up directories (needed early for --generate_roa_only)
     trajectories_dir = os.path.join(args.output_dir, 'trajectories')
     roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
@@ -1145,7 +1172,8 @@ def main():
         print(f"\nGenerating ROA labels...")
         total_entries, success_count, oob_count, timeout_count = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
-            termination_thresholds=termination_thresholds
+            termination_thresholds=termination_thresholds,
+            invariant=args.invariant_terminal_sets
         )
         print(f"ROA labels saved to: {roa_labels_path}")
         print(f"  Total trajectories: {total_entries}")
@@ -1157,7 +1185,8 @@ def main():
         print(f"\nGenerating eval_states.txt and trajectory_labels.txt...")
         total_trajs, eval_success, eval_oob, eval_timeout = generate_eval_states_and_labels(
             trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance,
-            termination_thresholds=termination_thresholds
+            termination_thresholds=termination_thresholds,
+            invariant=args.invariant_terminal_sets
         )
         print(f"  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)")
         print(f"  trajectory_labels.txt: {total_trajs} entries (filename, label)")
@@ -1328,7 +1357,8 @@ def main():
         'x_dot_termination': args.x_dot_termination,
         'z_dot_termination': args.z_dot_termination,
         'theta_dot_termination': args.theta_dot_termination,
-        'goal_tolerance': args.goal_tolerance
+        'goal_tolerance': args.goal_tolerance,
+        'invariant': args.invariant_terminal_sets
     }
 
     print(f"Termination thresholds: x=+/-{args.x_termination}, z=[{args.z_min_termination}, {args.z_max_termination}], "
@@ -1430,7 +1460,7 @@ def main():
                 'randomized_init': False,
                 'task_info': {
                     'stabilization_goal': [0, 1],  # Goal position [x, z]
-                    'stabilization_goal_tolerance': 0.0,  # disables goal termination (fixed horizon)
+                    'stabilization_goal_tolerance': 0.0 if env_config.get('invariant') else env_config['goal_tolerance'],
                 },
             }
 
@@ -1463,13 +1493,15 @@ def main():
                 for i, init_state in enumerate(tqdm(initial_states, desc="Generating trajectories")):
                     # Run trajectory
                     trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
-                        env, ctrl, init_state, args.algo, env_config['max_steps'])
+                        env, ctrl, init_state, args.algo, env_config['max_steps'],
+                        invariant=env_config.get('invariant', False))
 
                     # Update success and full-horizon-without-success tracking
                     stats['total_count'] += 1
                     if success:
                         stats['success_count'] += 1
-                        terminal_v_ratios.append(terminal_v_over_c)
+                        if terminal_v_over_c is not None:
+                            terminal_v_ratios.append(terminal_v_over_c)
                     if full_horizon and not success:
                         stats['timeout_count'] += 1
 
@@ -1525,7 +1557,8 @@ def main():
         print(f"\nGenerating ROA labels from saved trajectories...")
         roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
         total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
-            trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance
+            trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
+            invariant=args.invariant_terminal_sets
         )
         print(f"ROA labels saved to: {roa_labels_path}")
         print(f"  Total state-label pairs: {total_states}")
@@ -1535,7 +1568,8 @@ def main():
         # Generate eval_states.txt and trajectory_labels.txt
         print(f"\nGenerating eval_states.txt and trajectory_labels.txt...")
         total_trajs, eval_success, eval_failure = generate_eval_states_and_labels(
-            trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance
+            trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance,
+            invariant=args.invariant_terminal_sets
         )
         print(f"  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)")
         print(f"  trajectory_labels.txt: {total_trajs} entries (filename, label)")
@@ -1550,9 +1584,9 @@ def main():
     print(f"Trajectory Statistics:")
     print(f"{'='*80}")
     print(f"  Total trajectories:       {stats['total_count']}")
-    print(f"  Successful (in ellipsoid):{stats['success_count']} ({success_rate:.2f}%)")
+    print(f"  Successful:               {stats['success_count']} ({success_rate:.2f}%)")
     print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
-    print(f"  Full horizon, no success: {stats['timeout_count']} ({timeout_rate:.2f}%)")
+    print(f"  Timeout (no success):     {stats['timeout_count']} ({timeout_rate:.2f}%)")
     print(f"  Max trajectory length:    {stats['max_traj_length']} states")
     if terminal_v_ratios:
         v = np.array(terminal_v_ratios)

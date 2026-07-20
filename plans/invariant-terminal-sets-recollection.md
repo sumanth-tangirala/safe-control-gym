@@ -52,6 +52,17 @@ region as error margin.
    never settles (at `high`/`xhigh` the stationary noise floor exceeds the goal
    radius); no invariant set exists.
 
+## Status: opt-in via `--invariant_terminal_sets` (off by default)
+
+The scheme below is implemented in all four generators but gated behind the
+`--invariant_terminal_sets` CLI flag, **off by default**. The default behavior
+is the original one: trajectories terminate at (and include) the first state
+inside the goal region (pendulum 0.075 L2 ball, cartpole 0.05 L2 ball, quad2D
+`--goal_tolerance` ball around the nominal goal, quad3D 0.05 L2 ball), with
+the original horizons and goal_reached/timeout labels. The flag switches on
+the fixed-horizon + invariant-ellipsoid-label scheme; the pendulum generator
+also appends `_invariant` to its default output directory in that mode.
+
 ## Design
 
 ### Success sets (strictly invariant ellipsoids)
