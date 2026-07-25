@@ -49,6 +49,7 @@ VALID_CONTROLLERS = ['lqr'] + [f'{v}_{s}' for v in VARIANTS for s in STRENGTHS]
 CACHE_NAME = '_results_cache.json'
 TRAIN_SPLIT_ID, EVAL_SPLIT_ID = 0, 1
 GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datasets
+DEFAULT_NUM_TRAJS = 300000
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
@@ -225,6 +226,147 @@ def _process_batch(args_tuple):
     env.close()
     ctrl.close()
     return records
+
+
+# --- atomic writers ---------------------------------------------------------
+
+def atomic_savez(path, **arrays):
+    '''Write an npz via a temp file plus ``os.replace``.
+
+    ``os.replace`` is atomic within a filesystem, so a reader (or a kill)
+    never sees a half-written file.
+    '''
+    tmp = path + '.tmp.npz'
+    np.savez(tmp, **arrays)
+    os.replace(tmp, path)
+
+
+def atomic_write_text(path, text):
+    '''Write a text file via a temp file plus ``os.replace``.'''
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+# --- train split ------------------------------------------------------------
+
+def _shard_is_current(path, fingerprint):
+    '''True if ``path`` is a shard already written for this exact config.'''
+    if not os.path.exists(path):
+        return False
+    try:
+        with np.load(path, allow_pickle=False) as shard:
+            return str(shard['fingerprint']) == fingerprint
+    except (OSError, ValueError, KeyError):
+        return False  # truncated or foreign file: recompute
+
+
+def _train_worker(args_tuple):
+    '''Worker: roll out one batch of training trajectories into its shard.
+
+    Shards are the resume unit -- a shard already written for this config is
+    left alone, so an interrupted run recomputes nothing.
+    '''
+    batch, controller, env_config, base_seed, shard_path, fingerprint = args_tuple
+    if _shard_is_current(shard_path, fingerprint):
+        return shard_path
+    env_func = make_env_func(env_config)
+    ctrl = make_controller(controller, env_func)
+    env = env_func()
+    indices, states, lengths, labels, seeds = [], [], [], [], []
+    for idx, init_state in batch:
+        seed = rollout_seed(base_seed, TRAIN_SPLIT_ID, idx)
+        trajectory, success, _ = run_trajectory(
+            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+        states.append(np.asarray(trajectory, dtype=np.float32))
+        indices.append(idx)
+        lengths.append(len(trajectory))
+        labels.append(int(bool(success)))
+        seeds.append(seed)
+    env.close()
+    ctrl.close()
+    atomic_savez(shard_path,
+                 fingerprint=np.array(fingerprint),
+                 indices=np.array(indices, dtype=np.int64),
+                 states=np.concatenate(states, axis=0),
+                 lengths=np.array(lengths, dtype=np.int64),
+                 labels=np.array(labels, dtype=np.uint8),
+                 seeds=np.array(seeds, dtype=np.int64))
+    return shard_path
+
+
+def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
+                  horizon=1000, noise=None, parallel=False, num_workers=None,
+                  batch_size=256, verbose=False):
+    '''Collect the training split: ``num_trajs`` rollouts from random starts.
+
+    Each trajectory is cut at (and includes) the first state inside the goal
+    ball (label 1) or runs the full ``horizon`` (label 0). Writes ``train.npz``
+    as a flat float32 state array plus per-trajectory offsets and metadata.
+    '''
+    if controller not in VALID_CONTROLLERS:
+        raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
+    os.makedirs(output_dir, exist_ok=True)
+
+    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
+                  'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
+                  'max_steps': horizon, 'noise': noise, 'invariant': False}
+
+    shards_dir = os.path.join(output_dir, '_shards')
+    os.makedirs(shards_dir, exist_ok=True)
+    fingerprint = json.dumps({'controller': controller, 'num_trajs': num_trajs,
+                              'seed': seed, 'horizon': horizon, 'noise': noise,
+                              'batch_size': batch_size}, sort_keys=True)
+
+    init_states = sample_initial_states(num_trajs, True, seed, THETA_DOT_MAX, GRID_RESOLUTION)
+    todo = list(enumerate(init_states))
+    worker_args = [
+        (todo[i:i + batch_size], controller, env_config, seed,
+         os.path.join(shards_dir, f'shard_{i // batch_size:06d}.npz'), fingerprint)
+        for i in range(0, len(todo), batch_size)]
+
+    if parallel:
+        with Pool(processes=num_workers or get_available_cpus()) as pool:
+            for _ in tqdm(pool.imap_unordered(_train_worker, worker_args),
+                          total=len(worker_args), desc='Train', disable=not verbose):
+                pass
+    else:
+        for args in tqdm(worker_args, desc='Train', disable=not verbose):
+            _train_worker(args)
+
+    stats = merge_train_shards(output_dir, [a[4] for a in worker_args], init_states)
+    stats['controller'] = controller
+    return stats
+
+
+def merge_train_shards(output_dir, shard_paths, init_states):
+    '''Concatenate shards (already in index order) into ``train.npz``.'''
+    states, lengths, labels, seeds, indices = [], [], [], [], []
+    for path in shard_paths:
+        with np.load(path, allow_pickle=False) as shard:
+            states.append(shard['states'])
+            lengths.append(shard['lengths'])
+            labels.append(shard['labels'])
+            seeds.append(shard['seeds'])
+            indices.append(shard['indices'])
+    indices = np.concatenate(indices)
+    if not np.array_equal(indices, np.arange(len(init_states))):
+        raise RuntimeError('[ERROR] shards do not cover 0..N-1 exactly; delete _shards and re-run')
+    lengths = np.concatenate(lengths)
+    labels = np.concatenate(labels)
+    atomic_savez(os.path.join(output_dir, 'train.npz'),
+                 states=np.concatenate(states, axis=0),
+                 offsets=np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64),
+                 starts=init_states,
+                 labels=labels,
+                 seeds=np.concatenate(seeds))
+    n = len(init_states)
+    return {'num_trajectories': n,
+            'success_count': int(labels.sum()),
+            'success_rate': float(labels.sum()) / n if n else 0.0,
+            'mean_length': float(lengths.mean()) if n else 0.0}
 
 
 def _load_cache(output_dir):
