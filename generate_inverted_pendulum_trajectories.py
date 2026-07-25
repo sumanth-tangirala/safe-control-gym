@@ -47,6 +47,8 @@ VARIANTS = ['v1', 'v2', 'v3', 'v4']
 STRENGTHS = ['strong', 'weak']
 VALID_CONTROLLERS = ['lqr'] + [f'{v}_{s}' for v in VARIANTS for s in STRENGTHS]
 CACHE_NAME = '_results_cache.json'
+TRAIN_SPLIT_ID, EVAL_SPLIT_ID = 0, 1
+GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datasets
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
@@ -63,6 +65,18 @@ def load_invariant_set(path=INVARIANT_SET_PATH):
 def in_invariant_set(state, P, center, c):
     dev = np.asarray(state, dtype=np.float64) - center
     return bool(dev @ P @ dev <= c)
+
+
+def rollout_seed(base_seed, split_id, index, batch=0):
+    '''Per-rollout seed, a pure function of its coordinates.
+
+    ``split_id`` is ``TRAIN_SPLIT_ID``/``EVAL_SPLIT_ID``, ``index`` the
+    trajectory (train) or grid-cell (eval) index, ``batch`` the eval batch
+    number. Purity is what lets a resumed run draw exactly the noise an
+    uninterrupted run would have drawn.
+    '''
+    seq = np.random.SeedSequence([int(base_seed), int(split_id), int(index), int(batch)])
+    return int(seq.generate_state(1, dtype=np.uint32)[0])
 
 
 def normalize_angle(angle):
@@ -136,7 +150,7 @@ def make_controller(controller, env_func):
     return ctrl
 
 
-def run_trajectory(env, ctrl, init_state, max_steps, invariant=False):
+def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None):
     '''Roll out one trajectory from ``init_state``.
 
     Default: terminate at (and include) the first state within the goal
@@ -145,8 +159,12 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False):
     ``invariant=True``: no early termination; roll exactly ``max_steps`` steps
     and return ``(trajectory, None, False)`` -- the success label is decided
     afterwards from the terminal state.
+
+    ``seed`` reseeds the env's RNG, which is what the noise model draws from,
+    making a noisy rollout exactly reproducible. ``None`` leaves the RNG alone
+    (the stream continues from wherever the previous rollout left it).
     '''
-    env.reset()
+    env.reset(seed=seed)
     env.state = np.array(init_state, dtype=np.float64)
     obs = env._get_observation()
     info = None
