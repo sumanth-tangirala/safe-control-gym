@@ -369,6 +369,191 @@ def merge_train_shards(output_dir, shard_paths, init_states):
             'mean_length': float(lengths.mean()) if n else 0.0}
 
 
+# --- eval split -------------------------------------------------------------
+
+def _eval_worker(args_tuple):
+    '''Worker: roll out one chunk of grid cells for one batch.
+
+    Only the outcome is kept -- eval stores probabilities, not trajectories.
+    '''
+    chunk, controller, env_config, base_seed, batch_no = args_tuple
+    env_func = make_env_func(env_config)
+    ctrl = make_controller(controller, env_func)
+    env = env_func()
+    indices, outcomes = [], []
+    for idx, init_state in chunk:
+        seed = rollout_seed(base_seed, EVAL_SPLIT_ID, idx, batch_no)
+        _, success, _ = run_trajectory(
+            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+        indices.append(idx)
+        outcomes.append(int(bool(success)))
+    env.close()
+    ctrl.close()
+    return np.array(indices, dtype=np.int64), np.array(outcomes, dtype=np.int64)
+
+
+def mean_standard_error(successes, trials):
+    '''Mean per-cell uncertainty of the success probability.
+
+    Near-monotone in the batch count, so -- unlike a drift statistic, which is
+    itself a noisy sample of the movement it measures -- it cannot trip early
+    by chance.
+
+    Uses the posterior SD under a Jeffreys Beta(1/2, 1/2) prior rather than the
+    plug-in ``p(1-p)/n``. The plug-in form is **degenerate at the extremes**: a
+    cell that came back 10/10 has p-hat = 1 and contributes exactly 0, so at low
+    noise -- where most cells really are near 0 or 1 -- the mean would collapse
+    to ~0 and stop the run at ``min_batches``, leaving each probability resolved
+    only to 1/min_batches. The smoothed form keeps an honest ~1/n floor.
+    '''
+    trials = np.maximum(trials, 1)
+    p = (successes + 0.5) / (trials + 1.0)
+    return float(np.mean(np.sqrt(p * (1.0 - p) / (trials + 2.0))))
+
+
+def load_eval_state(output_dir, n_cells):
+    '''Resume from the published dataset; the dataset *is* the checkpoint.'''
+    path = os.path.join(output_dir, 'eval_success_prob.npz')
+    if os.path.exists(path):
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                if len(data['successes']) == n_cells:
+                    return (data['successes'].astype(np.int64),
+                            data['trials'].astype(np.int64),
+                            int(data['n_batches']))
+        except (OSError, ValueError, KeyError):
+            pass  # truncated or foreign file: start over
+    return np.zeros(n_cells, np.int64), np.zeros(n_cells, np.int64), 0
+
+
+def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
+                 n_batches, description=None, converged=False):
+    '''Atomically publish the complete eval dataset.
+
+    Every write goes through a temp file plus ``os.replace``, so the directory
+    always holds a loadable, self-consistent dataset -- the run can be killed
+    at any moment. Only whole batches reach here, so every cell always carries
+    the same ``trials``.
+    '''
+    p_success = successes / np.maximum(trials, 1)
+    atomic_savez(os.path.join(output_dir, 'eval_success_prob.npz'),
+                 starts=grid,
+                 successes=successes.astype(np.int32),
+                 trials=trials.astype(np.int32),
+                 p_success=p_success,
+                 grid_theta=theta_axis,
+                 grid_theta_dot=theta_dot_axis,
+                 grid_shape=np.array([len(theta_axis), len(theta_dot_axis)], dtype=np.int64),
+                 n_batches=np.int64(n_batches))
+    atomic_write_text(
+        os.path.join(output_dir, 'success_probabilities.txt'),
+        ''.join(f'{t:.6f},{d:.6f},{p:.6f}\n' for (t, d), p in zip(grid, p_success)))
+    if description is not None:
+        atomic_write_text(
+            os.path.join(output_dir, 'dataset_description.json'),
+            json.dumps({**description,
+                        'n_batches': int(n_batches),
+                        'converged': bool(converged),
+                        'mean_se': mean_standard_error(successes, trials),
+                        'success_rate': float(p_success.mean())}, indent=2))
+    return p_success
+
+
+def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
+                 resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
+                 max_batches=500, check_every=10, parallel=False,
+                 num_workers=None, chunk_size=512, verbose=False):
+    '''Collect the eval split: batches over the grid until the estimate settles.
+
+    One batch is one rollout from every grid state. Only per-cell success
+    counts are kept, and the complete dataset is republished after every batch.
+    '''
+    if controller not in VALID_CONTROLLERS:
+        raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
+    os.makedirs(output_dir, exist_ok=True)
+
+    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
+                  'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
+                  'max_steps': horizon, 'noise': noise, 'invariant': False}
+
+    theta_axis = grid_axis(-math.pi, math.pi, resolution)
+    theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
+    grid = sample_initial_states(0, False, seed, THETA_DOT_MAX, resolution)
+    successes, trials, n_batches = load_eval_state(output_dir, len(grid))
+
+    description = {
+        'dataset_name': 'Inverted Pendulum Success Probabilities (eval split)',
+        'split': 'eval',
+        'controller': controller,
+        'noise': noise,
+        'num_cells': len(grid),
+        'state_order': ['theta', 'theta_dot'],
+        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        'horizon_steps': horizon,
+        'u_sat': U_SAT,
+        'theta_dot_max': THETA_DOT_MAX,
+        'seed': seed,
+        'grid': {'resolution': resolution,
+                 'shape': [len(theta_axis), len(theta_dot_axis)],
+                 'theta_range': [float(theta_axis[0]), float(theta_axis[-1])],
+                 'theta_dot_range': [float(theta_dot_axis[0]), float(theta_dot_axis[-1])],
+                 'note': 'half-open in both coordinates; theta is periodic, so -pi and '
+                         '+pi are the same state and only one is sampled'},
+        'label_semantics': ('p_success is the fraction of rollouts from that cell that ever '
+                            'entered the 0.075 goal ball within horizon_steps'),
+        'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
+                          'se_tol': se_tol, 'min_batches': min_batches,
+                          'max_batches': max_batches, 'check_every': check_every},
+        'data_format': {'file': 'eval_success_prob.npz',
+                        'note': 'no trajectories are stored; one batch is one rollout from '
+                                'every grid cell, and the dataset is republished atomically '
+                                'after each batch',
+                        'mirror': 'success_probabilities.txt (theta,theta_dot,p_success)'},
+    }
+
+    cells = list(enumerate(grid))
+    chunks = [cells[i:i + chunk_size] for i in range(0, len(cells), chunk_size)]
+    converged = False
+
+    # One pool for the whole run: the batch loop can run for hundreds of
+    # iterations, and re-forking the workers each time would repay the
+    # per-process casadi warmup every batch.
+    pool = Pool(processes=num_workers or get_available_cpus()) if parallel else None
+    try:
+        while n_batches < max_batches:
+            args = [(c, controller, env_config, seed, n_batches) for c in chunks]
+            outcomes = np.zeros(len(grid), dtype=np.int64)
+            results = pool.imap_unordered(_eval_worker, args) if pool else map(_eval_worker, args)
+            for indices, values in results:
+                outcomes[indices] = values
+
+            successes += outcomes
+            trials += 1
+            n_batches += 1
+
+            standard_error = mean_standard_error(successes, trials)
+            converged = (n_batches >= min_batches and n_batches % check_every == 0
+                         and standard_error < se_tol)
+            # Publish after the flag is known, so the description on disk is
+            # honest about whether this converged or was merely stopped.
+            publish_eval(output_dir, grid, theta_axis, theta_dot_axis,
+                         successes, trials, n_batches, description, converged)
+            if verbose:
+                print(f'[eval] batch {n_batches}  mean_se={standard_error:.5f}')
+            if converged:
+                break
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
+
+    return {'controller': controller, 'n_batches': n_batches,
+            'num_cells': len(grid), 'converged': converged,
+            'mean_se': mean_standard_error(successes, trials),
+            'success_rate': float((successes / np.maximum(trials, 1)).mean())}
+
+
 def _load_cache(output_dir):
     path = os.path.join(output_dir, CACHE_NAME)
     if os.path.isfile(path):

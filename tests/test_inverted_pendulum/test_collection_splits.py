@@ -4,9 +4,12 @@ Spec: docs/superpowers/specs/2026-07-25-noisy-pendulum-collection-design.md
 '''
 
 import glob
+import json
 import math
 import os
+import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -148,3 +151,132 @@ def test_train_resumes_from_completed_shards_without_recomputing(tmp_path):
     second = dict(np.load(os.path.join(out, 'train.npz')))
     for key in first:
         assert np.array_equal(first[key], second[key]), f'{key} must be reproduced exactly'
+
+
+# --- atomic writes ----------------------------------------------------------
+
+def test_atomic_savez_keeps_the_previous_file_when_a_write_fails(tmp_path):
+    '''A failed write must not damage what is already published.'''
+    from generate_inverted_pendulum_trajectories import atomic_savez
+    path = str(tmp_path / 'published.npz')
+    atomic_savez(path, values=np.arange(4))
+    with pytest.raises(Exception):
+        atomic_savez(path, values=[[1, 2], [3]])  # ragged: fails while writing
+    assert np.array_equal(np.load(path)['values'], np.arange(4)), 'published file was damaged'
+
+
+# --- eval split -------------------------------------------------------------
+
+# A coarse grid keeps these tests quick: ceil(2pi/1.0) x ceil(4pi/1.0) = 7 x 13.
+COARSE_RESOLUTION = 1.0
+COARSE_CELLS = 7 * 13
+
+
+def test_eval_split_stores_probabilities_and_no_trajectories(tmp_path):
+    '''The whole point: per-cell probabilities, not rollouts.'''
+    from generate_inverted_pendulum_trajectories import collect_eval
+    out = str(tmp_path / 'eval')
+    collect_eval('lqr', out, seed=0, horizon=30, noise='control_proportional_med',
+                 resolution=COARSE_RESOLUTION, min_batches=2, max_batches=2,
+                 check_every=1, parallel=False)
+    data = np.load(os.path.join(out, 'eval_success_prob.npz'))
+    assert 'states' not in data.files, 'eval must not store trajectories'
+    assert data['starts'].shape == (COARSE_CELLS, 2)
+    assert data['successes'].shape == (COARSE_CELLS,)
+    assert data['trials'].shape == (COARSE_CELLS,)
+    assert int(data['n_batches']) == 2
+    assert np.all(data['trials'] == 2), 'only whole batches are published'
+    assert np.all(data['successes'] <= data['trials'])
+    assert np.allclose(data['p_success'], data['successes'] / data['trials'])
+    with open(os.path.join(out, 'success_probabilities.txt')) as f:
+        lines = [ln for ln in f.read().strip().split('\n') if ln]
+    assert len(lines) == COARSE_CELLS
+    assert len(lines[0].split(',')) == 3
+
+
+def test_eval_stops_once_the_estimate_has_settled(tmp_path):
+    '''Convergence must happen on its own, well before the batch cap.
+
+    Deterministic dynamics put every cell at s = 0 or s = B, so the Jeffreys SD
+    is sqrt(p(1-p)/(B+2)) with p = 0.5/(B+1) -- a pure function of B. It crosses
+    0.05 between B=12 (0.0514) and B=14 (0.0449), and checks run every 2.
+    '''
+    from generate_inverted_pendulum_trajectories import collect_eval
+    out = str(tmp_path / 'eval')
+    stats = collect_eval('lqr', out, seed=0, horizon=30, noise=None,
+                         resolution=COARSE_RESOLUTION, se_tol=0.05, min_batches=2,
+                         max_batches=60, check_every=2, parallel=False)
+    assert stats['converged'] is True
+    assert stats['n_batches'] == 14, 'must stop when the estimate settles, not at the cap'
+    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    assert description['converged'] is True
+    assert description['n_batches'] == 14
+    assert description['stopping_rule']['se_tol'] == 0.05
+
+
+def test_eval_labels_an_unconverged_run_honestly(tmp_path):
+    '''Hitting the batch cap must not look like convergence.'''
+    from generate_inverted_pendulum_trajectories import collect_eval
+    out = str(tmp_path / 'eval')
+    stats = collect_eval('lqr', out, seed=0, horizon=30,
+                         noise='control_proportional_xhigh', se_tol=1e-9,
+                         resolution=COARSE_RESOLUTION, min_batches=1, max_batches=2,
+                         check_every=1, parallel=False)
+    assert stats['converged'] is False
+    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    assert description['converged'] is False
+    assert description['n_batches'] == 2
+
+
+def test_eval_resume_matches_an_uninterrupted_run(tmp_path):
+    '''Two runs of 2 batches must equal one run of 4, cell for cell.
+
+    This is what purity of rollout_seed buys: a resumed run draws exactly the
+    noise the uninterrupted run would have drawn.
+    '''
+    from generate_inverted_pendulum_trajectories import collect_eval
+    shared = dict(seed=0, horizon=30, noise='control_proportional_med',
+                  resolution=COARSE_RESOLUTION, se_tol=1e-9, min_batches=1,
+                  check_every=1, parallel=False)
+    straight, resumed = str(tmp_path / 'straight'), str(tmp_path / 'resumed')
+    collect_eval('lqr', straight, max_batches=4, **shared)
+    collect_eval('lqr', resumed, max_batches=2, **shared)
+    collect_eval('lqr', resumed, max_batches=4, **shared)
+
+    a = np.load(os.path.join(straight, 'eval_success_prob.npz'))
+    b = np.load(os.path.join(resumed, 'eval_success_prob.npz'))
+    assert int(a['n_batches']) == 4 and int(b['n_batches']) == 4
+    assert np.array_equal(a['trials'], b['trials'])
+    assert np.array_equal(a['successes'], b['successes']), 'resume must reproduce exactly'
+
+
+def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
+    '''SIGKILL at an arbitrary moment must leave a complete, loadable dataset.'''
+    from generate_inverted_pendulum_trajectories import collect_eval  # noqa: F401  (import check)
+    # The first ~1.6 s goes on casadi warmup in the child, so nothing is
+    # published before then; these delays land mid-collection.
+    for attempt, delay in enumerate((2.6, 3.4, 4.2)):
+        out = str(tmp_path / f'killed_{attempt}')
+        code = (f'import sys; sys.path.insert(0, {REPO_ROOT!r})\n'
+                'from generate_inverted_pendulum_trajectories import collect_eval\n'
+                f'collect_eval("lqr", {out!r}, seed=0, horizon=30,\n'
+                '             noise="control_proportional_med",\n'
+                f'             resolution={COARSE_RESOLUTION}, se_tol=1e-9, min_batches=1,\n'
+                '             max_batches=100000, check_every=1, parallel=False)\n')
+        proc = subprocess.Popen([sys.executable, '-c', code])
+        time.sleep(delay)
+        proc.kill()
+        proc.wait()
+
+        npz_path = os.path.join(out, 'eval_success_prob.npz')
+        assert os.path.exists(npz_path), 'a batch should have been published before the kill'
+        data = np.load(npz_path)  # must not raise: no torn files
+        n_batches = int(data['n_batches'])
+        assert n_batches >= 1
+        assert np.all(data['trials'] == n_batches), 'only whole batches are published'
+        assert np.all(data['successes'] <= data['trials'])
+        assert np.allclose(data['p_success'], data['successes'] / data['trials'])
+        assert len(data['starts']) == COARSE_CELLS
+        with open(os.path.join(out, 'success_probabilities.txt')) as f:
+            assert len([ln for ln in f.read().strip().split('\n') if ln]) == COARSE_CELLS
+        json.load(open(os.path.join(out, 'dataset_description.json')))  # must not raise
