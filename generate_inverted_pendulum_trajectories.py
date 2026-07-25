@@ -78,19 +78,34 @@ def get_available_cpus():
         return cpu_count()
 
 
+def grid_axis(lo, hi, resolution):
+    '''Half-open ``[lo, hi)`` axis at ``resolution``.
+
+    The count is computed up front rather than left to ``np.arange``'s float
+    endpoint handling, so the axis length is exact.
+    '''
+    return lo + resolution * np.arange(int(math.ceil((hi - lo) / resolution)))
+
+
 def sample_initial_states(num_trajs, random_init, seed, theta_dot_max, resolution):
     '''Sample initial ``[theta, theta_dot]`` states.
 
     ``random_init``: ``num_trajs`` uniform samples over the full state space.
     Otherwise: a discretized grid at ``resolution`` (``num_trajs`` ignored).
+
+    The grid is **half-open** in both coordinates. For ``theta`` that is
+    required, not merely tidy: it is periodic, so ``-pi`` and ``+pi`` are the
+    same physical state and including both would duplicate a column. At
+    ``resolution=0.04`` this yields the 158 x 315 = 49,770 state grid the
+    shipped pendulum datasets use.
     '''
     if random_init:
         rng = np.random.default_rng(seed)
         theta = rng.uniform(-math.pi, math.pi, size=num_trajs)
         thetadot = rng.uniform(-theta_dot_max, theta_dot_max, size=num_trajs)
         return np.stack([theta, thetadot], axis=1)
-    thetas = np.arange(-math.pi, math.pi + resolution, resolution)
-    thetadots = np.arange(-theta_dot_max, theta_dot_max + resolution, resolution)
+    thetas = grid_axis(-math.pi, math.pi, resolution)
+    thetadots = grid_axis(-theta_dot_max, theta_dot_max, resolution)
     return np.array([[t, d] for t in thetas for d in thetadots], dtype=np.float64)
 
 

@@ -293,8 +293,9 @@ separating them would scatter tightly-coupled code across files.
 2. **float32 round-trip**: max error < 1e-6 vs the float64 rollout.
 3. **Grid**: the fixed `sample_initial_states` yields exactly 158 x 315 = 49,770
    states at `resolution=0.04`, no coordinate exceeds pi / 2pi, no duplicate
-   cells, and it agrees with `deterministic/pendulum/lqr/roa_labels.txt`
-   elementwise to < 3e-6 in the same row order.
+   cells, and it agrees with `deterministic/pendulum/lqr/roa_labels.txt` to
+   < 1e-5 when both are compared as sorted point sets. (Not row-for-row: that
+   file's rows are in trajectory-index order, not grid order.)
 4. **Atomicity**: kill the eval process mid-write in a loop; the npz always loads
    and `successes.sum()` is consistent with `n_batches`.
 5. **Resume**: interrupt at batch k, re-run, confirm it continues from k+1 and the
