@@ -253,10 +253,9 @@ def test_eval_resume_matches_an_uninterrupted_run(tmp_path):
 def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
     '''SIGKILL at an arbitrary moment must leave a complete, loadable dataset.'''
     from generate_inverted_pendulum_trajectories import collect_eval  # noqa: F401  (import check)
-    # The first ~1.6 s goes on casadi warmup in the child, so nothing is
-    # published before then; these delays land mid-collection.
-    for attempt, delay in enumerate((2.6, 3.4, 4.2)):
+    for attempt, extra_delay in enumerate((0.0, 0.4, 0.9)):
         out = str(tmp_path / f'killed_{attempt}')
+        npz_path = os.path.join(out, 'eval_success_prob.npz')
         code = (f'import sys; sys.path.insert(0, {REPO_ROOT!r})\n'
                 'from generate_inverted_pendulum_trajectories import collect_eval\n'
                 f'collect_eval("lqr", {out!r}, seed=0, horizon=30,\n'
@@ -264,12 +263,20 @@ def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
                 f'             resolution={COARSE_RESOLUTION}, se_tol=1e-9, min_batches=1,\n'
                 '             max_batches=100000, check_every=1, parallel=False)\n')
         proc = subprocess.Popen([sys.executable, '-c', code])
-        time.sleep(delay)
-        proc.kill()
-        proc.wait()
-
-        npz_path = os.path.join(out, 'eval_success_prob.npz')
-        assert os.path.exists(npz_path), 'a batch should have been published before the kill'
+        try:
+            # Wait for the first publication rather than guessing a delay: the
+            # child spends ~1.6 s on casadi warmup, and on a loaded machine that
+            # stretches unpredictably. Then let a little more run, so the kill
+            # lands at a different point each attempt.
+            deadline = time.time() + 120
+            while not os.path.exists(npz_path) and time.time() < deadline:
+                assert proc.poll() is None, 'collector exited before publishing'
+                time.sleep(0.02)
+            assert os.path.exists(npz_path), 'no batch published within 120 s'
+            time.sleep(extra_delay)
+        finally:
+            proc.kill()
+            proc.wait()
         data = np.load(npz_path)  # must not raise: no torn files
         n_batches = int(data['n_batches'])
         assert n_batches >= 1
@@ -277,9 +284,21 @@ def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
         assert np.all(data['successes'] <= data['trials'])
         assert np.allclose(data['p_success'], data['successes'] / data['trials'])
         assert len(data['starts']) == COARSE_CELLS
-        with open(os.path.join(out, 'success_probabilities.txt')) as f:
+        # A kill during staging can leave a *.tmp behind. That is debris, not
+        # corruption: temps have fixed names, so they cannot accumulate, and
+        # nothing ever reads them. What matters is that no published file is a
+        # partial one, which the checks above and below cover.
+
+        # The npz is committed last, so its presence must imply the mirrors are
+        # already in place -- a kill can leave them at most one batch ahead.
+        txt_path = os.path.join(out, 'success_probabilities.txt')
+        description_path = os.path.join(out, 'dataset_description.json')
+        assert os.path.exists(txt_path), 'npz published without its txt mirror'
+        assert os.path.exists(description_path), 'npz published without its description'
+        with open(txt_path) as f:
             assert len([ln for ln in f.read().strip().split('\n') if ln]) == COARSE_CELLS
-        json.load(open(os.path.join(out, 'dataset_description.json')))  # must not raise
+        description = json.load(open(description_path))
+        assert description['n_batches'] - n_batches in (0, 1)
 
 
 # --- descriptions, layout and CLI -------------------------------------------

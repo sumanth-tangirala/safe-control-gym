@@ -70,8 +70,8 @@ def test_generate_is_resumable(tmp_path):
 def test_generate_with_noise_records_it(tmp_path):
     from generate_inverted_pendulum_trajectories import generate
     out = str(tmp_path / 'noisy')
-    stats = generate('lqr', out, num_trajs=3, random_init=True, seed=0,
-                     horizon=200, noise='gaussian_act_high')
+    generate('lqr', out, num_trajs=3, random_init=True, seed=0,
+             horizon=200, noise='gaussian_act_high')
     _check_dataset(out, 'lqr', 3)
     desc = json.load(open(os.path.join(out, 'dataset_description.json')))
     assert desc['noise'] == 'gaussian_act_high'

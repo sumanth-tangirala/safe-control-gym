@@ -266,23 +266,41 @@ def _process_batch(args_tuple):
 
 # --- atomic writers ---------------------------------------------------------
 
-def atomic_savez(path, **arrays):
-    '''Write an npz via a temp file plus ``os.replace``.
-
-    ``os.replace`` is atomic within a filesystem, so a reader (or a kill)
-    never sees a half-written file.
-    '''
+def stage_npz(path, **arrays):
+    '''Write an npz to a temp file; returns the ``(tmp, final)`` pair to commit.'''
     tmp = path + '.tmp.npz'
     np.savez(tmp, **arrays)
-    os.replace(tmp, path)
+    return (tmp, path)
 
 
-def atomic_write_text(path, text):
-    '''Write a text file via a temp file plus ``os.replace``.'''
+def stage_text(path, text):
+    '''Write a text file to a temp file; returns the ``(tmp, final)`` pair.'''
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
         f.write(text)
-    os.replace(tmp, path)
+    return (tmp, path)
+
+
+def commit_staged(staged):
+    '''Move staged files into place, in order.
+
+    ``os.replace`` is atomic within a filesystem, so no reader (and no kill)
+    ever sees a half-written file. Committing a *set* of files is not atomic,
+    so order matters: put the authoritative file last, and its presence then
+    implies the others are already in place.
+    '''
+    for tmp, path in staged:
+        os.replace(tmp, path)
+
+
+def atomic_savez(path, **arrays):
+    '''Write a single npz atomically.'''
+    commit_staged([stage_npz(path, **arrays)])
+
+
+def atomic_write_text(path, text):
+    '''Write a single text file atomically.'''
+    commit_staged([stage_text(path, text)])
 
 
 # --- train split ------------------------------------------------------------
@@ -501,28 +519,38 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
     always holds a loadable, self-consistent dataset -- the run can be killed
     at any moment. Only whole batches reach here, so every cell always carries
     the same ``trials``.
+
+    All three files are staged first and committed with the npz **last**. The
+    npz is the authoritative artifact and its presence is the commit point:
+    because the mirrors are moved into place before it, an npz on disk always
+    has its ``success_probabilities.txt`` and description beside it. A kill
+    inside the commit sequence can only leave the mirrors one batch *ahead* of
+    the npz, never the npz orphaned.
     '''
     p_success = successes / np.maximum(trials, 1)
-    atomic_savez(os.path.join(output_dir, 'eval_success_prob.npz'),
-                 starts=grid,
-                 successes=successes.astype(np.int32),
-                 trials=trials.astype(np.int32),
-                 p_success=p_success,
-                 grid_theta=theta_axis,
-                 grid_theta_dot=theta_dot_axis,
-                 grid_shape=np.array([len(theta_axis), len(theta_dot_axis)], dtype=np.int64),
-                 n_batches=np.int64(n_batches))
-    atomic_write_text(
-        os.path.join(output_dir, 'success_probabilities.txt'),
-        ''.join(f'{t:.6f},{d:.6f},{p:.6f}\n' for (t, d), p in zip(grid, p_success)))
+    staged = []
     if description is not None:
-        atomic_write_text(
+        staged.append(stage_text(
             os.path.join(output_dir, 'dataset_description.json'),
             json.dumps({**description,
                         'n_batches': int(n_batches),
                         'converged': bool(converged),
                         'mean_se': mean_standard_error(successes, trials),
-                        'success_rate': float(p_success.mean())}, indent=2))
+                        'success_rate': float(p_success.mean())}, indent=2)))
+    staged.append(stage_text(
+        os.path.join(output_dir, 'success_probabilities.txt'),
+        ''.join(f'{t:.6f},{d:.6f},{p:.6f}\n' for (t, d), p in zip(grid, p_success))))
+    staged.append(stage_npz(
+        os.path.join(output_dir, 'eval_success_prob.npz'),
+        starts=grid,
+        successes=successes.astype(np.int32),
+        trials=trials.astype(np.int32),
+        p_success=p_success,
+        grid_theta=theta_axis,
+        grid_theta_dot=theta_dot_axis,
+        grid_shape=np.array([len(theta_axis), len(theta_dot_axis)], dtype=np.int64),
+        n_batches=np.int64(n_batches)))
+    commit_staged(staged)
     return p_success
 
 
@@ -607,8 +635,8 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
             n_batches += 1
 
             standard_error = mean_standard_error(successes, trials)
-            converged = (n_batches >= min_batches and n_batches % check_every == 0
-                         and standard_error < se_tol)
+            due_for_check = n_batches >= min_batches and n_batches % check_every == 0
+            converged = due_for_check and standard_error < se_tol
             # Publish after the flag is known, so the description on disk is
             # honest about whether this converged or was merely stopped.
             publish_eval(output_dir, grid, theta_axis, theta_dot_axis,
@@ -834,7 +862,7 @@ def main():
                   f"({'converged' if stats['converged'] else 'STOPPED AT CAP'})")
             print(f"Mean SE:      {stats['mean_se']:.5f}")
             print(f"Mean p:       {stats['success_rate']:.4f}")
-        print(f"Output:       {output_dir}")
+        print(f'Output:       {output_dir}')
         print(f"{'=' * 70}")
         return
 
@@ -858,7 +886,7 @@ def main():
     if 'terminal_v_over_c' in stats:
         v = stats['terminal_v_over_c']
         print(f"Terminal V/c: p50={v['p50']:.4f} p95={v['p95']:.4f} max={v['max']:.4f}")
-    print(f"Output:       {output_dir}")
+    print(f'Output:       {output_dir}')
     print(f"{'=' * 70}")
 
 
