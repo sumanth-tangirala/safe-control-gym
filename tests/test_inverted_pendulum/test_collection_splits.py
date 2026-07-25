@@ -280,3 +280,63 @@ def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
         with open(os.path.join(out, 'success_probabilities.txt')) as f:
             assert len([ln for ln in f.read().strip().split('\n') if ln]) == COARSE_CELLS
         json.load(open(os.path.join(out, 'dataset_description.json')))  # must not raise
+
+
+# --- descriptions, layout and CLI -------------------------------------------
+
+def test_train_split_writes_a_description(tmp_path):
+    from generate_inverted_pendulum_trajectories import collect_train
+    out = str(tmp_path / 'train')
+    collect_train('lqr', out, num_trajs=4, seed=0, horizon=30,
+                  noise='control_proportional_med', parallel=False)
+    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    assert description['split'] == 'train'
+    assert description['controller'] == 'lqr'
+    assert description['noise'] == 'control_proportional_med'
+    assert description['num_trajectories'] == 4
+    assert description['data_format']['states_dtype'] == 'float32'
+
+
+def test_default_output_dir_follows_the_on_disk_layout():
+    from generate_inverted_pendulum_trajectories import default_output_dir
+    assert default_output_dir('lqr', 'control_proportional_med').endswith(
+        'noisy/pendulum/lqr/med')
+    assert default_output_dir('v3_strong', 'control_proportional_xhigh').endswith(
+        'noisy/pendulum/v3_strong/xhigh')
+    assert default_output_dir('lqr', None).endswith('deterministic/pendulum/lqr')
+
+
+def _run_cli(*args):
+    return subprocess.run([sys.executable,
+                           os.path.join(REPO_ROOT, 'generate_inverted_pendulum_trajectories.py'),
+                           *args], cwd=REPO_ROOT, capture_output=True, text=True)
+
+
+def test_cli_collects_the_train_split(tmp_path):
+    out = str(tmp_path / 'train')
+    done = _run_cli('--split', 'train', '--controller', 'lqr', '--num_trajs', '4',
+                    '--horizon', '30', '--noise', 'control_proportional_med',
+                    '--output_dir', out)
+    assert done.returncode == 0, done.stderr
+    assert len(np.load(os.path.join(out, 'train.npz'))['labels']) == 4
+
+
+def test_cli_collects_the_eval_split(tmp_path):
+    out = str(tmp_path / 'eval')
+    done = _run_cli('--split', 'eval', '--controller', 'lqr', '--horizon', '30',
+                    '--noise', 'control_proportional_med', '--resolution', '1.0',
+                    '--min_batches', '1', '--max_batches', '2', '--check_every', '1',
+                    '--output_dir', out)
+    assert done.returncode == 0, done.stderr
+    data = np.load(os.path.join(out, 'eval_success_prob.npz'))
+    assert int(data['n_batches']) == 2
+    assert len(data['p_success']) == COARSE_CELLS
+
+
+def test_cli_without_split_keeps_the_legacy_sequence_output(tmp_path):
+    '''Omitting --split must still produce the old txt dataset.'''
+    out = str(tmp_path / 'legacy')
+    done = _run_cli('--controller', 'lqr', '--num_trajs', '3', '--random_init',
+                    '--horizon', '30', '--output_dir', out)
+    assert done.returncode == 0, done.stderr
+    assert len(glob.glob(os.path.join(out, 'trajectories', 'sequence_*.txt'))) == 3

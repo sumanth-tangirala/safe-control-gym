@@ -21,11 +21,30 @@ plans/invariant-terminal-sets-recollection.md). By invariance this is
 equivalent to "ever entered the ellipsoid", and successful terminal states are
 settled at the upright equilibrium, deep inside the classification region.
 
+``--split`` selects a purpose-built collection mode instead (see
+docs/superpowers/specs/2026-07-25-noisy-pendulum-collection-design.md):
+
+  * ``--split train`` -- ``--num_trajs`` rollouts from *random* start states,
+    written to ``train.npz`` as a flat float32 state array plus offsets,
+    starts, labels and seeds. Sharded, so an interrupted run recomputes
+    nothing.
+  * ``--split eval`` -- batches over the *grid*, where one batch is one rollout
+    from every cell, keeping only the per-cell probability of success. It runs
+    until that estimate settles, and republishes the complete dataset
+    atomically after every batch, so the run can be killed at any moment and
+    still leave a functional dataset.
+
 Examples:
     python generate_inverted_pendulum_trajectories.py --controller lqr \
         --random_init --num_trajs 100000 --parallel --seed 42
     python generate_inverted_pendulum_trajectories.py --controller v3_strong \
         --random_init --num_trajs 50000 --parallel --seed 42
+
+    # train and eval are independent processes, meant to run concurrently
+    python generate_inverted_pendulum_trajectories.py --split train \
+        --controller lqr --noise control_proportional_med --parallel --num_workers 24 &
+    python generate_inverted_pendulum_trajectories.py --split eval \
+        --controller lqr --noise control_proportional_med --parallel --num_workers 48 &
 '''
 
 import argparse
@@ -50,6 +69,8 @@ CACHE_NAME = '_results_cache.json'
 TRAIN_SPLIT_ID, EVAL_SPLIT_ID = 0, 1
 GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datasets
 DEFAULT_NUM_TRAJS = 300000
+DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
+NOISE_LEVELS = ('low', 'med', 'high', 'xhigh', 'xxhigh', 'ultra', 'max')
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
@@ -66,6 +87,21 @@ def load_invariant_set(path=INVARIANT_SET_PATH):
 def in_invariant_set(state, P, center, c):
     dev = np.asarray(state, dtype=np.float64) - center
     return bool(dev @ P @ dev <= c)
+
+
+def noise_level(noise):
+    '''Short level name for a preset (``control_proportional_med`` -> ``med``).'''
+    if noise is None:
+        return None
+    tail = noise.rsplit('_', 1)[-1]
+    return tail if tail in NOISE_LEVELS else noise
+
+
+def default_output_dir(controller, noise):
+    '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.'''
+    if noise is None:
+        return os.path.join(DATA_ROOT, 'deterministic', 'pendulum', controller)
+    return os.path.join(DATA_ROOT, 'noisy', 'pendulum', controller, noise_level(noise))
 
 
 def rollout_seed(base_seed, split_id, index, batch=0):
@@ -338,6 +374,37 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
 
     stats = merge_train_shards(output_dir, [a[4] for a in worker_args], init_states)
     stats['controller'] = controller
+    atomic_write_text(os.path.join(output_dir, 'dataset_description.json'), json.dumps({
+        'dataset_name': 'Inverted Pendulum Trajectories (train split)',
+        'split': 'train',
+        'controller': controller,
+        'noise': noise,
+        'state_order': ['theta', 'theta_dot'],
+        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        'horizon_steps': horizon,
+        'u_sat': U_SAT,
+        'theta_dot_max': THETA_DOT_MAX,
+        'seed': seed,
+        'sampling': {'type': 'uniform random over the full state space',
+                     'theta_range': [-math.pi, math.pi],
+                     'theta_dot_range': [-THETA_DOT_MAX, THETA_DOT_MAX]},
+        'label_semantics': ('1 = the trajectory was cut at (and includes) the first state '
+                            'inside the 0.075 goal ball; 0 = it ran the full horizon. Under '
+                            'noise a rollout can enter and drift back out, so cutting at '
+                            'entry keeps the label a function of the terminal state.'),
+        'data_format': {
+            'file': 'train.npz',
+            'states_dtype': 'float32',
+            'keys': {'states': 'flat (M, 2) array of all trajectories concatenated',
+                     'offsets': 'int64 (N+1,); trajectory i is states[offsets[i]:offsets[i+1]]',
+                     'starts': 'float64 (N, 2) sampled initial states',
+                     'labels': 'uint8 (N,)',
+                     'seeds': 'int64 (N,) per-rollout seed; replays the rollout exactly'},
+            'note': ('float32 costs 2.4e-7, three orders of magnitude below the smallest '
+                     'per-step state change (p1 = 1.7e-4), and halves the size.'),
+        },
+        **stats,
+    }, indent=2))
     return stats
 
 
@@ -695,9 +762,24 @@ def main():
                         help='lqr, or a standalone RL policy vX_{strong,weak}')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (default: .../genMoPlan/data_trajectories/inverted_pendulum_<controller>)')
-    parser.add_argument('--num_trajs', type=int, default=100000, help='Number of random trajectories')
+    parser.add_argument('--split', choices=['train', 'eval'], default=None,
+                        help='train: num_trajs rollouts from random starts, full trajectories '
+                             'stored. eval: batches over the grid storing only the per-cell '
+                             'success probability, until it settles. Omit for the legacy '
+                             'sequence_<i>.txt output.')
+    parser.add_argument('--num_trajs', type=int, default=None,
+                        help=f'Number of random trajectories (default: {DEFAULT_NUM_TRAJS} '
+                             'with --split train, else 100000)')
     parser.add_argument('--random_init', action='store_true', help='Random sampling (else discretized grid)')
-    parser.add_argument('--resolution', type=float, default=0.1, help='Grid resolution (grid mode)')
+    parser.add_argument('--resolution', type=float, default=None,
+                        help=f'Grid resolution (default: {GRID_RESOLUTION} with --split eval, '
+                             'else 0.1)')
+    parser.add_argument('--se_tol', type=float, default=0.01,
+                        help='--split eval: stop once the mean per-cell uncertainty is below this')
+    parser.add_argument('--min_batches', type=int, default=10, help='--split eval: floor on batches')
+    parser.add_argument('--max_batches', type=int, default=500, help='--split eval: cap on batches')
+    parser.add_argument('--check_every', type=int, default=10,
+                        help='--split eval: test the stopping rule every N batches')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--parallel', action='store_true')
     parser.add_argument('--num_workers', type=int, default=None)
@@ -716,15 +798,48 @@ def main():
     args = parser.parse_args()
 
     noise = None if args.noise in (None, 'none') else args.noise
+
+    if args.split is not None:
+        output_dir = args.output_dir or default_output_dir(args.controller, noise)
+        if args.split == 'train':
+            stats = collect_train(args.controller, output_dir,
+                                  num_trajs=args.num_trajs or DEFAULT_NUM_TRAJS,
+                                  seed=args.seed, horizon=args.horizon or 1000,
+                                  noise=noise, parallel=args.parallel,
+                                  num_workers=args.num_workers, verbose=True)
+            print(f"\n{'=' * 70}")
+            print(f"Split:        train ({stats['controller']}, noise={noise})")
+            print(f"Trajectories: {stats['num_trajectories']}")
+            print(f"Successful:   {stats['success_count']} ({stats['success_rate'] * 100:.2f}%)")
+            print(f"Mean length:  {stats['mean_length']:.1f} states")
+        else:
+            stats = collect_eval(args.controller, output_dir, seed=args.seed,
+                                 horizon=args.horizon or 1000, noise=noise,
+                                 resolution=args.resolution or GRID_RESOLUTION,
+                                 se_tol=args.se_tol, min_batches=args.min_batches,
+                                 max_batches=args.max_batches, check_every=args.check_every,
+                                 parallel=args.parallel, num_workers=args.num_workers,
+                                 verbose=True)
+            print(f"\n{'=' * 70}")
+            print(f"Split:        eval ({stats['controller']}, noise={noise})")
+            print(f"Grid cells:   {stats['num_cells']}")
+            print(f"Batches:      {stats['n_batches']} "
+                  f"({'converged' if stats['converged'] else 'STOPPED AT CAP'})")
+            print(f"Mean SE:      {stats['mean_se']:.5f}")
+            print(f"Mean p:       {stats['success_rate']:.4f}")
+        print(f"Output:       {output_dir}")
+        print(f"{'=' * 70}")
+        return
+
     suffix = f'_{args.noise}' if noise else ''
     suffix += '_invariant' if args.invariant_terminal_sets else ''
     output_dir = args.output_dir or (
         f'/common/users/shared/pracsys/genMoPlan/data_trajectories/inverted_pendulum_{args.controller}{suffix}')
 
-    stats = generate(args.controller, output_dir, num_trajs=args.num_trajs,
+    stats = generate(args.controller, output_dir, num_trajs=args.num_trajs or 100000,
                      random_init=args.random_init, seed=args.seed, parallel=args.parallel,
                      num_workers=args.num_workers, horizon=args.horizon,
-                     resolution=args.resolution, skip_save=args.skip_save,
+                     resolution=args.resolution or 0.1, skip_save=args.skip_save,
                      overwrite=args.overwrite, noise=noise,
                      invariant=args.invariant_terminal_sets, verbose=True)
 
