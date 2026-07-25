@@ -208,7 +208,7 @@ def test_eval_stops_once_the_estimate_has_settled(tmp_path):
                          max_batches=60, check_every=2, parallel=False)
     assert stats['converged'] is True
     assert stats['n_batches'] == 14, 'must stop when the estimate settles, not at the cap'
-    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    description = json.load(open(os.path.join(out, 'eval_description.json')))
     assert description['converged'] is True
     assert description['n_batches'] == 14
     assert description['stopping_rule']['se_tol'] == 0.05
@@ -223,7 +223,7 @@ def test_eval_labels_an_unconverged_run_honestly(tmp_path):
                          resolution=COARSE_RESOLUTION, min_batches=1, max_batches=2,
                          check_every=1, parallel=False)
     assert stats['converged'] is False
-    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    description = json.load(open(os.path.join(out, 'eval_description.json')))
     assert description['converged'] is False
     assert description['n_batches'] == 2
 
@@ -292,7 +292,7 @@ def test_eval_dataset_stays_functional_when_the_run_is_killed(tmp_path):
         # The npz is committed last, so its presence must imply the mirrors are
         # already in place -- a kill can leave them at most one batch ahead.
         txt_path = os.path.join(out, 'success_probabilities.txt')
-        description_path = os.path.join(out, 'dataset_description.json')
+        description_path = os.path.join(out, 'eval_description.json')
         assert os.path.exists(txt_path), 'npz published without its txt mirror'
         assert os.path.exists(description_path), 'npz published without its description'
         with open(txt_path) as f:
@@ -308,7 +308,7 @@ def test_train_split_writes_a_description(tmp_path):
     out = str(tmp_path / 'train')
     collect_train('lqr', out, num_trajs=4, seed=0, horizon=30,
                   noise='control_proportional_med', parallel=False)
-    description = json.load(open(os.path.join(out, 'dataset_description.json')))
+    description = json.load(open(os.path.join(out, 'train_description.json')))
     assert description['split'] == 'train'
     assert description['controller'] == 'lqr'
     assert description['noise'] == 'control_proportional_med'

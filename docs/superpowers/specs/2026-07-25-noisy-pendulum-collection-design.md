@@ -250,9 +250,12 @@ New flags: `--split`, `--se_tol` (0.01), `--min_batches` (10), `--max_batches`
 `.../genMoPlan/data_trajectories/noisy/pendulum/<controller>/<level>/`, following
 the `<family>/pendulum/<controller>/` convention already used by
 `deterministic/pendulum/`. `<level>` is the preset suffix (`low`, `med`, `high`,
-`xhigh`). Each split writes its own `dataset_description.json` mirroring the
-deleted datasets' schema (noise model, controller gains, physics, manifold
-structure, data format) plus the new fields above.
+`xhigh`). Both splits share one level directory, so their descriptions are named
+per split -- `train_description.json` and `eval_description.json` -- rather than
+both claiming `dataset_description.json`, which would have them clobber each
+other when run concurrently. (The legacy no-`--split` path keeps
+`dataset_description.json`.) Each records the noise model, horizon, sampling
+scheme and label semantics, plus the split-specific fields above.
 
 ### Concurrency
 

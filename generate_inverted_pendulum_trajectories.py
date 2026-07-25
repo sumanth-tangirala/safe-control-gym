@@ -392,7 +392,7 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
 
     stats = merge_train_shards(output_dir, [a[4] for a in worker_args], init_states)
     stats['controller'] = controller
-    atomic_write_text(os.path.join(output_dir, 'dataset_description.json'), json.dumps({
+    atomic_write_text(os.path.join(output_dir, 'train_description.json'), json.dumps({
         'dataset_name': 'Inverted Pendulum Trajectories (train split)',
         'split': 'train',
         'controller': controller,
@@ -531,7 +531,7 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
     staged = []
     if description is not None:
         staged.append(stage_text(
-            os.path.join(output_dir, 'dataset_description.json'),
+            os.path.join(output_dir, 'eval_description.json'),
             json.dumps({**description,
                         'n_batches': int(n_batches),
                         'converged': bool(converged),
