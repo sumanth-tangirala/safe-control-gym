@@ -263,14 +263,29 @@ deliberate simplicity trade costing ~10% of the first hour.
 
 ## Measured costs
 
-89.7 ms per LQR rollout at `med` (mean length 594, 40-rollout sample), 72 cores:
+**179 ms per LQR rollout at `med`**, measured end-to-end through the CLI with 24
+workers under real parallel load. An initial 40-rollout single-process
+micro-benchmark said 89.7 ms; the true figure is ~2x that because the sample's
+mean length (594) understated the real one (671, confirmed against both the
+deleted `train.npz` and a 2,000-trajectory run) and because parallel workers
+contend.
 
-| job | core-hours | wall clock |
-|---|---|---|
-| train 300k | 7.5 | ~6 min at 72 workers / ~19 min at 24 |
-| eval, 1 batch | 1.2 | ~1 min at 72 / ~1.9 min at 48 |
-| eval, B=100 | 124 | ~1.7 h/level |
-| eval, B=500 (cap) | 622 | ~8.6 h/level |
+| job | wall clock |
+|---|---|
+| train 300k, 24 workers | ~37 min |
+| eval, 1 batch, 48 workers | ~3.1 min |
+| eval, B=100 | ~5.2 h/level (20.7 h for 4 levels) |
+| eval, B=200 | ~10.3 h/level (41.3 h for 4 levels) |
+| eval, B=500 (cap) | ~25.8 h/level (103 h for 4 levels) |
+
+The `max_batches=500` cap is therefore a ~26 h/level worst case, not the ~8.6 h
+originally estimated. The adaptive rule should stop well before it, but the cap
+should be chosen deliberately rather than inherited.
+
+Chunk size adapts to `4 * num_workers` chunks. Fixed 512-cell chunks left most
+workers idle on smaller grids -- a 2,016-cell eval ran 311 s on 24 workers with
+4 chunks, and 60 s once chunked properly, with bit-identical output (rollout
+seeds key off the cell index, not the chunk).
 
 No vectorized rollout is needed; the env-based path is faithful and cheap enough.
 

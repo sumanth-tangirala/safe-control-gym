@@ -580,13 +580,20 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     }
 
     cells = list(enumerate(grid))
+    workers = num_workers or get_available_cpus()
+    if parallel:
+        # Aim for several chunks per worker. A chunk is the unit of parallelism,
+        # so too few leaves workers idle, and rollout cost varies a lot per cell
+        # (successes stop early, failures run the full horizon) -- oversubscribing
+        # lets imap_unordered even that out.
+        chunk_size = max(1, min(chunk_size, math.ceil(len(cells) / (4 * workers))))
     chunks = [cells[i:i + chunk_size] for i in range(0, len(cells), chunk_size)]
     converged = False
 
     # One pool for the whole run: the batch loop can run for hundreds of
     # iterations, and re-forking the workers each time would repay the
     # per-process casadi warmup every batch.
-    pool = Pool(processes=num_workers or get_available_cpus()) if parallel else None
+    pool = Pool(processes=workers) if parallel else None
     try:
         while n_batches < max_batches:
             args = [(c, controller, env_config, seed, n_batches) for c in chunks]
