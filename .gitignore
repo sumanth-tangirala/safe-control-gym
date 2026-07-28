@@ -2,6 +2,10 @@
 results/
 temp-data/
 
+# Claude Code: .claude/ and CLAUDE.md are shared, personal overrides are not
+.claude/settings.local.json
+CLAUDE.local.md
+
 # acados
 c_generated_code/
 acados_*
