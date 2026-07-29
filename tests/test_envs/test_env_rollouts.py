@@ -29,10 +29,12 @@ def test_rollouts_match_golden(fixture):
     with open(os.path.join(FIX, fixture)) as handle:
         data = json.load(handle)
     env = make(data['params']['task'], **data['params']['task_config'])
-    for scenario in data['scenarios']:
-        env.reset(seed=scenario['seed'])
-        np.testing.assert_allclose(env.state, scenario['x0'], atol=1e-9)
-        for act, expected in zip(scenario['actions'], scenario['states']):
-            env.step(np.asarray(act, dtype=np.float64))
-            np.testing.assert_allclose(env.state, expected, atol=1e-9)
-    env.close()
+    try:
+        for scenario in data['scenarios']:
+            env.reset(seed=scenario['seed'])
+            np.testing.assert_allclose(env.state, scenario['x0'], atol=1e-9)
+            for act, expected in zip(scenario['actions'], scenario['states']):
+                env.step(np.asarray(act, dtype=np.float64))
+                np.testing.assert_allclose(env.state, expected, atol=1e-9)
+    finally:
+        env.close()

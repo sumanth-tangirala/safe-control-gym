@@ -17,9 +17,18 @@ class AngleObservation(gym.ObservationWrapper):
         self.angle_index = int(angle_index)
         self.rate_index = int(rate_index)
         self.rate_max = float(rate_max)
+        # The scaled rate channel is only guaranteed within [-1, 1] when
+        # rate_max matches the wrapped env's own rate bound. Configs are free
+        # to pass a smaller rate_max (e.g. a training convention narrower than
+        # the physical limit), so the declared bound is widened to the actual
+        # reachable ratio instead of clipping the emitted value -- clipping
+        # would change what the policy observes, which this wrapper must not
+        # do.
+        rate_bound = float(np.abs(env.observation_space.high[self.rate_index]))
+        rate_scale = max(1.0, rate_bound / self.rate_max)
         self.observation_space = gym.spaces.Box(
-            low=np.array([-1.0, -1.0, -1.0], dtype=np.float64),
-            high=np.array([1.0, 1.0, 1.0], dtype=np.float64),
+            low=np.array([-1.0, -1.0, -rate_scale], dtype=np.float64),
+            high=np.array([1.0, 1.0, rate_scale], dtype=np.float64),
             dtype=np.float64)
 
     def observation(self, obs):
