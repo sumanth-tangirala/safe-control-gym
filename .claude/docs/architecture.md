@@ -6,10 +6,62 @@ safety filter.
 ## Two layers, deliberately separate
 
 - **`safe_control_gym/`** — the library. Upstream `safe-control-gym` (UofT DSL)
-  plus this fork's inverted pendulum. Import-only; no CLI entry points.
+  plus this fork's inverted pendulum. Envs, controllers and safety filters are
+  import-only; the two exceptions are `experiments/train_rl_controller.py` and
+  `experiments/train_sb3.py`, both runnable training scripts.
 - **Repo root `*.py`** — this fork's scripts. Dataset generators, invariant-set
   computation, calibration, visualisation. They import the library, never the
   reverse.
+
+## The Gymnasium step API
+
+`gymnasium = "^1.3"` (`pyproject.toml`, `setup.py`). All four registered
+environments (`benchmark_env` and the three concrete envs) return the
+Gymnasium 5-tuple `(obs, rew, terminated, truncated, info)`, not the
+pre-Gymnasium `(obs, rew, done, info)`. `reset(self, seed=None, options=None)`
+on all three; `options` is accepted and ignored.
+
+`terminated` has **two sources**, not one:
+
+| Flag | Source | Meaning |
+| --- | --- | --- |
+| `terminated` | `_get_done()`, per env | goal reached, or out-of-bounds when `done_on_out_of_bound` |
+| `terminated` | `benchmark_env.py`'s `after_step`, `constraints.is_violated(...)` under `DONE_ON_VIOLATION` | constraint violation |
+| `truncated` | `after_step`, `ctrl_step_counter >= CTRL_STEPS` | time limit (`EPISODE_LEN_SEC * CTRL_FREQ`) |
+
+`info['TimeLimit.truncated']` is deliberately still set alongside `truncated`
+— six controllers (`ppo`, `ddpg`, `sac`, `rarl`, `rap`, `safe_ppo`) already read
+that key to compensate a bootstrap target for time truncation, and the flag
+promotes what was already a working convention rather than replacing it.
+Both flags can be true on the same step (goal reached exactly at the horizon);
+neither implementation may mask the other.
+
+Both termination sources and the truncation path are exercised by
+`tests/test_envs/test_truncation_semantics.py`; see
+`.claude/docs/workflows.md` for the full oracle set.
+
+## Two RL stacks coexist
+
+The repo's own native controllers — `ppo`, `sac`, `ddpg`, `rarl`, `rap`,
+`safe_explorer_ppo`, `pendulum_rl` — are unchanged by the Gymnasium migration
+and are what every example under `examples/` still uses.
+
+`stable-baselines3 = "^2.9"` is a second, training-only stack, added so that
+*some* system can be trained in-repo without a per-environment adapter (see the
+Motivation in
+`docs/superpowers/specs/2026-07-28-sb3-gymnasium-migration-design.md`). It is
+confined by rule to one module: **`envs/` and `controllers/` must stay
+SB3-free**, so `PendulumRL` inference and the whole dataset-collection path
+keep working in an environment where SB3 is not installed. A test
+(`tests/test_envs/test_train_sb3.py::test_sb3_not_imported_by_library`) asserts
+this by blanking `sys.modules['stable_baselines3']` and importing both
+packages.
+
+Consequence: an SB3-trained policy currently has **no in-repo consumer**.
+Training produces SB3-native `.zip` checkpoints; nothing loads them until a
+per-system exporter exists (the pendulum's is the immediate follow-on, the
+pattern `PendulumRL` already established for the externally-trained models).
+This is a known, deliberate gap, not an oversight.
 
 Keeping a generator's logic in the root script is the existing convention. Do
 not push collection policy (grids, splits, stopping rules, success labels) down
@@ -58,12 +110,13 @@ is the shortest complete illustration of the whole flow.
 | `envs/gym_control/` | Non-PyBullet systems: `cartpole.py`, `inverted_pendulum.py`, and `pendulum_noise.py`. |
 | `envs/gym_pybullet_drones/` | `quadrotor.py` (2D and 3D) over `base_aviary.py`. |
 | `envs/constraints.py`, `envs/disturbances.py` | Constraint and disturbance objects referenced from task yaml. |
-| `envs/env_wrappers/` | Episode-statistics recording and the vectorised env family. |
+| `envs/env_wrappers/` | Episode-statistics recording, the vectorised env family, `forwarding.py` (`AttributeForwardingMixin`), `shaping.py` (optional SB3 observation/cadence wrappers). |
 | `controllers/base_controller.py` | Interface every controller implements. |
 | `controllers/pendulum_lqr/`, `controllers/pendulum_rl/` | This fork's pendulum controllers. RL policies ship as native torch `.pt` state-dicts. |
 | `safety_filters/` | MPSC and CBF filters over a base controller. |
 | `experiments/base_experiment.py` | `BaseExperiment.run_evaluation(...)` — the rollout + metrics loop. |
-| `experiments/train_rl_controller.py` | RL training entry point. |
+| `experiments/train_rl_controller.py` | Native-stack RL training entry point (`ppo`, `sac`, `ddpg`, `rarl`, `rap`, `safe_explorer_ppo`). |
+| `experiments/train_sb3.py` | Task-agnostic stable-baselines3 training entry point. The only module permitted to import SB3. |
 | `math_and_models/` | Symbolic models, transformations, metrics. `transformations.py` is exempted from most lint rules. |
 | `utils/` | `registration.py`, `configuration.py`, `logging.py`, `plotting.py`, `utils.py`. |
 | `hyperparameters/` | Optuna-based HPO. Has its own tests under `tests/test_hpo/`. |

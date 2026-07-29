@@ -25,13 +25,57 @@ build; nothing else depends on it.
 ```bash
 python3 -m pytest ./tests/                         # everything
 python3 -m pytest ./tests/test_inverted_pendulum/  # this fork's tests
+python3 -m pytest ./tests/test_envs/               # gymnasium/SB3 migration oracles
 python3 -m pytest ./tests/test_examples/           # upstream example smoke tests
 ```
 
 `tests/test_inverted_pendulum/` is the fork's own and the one to keep green:
 `test_env.py`, `test_registration.py`, `test_pendulum_lqr.py`,
 `test_pendulum_rl.py`, `test_pendulum_noise.py`, `test_pendulum_experiment.py`,
-`test_generate.py`, `test_collection_splits.py`.
+`test_generate.py`, `test_collection_splits.py`. **75 passed**, 0 known
+failures (verified directly). The bar used to be 74 passed plus one accepted
+`test_pendulum_experiment.py` subprocess failure; that failure was a broken
+editable install — `safe_control_gym.pth` pointed at a deleted sibling clone,
+so the package only resolved from a cwd inside this repo, and the test shells
+out from a script under `examples/` where it doesn't. `pip install -e .`
+repaired it. If a run reports 74/1 again, that is a stale environment, not a
+regression — re-run `pip install -e .` before treating it as one.
+
+`tests/test_envs/` is a new directory, added by the Gymnasium migration, and
+holds the oracles that protect it:
+
+- `test_env_rollouts.py` — golden rollouts for cartpole and both quadrotors
+  (the pendulum's own fixtures already lived under `test_inverted_pendulum/`),
+  captured under gymnasium 0.28 before any migration commit. `atol=1e-9`.
+- `test_dataset_slice.py` — a 338-cell `lqr` and `v3_strong` grid
+  (`--resolution 0.5`) over `generate_inverted_pendulum_trajectories.py`,
+  captured the same way. `atol=1e-12`. This is the oracle that most directly
+  protects the datasets: a failure here is the migration bug the whole plan
+  exists to catch, and the tolerance must not be loosened to make one pass.
+- `test_truncation_semantics.py` — `terminated`/`truncated` agree with the
+  legacy `info['TimeLimit.truncated']` on every step, for all four
+  environments, including the case where both flags are true on the same step.
+- `test_wrapper_forwarding.py` — `AttributeForwardingMixin`'s `FORWARDED`
+  allowlist resolves the attributes call sites actually read, and an
+  unlisted attribute still raises.
+- `test_gymnasium_conformance.py` — `stable_baselines3.common.env_checker.check_env`
+  passes on every registered environment; the primary evidence the migration
+  is correct, because it validates the API contract directly rather than
+  inferring correctness from tests that happen to pass.
+- `test_episode_flags_initialised.py` — `goal_reached`/`out_of_bounds` exist
+  immediately after `reset()`, for all four environments (a CartPole gap this
+  migration's review surfaced and fixed).
+- `test_train_sb3.py` — a short `train_sb3` run per task
+  (`inverted_pendulum`, `cartpole`, `quadrotor`) completes and writes a
+  loadable model, plus the assertion that `envs/` and `controllers/` still
+  import with `stable_baselines3` blanked out of `sys.modules`.
+
+There is deliberately no `test_invariant_sets.py` in this directory: `quad2d`
+and `quad3d` do not reproduce the committed `.npz` artifacts bit-exactly (see
+`.claude/docs/datasets.md`), so a test gating on that would fail for a reason
+nobody intends to fix. `invariant_sets/*.npz` stay read-only on disk
+(`-r--r-----`) for the same reason `compute_invariant_sets.py` rewrites them in
+place is documented there.
 
 `tests/test_hpo/` needs a MySQL-backed Optuna store and does not run
 standalone. Do not treat its failures as a regression you introduced.
@@ -73,6 +117,38 @@ python3 lqr/lqr_experiment.py --algo lqr --task cartpole \
 ```
 
 Output goes to `results/` (gitignored).
+
+## Training with stable-baselines3
+
+`safe_control_gym/experiments/train_sb3.py` is task-agnostic: it works for any
+registered `--task` through the same `ConfigFactory` shape, with no
+per-system branching in the trainer itself.
+
+```bash
+python -m safe_control_gym.experiments.train_sb3 \
+    --task inverted_pendulum --algo sac --output_dir results/pendulum_sac \
+    --kv_overrides sb3_config.total_timesteps=200000
+```
+
+Task-specific shaping (the pendulum's `[cos, sin, thdot/max]` observation
+re-encoding, its `action_repeat` of 4) is not hardcoded — it is an optional
+wrapper from `envs/env_wrappers/shaping.py`, selected via
+`sb3_config.angle_obs` / `sb3_config.action_repeat` in the config, so other
+systems train on their own native observation with no wrapper at all.
+
+`--use_gpu` selects SB3's device (defaults to CPU, like every other entry
+point here). Pass it if a GPU is free: measured on an idle ilab2 (64 cores,
+RTX A4500), SAC on the pendulum, `net_arch: [256, 256]`, both devices back to
+back with OMP/MKL threads pinned to 8 — **cpu 65.6 steps/s vs cuda 111.0
+steps/s, GPU 1.69x faster**. An earlier docstring asserted the opposite from
+the general principle that small MLP policies favour CPU; that was wrong,
+measured on a since-corrected run, and the corrected number above is what to
+trust. The environment itself is never the bottleneck either way — the
+pendulum alone steps at ~12,500/s.
+
+`train_sb3.py` is the only module in the package allowed to import
+`stable_baselines3`; see `.claude/docs/architecture.md` for why, and for the
+current gap (no exporter, so a trained model has no in-repo consumer yet).
 
 ## Collection runs
 
@@ -124,4 +200,4 @@ it for an artifact you intend to commit.
 
 ---
 
-Related: [datasets.md](datasets.md) for what a collection run produces, [compute.md](compute.md) for which machine, [conventions.md](conventions.md) for what pre-commit will demand.
+Related: [architecture.md](architecture.md) for the two-stack split `train_sb3.py` lives inside, [datasets.md](datasets.md) for what a collection run produces, [compute.md](compute.md) for which machine, [conventions.md](conventions.md) for what pre-commit will demand.

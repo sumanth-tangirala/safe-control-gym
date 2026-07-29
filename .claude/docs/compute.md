@@ -20,8 +20,19 @@ automatically. Core count is the thing to optimise for, not GPU memory.
 - `compute_invariant_sets.py`: finite differencing plus a discrete Lyapunov
   solve and boundary sampling. Minutes, single machine, no GPU.
 
-The one thing that genuinely wants a GPU is RL *training*
-(`safe_control_gym/experiments/train_rl_controller.py`), not collection.
+The one thing that genuinely wants a GPU is RL *training* — either
+`safe_control_gym/experiments/train_rl_controller.py` (the native stack) or
+`safe_control_gym/experiments/train_sb3.py` (stable-baselines3) — not
+collection.
+
+For SB3 specifically, "wants" is now measured rather than assumed: SAC on the
+pendulum, `net_arch: [256, 256]`, measured back to back on an idle ilab2 with
+threads pinned, is **1.69x faster on GPU** (cpu 65.6 steps/s, cuda 111.0
+steps/s). An earlier draft of `train_sb3.py`'s docstring asserted the opposite
+from the general principle that small MLP policies favour CPU — that was
+wrong, and the first attempt to check it ran on a loaded host and measured
+contention rather than devices. `--use_gpu` still defaults off; pass it when a
+GPU is actually free.
 
 ## Storage
 
@@ -44,4 +55,4 @@ same way; size its wall-clock request accordingly.
 
 ---
 
-Related: [workflows.md](workflows.md) for the commands, [datasets.md](datasets.md) for the sizes those commands write, `CLAUDE.local.md` for which machine (uncommitted, may not exist here).
+Related: [workflows.md](workflows.md) for the commands, [architecture.md](architecture.md) for the two RL stacks this measures, [datasets.md](datasets.md) for the sizes those commands write, `CLAUDE.local.md` for which machine (uncommitted, may not exist here).

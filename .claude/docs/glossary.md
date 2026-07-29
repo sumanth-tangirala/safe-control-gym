@@ -74,6 +74,25 @@ datasets. It predicts where a trajectory ends up, which is why every labelling
 decision here is judged by whether the label remains a function of the terminal
 state.
 
+**`terminated` / `truncated`.** The Gymnasium 5-tuple's two done-flags,
+replacing the pre-migration single `done`. `terminated` means the episode
+ended for a reason internal to the task — goal reached, out-of-bounds when
+`done_on_out_of_bound`, or a constraint violation under `DONE_ON_VIOLATION`.
+`truncated` means only the time limit was hit (`ctrl_step_counter >=
+CTRL_STEPS`). Both can be true on the same step (goal reached exactly at the
+horizon). `info['TimeLimit.truncated']` is the pre-migration convention the
+split was promoted from and is kept for the six controllers that already read
+it. See `.claude/docs/architecture.md` for the two-source table.
+
+**`check_env`.** `stable_baselines3.common.env_checker.check_env` — validates
+that an environment satisfies the Gymnasium API contract (tuple arity, `reset`
+signature, space/dtype conformance) directly, rather than inferring
+correctness from tests that happen to pass. Run in
+`tests/test_envs/test_gymnasium_conformance.py` against all four registered
+environments; it is the primary evidence the Gymnasium migration is correct,
+because it also covers systems (cartpole, both quadrotors) that have no golden
+rollout fixtures of their own.
+
 ---
 
 Related: [datasets.md](datasets.md) where most of these terms are load-bearing, [architecture.md](architecture.md) for the code they name.

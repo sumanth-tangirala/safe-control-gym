@@ -13,6 +13,60 @@ grep '^## \[' .claude/log.md | grep ingest  # what has been read into the wiki
 
 ---
 
+## [2026-07-29] ingest | gymnasium/SB3 migration lands in architecture, workflows, glossary, compute
+
+The prior entry below described the migration's code but only actually filed
+the quad2d ellipsoid finding into `docs/datasets.md`; `architecture.md`,
+`workflows.md` and `glossary.md` still described the pre-migration 4-tuple
+world with zero mentions of gymnasium, SB3 or `terminated`/`truncated` (the
+plan's own "Follow-on work" section says as much). This entry does that
+ingest, from `docs/superpowers/specs/2026-07-28-sb3-gymnasium-migration-design.md`,
+`plans/sb3-gymnasium-migration.md`, `git log --oneline main..HEAD` (31 commits),
+and the landed code.
+
+`architecture.md`: added the Gymnasium 5-tuple / `terminated`+`truncated`
+section (two termination sources, one truncation source, `info['TimeLimit.truncated']`
+kept for six controllers), a "Two RL stacks coexist" section (native
+controllers unchanged; SB3 confined to `train_sb3.py`; no exporter yet), and
+package-map rows for `train_sb3.py`, `forwarding.py`, `shaping.py`. Also fixed
+a claim that predates this migration and that the new addition would have
+made worse to leave: "import-only; no CLI entry points" was already false —
+`train_rl_controller.py` has had a `__main__` block all along.
+
+`workflows.md`: corrected the pendulum test bar to **75 passed, 0 known
+failures** (verified directly) — the old "74 + 1 known failure" was a broken
+editable install (`safe_control_gym.pth` pointed at a deleted sibling clone),
+fixed by `pip install -e .`, not a real failure. Documented the new
+`tests/test_envs/` oracle directory (golden rollouts, dataset-slice at
+`atol=1e-12`, truncation semantics, wrapper forwarding, `check_env`
+conformance, episode-flag initialisation, SB3 training smoke) and why
+`test_invariant_sets.py` is deliberately absent from it. Added the
+`train_sb3.py` command with the corrected GPU measurement.
+
+`glossary.md`: added `terminated`/`truncated` and `check_env`.
+
+`compute.md`: replaced the unmeasured "RL training wants a GPU" framing with
+the measured number — SB3 SAC on the pendulum, `net_arch [256, 256]`, idle
+ilab2, threads pinned: **cpu 65.6 steps/s vs cuda 111.0 steps/s, GPU 1.69x
+faster** — and the correction of the earlier wrong claim (asserted from
+general principle, first re-check ran on a loaded host and measured
+contention, not devices).
+
+`datasets.md` was checked against the sources and found already consistent
+(the quad2d finding and the read-only `invariant_sets/*.npz` note match the
+current code and the absence of `tests/test_envs/test_invariant_sets.py`); no
+edit needed there this time.
+
+Found in passing, not part of this migration: an untracked
+`scripts/export_sb3_pendulum.py` and `tests/test_envs/test_export_sb3_pendulum.py`
+exist in the working tree but are not committed to any branch. The spec and
+plan are explicit that no exporter is in scope and a trained SB3 policy has no
+in-repo consumer yet; those uncommitted files look like separate, unlanded
+work on that follow-on and were not treated as source for this ingest.
+
+`INDEX.md` summaries updated for architecture.md, workflows.md, compute.md and
+glossary.md to match.
+
 ## [2026-07-29] ingest | gymnasium migration + quad2d ellipsoid finding
 
 Migrated all four envs to the Gymnasium 5-tuple and added task-agnostic SB3
