@@ -357,7 +357,8 @@ class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
     def step(self, action):
         '''Wrapper for the gym.env step function.'''
 
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
         # save to episode data container
         step_data = dict(
             obs=obs,
@@ -375,7 +376,7 @@ class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
         for key, val in step_data.items():
             self.episode_data[key].append(val)
 
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
 
 
 class MetricExtractor:

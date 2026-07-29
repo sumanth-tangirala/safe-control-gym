@@ -29,7 +29,8 @@ class DummyVecEnv(VecEnv):
     def step_wait(self):
         results = []
         for i in range(self.num_envs):
-            obs, rew, done, info = self.envs[i].step(self.actions[i])
+            obs, rew, terminated, truncated, info = self.envs[i].step(self.actions[i])
+            done = terminated or truncated
             if done:
                 end_obs = copy.deepcopy(obs)
                 end_info = copy.deepcopy(info)
