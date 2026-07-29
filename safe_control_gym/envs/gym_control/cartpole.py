@@ -497,7 +497,7 @@ class CartPole(BenchmarkEnv):
                               self.x_dot_threshold,
                               self.theta_threshold_radians * 2,
                               self.theta_dot_threshold])
-        self.state_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float64)
+        self.state_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float32)
 
         # Concatenate goal info for RL
         if self.COST == Cost.RL_REWARD and self.TASK == Task.TRAJ_TRACKING and self.obs_goal_horizon > 0:

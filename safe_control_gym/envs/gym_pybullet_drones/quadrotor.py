@@ -703,7 +703,7 @@ class Quadrotor(BaseAviary):
             self.STATE_UNITS = ['m', 'm/s', 'm', 'm/s', 'm', 'm/s',
                                 'rad', 'rad', 'rad', 'rad/s', 'rad/s', 'rad/s']
         # Define the state space for the dynamics.
-        self.state_space = spaces.Box(low=low, high=high, dtype=np.float64)
+        self.state_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
         # Concatenate reference for RL.
         if self.COST == Cost.RL_REWARD and self.TASK == Task.TRAJ_TRACKING and self.obs_goal_horizon > 0:
