@@ -42,7 +42,10 @@ RULES = [
 # (e.g. generate_quadrotor_2d_trajectories_rl.py -> .../quadrotor2D_rl). Omitting the
 # flag therefore overwrites shipped datasets, and guard_write.py cannot see it because
 # a script invoked through Bash never touches the Write/Edit tools.
-GENERATOR = re.compile(r'\bgenerate_\w*trajector\w*\.py\b')
+# Must be an actual invocation -- `python3 generate_x.py ...` -- not merely a mention.
+# Matching the bare filename also fired on `grep generate_x.py` and `sed -n ... file`,
+# which read the script rather than run it.
+GENERATOR = re.compile(r'\bpython[\d.]*\s+(?:-\w+\s+)*[\w./-]*generate_\w*trajector\w*\.py\b')
 OUTPUT_DIR = re.compile(r'--output[_-]dir\b')
 
 
