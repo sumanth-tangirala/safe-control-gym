@@ -65,7 +65,7 @@ system, so there is no in-repo generator to copy. Write one, then use it.
 - Create: `tests/test_envs/fixtures/quadrotor_3d_rollouts.json`
 
 **Interfaces:**
-- Produces: `generate_env_rollouts.build(task, task_config, scenarios)` returning
+- Produces: `generate_env_rollouts.build(task, task_config, act_dim)` returning
   the dict written to JSON, with keys `params` (dict) and `scenarios` (list of
   `{'x0': [...], 'actions': [[...], ...], 'states': [[...], ...]}`). Task 5-6
   rely on `tests/test_envs/test_env_rollouts.py` still passing unchanged.
