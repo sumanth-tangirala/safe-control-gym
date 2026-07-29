@@ -3,17 +3,22 @@
 Date: 2026-07-28
 Scope: `safe_control_gym/envs/` (all four envs + `benchmark_env`), the 15 modules
 that reference `env.step`, `safe_control_gym/envs/env_wrappers/`,
-`safe_control_gym/controllers/pendulum_rl/`, a new
-`safe_control_gym/experiments/train_pendulum_sb3.py`, `pyproject.toml`,
+a new `safe_control_gym/experiments/train_sb3.py`, `pyproject.toml`,
 `setup.py`, and `tests/`.
 
 ## Goal
 
-Make pendulum RL policies reproducible inside this repository.
+Make RL controllers trainable inside this repository, for **any** registered
+system.
 
 Concretely: migrate the environments to the Gymnasium step API, add
-stable-baselines3 as a dependency, and add a training entry point that produces
-a `.pt` the existing `PendulumRL` controller loads unchanged.
+stable-baselines3 as a dependency, and add one training entry point that works
+against any registered task — `--task inverted_pendulum`, `cartpole`, or
+`quadrotor` — with no per-system glue.
+
+Generality is the reason for migrating rather than adapting. A training-side
+adapter would need one implementation per environment; Gymnasium-compliant
+environments need none.
 
 ## Motivation
 
@@ -114,18 +119,32 @@ The split is derivable from existing code, not a judgement call:
 | Flag | Source | Meaning |
 | --- | --- | --- |
 | `terminated` | `_get_done()` per env | goal reached, or out-of-bounds when `done_on_out_of_bound` |
-| `truncated` | `benchmark_env.py:499`, `ctrl_step_counter >= CTRL_STEPS` | time limit, `EPISODE_LEN_SEC * CTRL_FREQ` |
+| `terminated` | `benchmark_env.py:478-482`, `constraints.is_violated(...)` under `DONE_ON_VIOLATION` | constraint violation |
+| `truncated` | `benchmark_env.py:497-500`, `ctrl_step_counter >= CTRL_STEPS` | time limit, `EPISODE_LEN_SEC * CTRL_FREQ` |
 
-Per environment, `_get_done()` is goal-reach only for the pendulum
-(`inverted_pendulum.py:333`, explicitly no out-of-bounds), and goal-reach or
-out-of-bounds for cartpole (`cartpole.py:689`) and quadrotor
-(`quadrotor.py:869`, with a per-`QuadType` bounds mask).
+Note there are **two** termination sources, not one. `_get_done()` is goal-reach
+only for the pendulum (`inverted_pendulum.py:333`, explicitly no out-of-bounds),
+and goal-reach or out-of-bounds for cartpole (`cartpole.py:689`) and quadrotor
+(`quadrotor.py:869`, with a per-`QuadType` bounds mask). Constraint violation is
+handled separately, inside `after_step`, and is also termination.
 
-`after_step` currently collapses both into one `done`. **This is a live defect,
-not only an API mismatch.** Every controller treats a horizon timeout
-identically to a goal reach, so value bootstrapping at the end of an episode is
-wrong — for exactly the algorithms this work exists to train. Fixing it is the
-point of choosing migration over adaptation.
+The distinction is **already recorded**, in the pre-Gymnasium convention:
+
+    if self.ctrl_step_counter >= self.CTRL_STEPS:
+        info['TimeLimit.truncated'] = not done
+        done = True
+
+So the migration promotes an existing `info` key to a first-class return value
+rather than recovering information the environments threw away. That lowers the
+risk materially: `truncated` can be cross-checked against
+`info['TimeLimit.truncated']` during the migration, and the two must agree.
+
+**The defect is in the consumers, not the environments.** All 15 modules that
+read `env.step` take the 4-tuple `done` and never inspect
+`info['TimeLimit.truncated']` — so a horizon timeout is treated identically to a
+goal reach, and value bootstrapping at the end of an episode is wrong for
+exactly the algorithms this work exists to train. Fixing it is the point of
+choosing migration over adaptation.
 
 Consequence: RL controllers legitimately produce different numbers after the
 migration. That difference is the fix landing, not a regression. LQR is
@@ -195,43 +214,54 @@ separable by commit if it later needs to be.
 
 ### stable-baselines3 is confined to one module
 
-SB3 may be imported only by `safe_control_gym/experiments/train_pendulum_sb3.py`.
+SB3 may be imported only by `safe_control_gym/experiments/train_sb3.py`.
 `envs/` and `controllers/` stay SB3-free, so `PendulumRL` inference and the whole
 collection path continue to work in an environment where SB3 is not installed.
 
-### The observation encoding becomes shared
+This is what makes the eventual per-system exporters worth writing: inference
+never gains an SB3 dependency, no matter how many systems get trained.
 
-`[cos theta, sin theta, theta_dot / theta_dot_max]` is currently hardcoded inside
-`PendulumRL.select_action`. Training needs the identical transform. It moves to
-a single function called by both the training observation wrapper and
-`select_action`.
+### The trainer is task-agnostic; task-specific shaping is configuration
 
-Duplicating it is the rejected alternative, and the reason is that its failure
-is silent: a policy trained on a slightly different encoding still trains, still
-exports, still loads, and is simply wrong at inference.
+`train_sb3.py` takes `--task` and `--algo` through the existing `ConfigFactory`,
+exactly as every other entry point in `examples/` does. It contains no
+per-system branching.
 
-### Export contract is unchanged
+Anything a particular system needs — an observation re-encoding, a frame skip —
+is an optional wrapper selected by config, not a hardcoded stage. Concretely,
+the pendulum's `[cos theta, sin theta, theta_dot / theta_dot_max]` encoding and
+its `action_repeat` of 4 exist only because the shipped policies were trained
+that way; cartpole and the quadrotors train on their environment's own
+observation with no wrapper at all.
 
-The trainer writes the existing 8-key checkpoint, so `PendulumRL` and every
-generator that names a policy keep working:
+The rejected alternative is baking the pendulum encoding into the trainer. It
+would work today and silently mis-train every other system.
 
-| key | value |
-| --- | --- |
-| `actor_state_dict` | `PendulumActor.state_dict()` |
-| `obs_dim` | 3 |
-| `act_dim` | 1 |
-| `hidden_dims` | `[256, 256]` |
-| `activation` | `'relu'` |
-| `u_sat` | 0.6371781908344007 |
-| `theta_dot_max` | 6.283185307179586 |
-| `action_repeat` | 4 |
+### Inference is per-system native export, and is deferred
 
-`models/manifest.json` keeps its shape; provenance fields change from an
-external `source_zip` path to git SHA, config, seed and checkpoint step.
+A single registered `sb3` controller that loads an SB3 model would work for
+every system at once. Rejected: it puts an SB3 import on the inference path, and
+therefore on the collection path, which contradicts the confinement rule above
+and would make every dataset run depend on SB3.
 
-The trainer checkpoints periodically as well as on best, because that is what
-the `strong`/`weak` axis is (see Prior state) and losing it would make the
-existing model set unreproducible even after this work.
+Instead each system gets a native torch controller that a trained SB3 actor is
+exported into — the pattern `PendulumRL` already established.
+
+**No exporter is in this spec.** The pendulum exporter, which would write the
+existing 8-key `.pt` (`actor_state_dict`, `obs_dim`, `act_dim`, `hidden_dims`,
+`activation`, `u_sat`, `theta_dot_max`, `action_repeat`) and keep the
+`--controller v3_strong` collection vocabulary working, is the immediate
+follow-on.
+
+Consequence, stated plainly: **when this spec lands, a trained policy has no
+in-repo consumer.** Training produces SB3-native artifacts and nothing can run
+them until the first exporter arrives. Verification therefore rests on API
+conformance and training smoke rather than an export round-trip (see
+Verification).
+
+The trainer must checkpoint periodically as well as on best, because that is
+what the `strong`/`weak` axis is (see Prior state) and losing it would make the
+existing model set unreproducible once exporters exist.
 
 ## Order of work
 
@@ -241,8 +271,8 @@ existing model set unreproducible even after this work.
 4. Restore wrapper attribute forwarding at the ~11 sites, as explicit properties rather than a blanket `__getattr__`.
 5. Split `done` into `terminated`/`truncated` in `benchmark_env` and the three environments; update the 15 modules that reference `env.step`.
 6. Add the per-environment flag-semantics tests.
-7. Add the shared observation encoding and the training wrappers.
-8. Add `train_pendulum_sb3.py` and the exporter.
+7. Add the optional, config-selected observation and frame-skip wrappers.
+8. Add `train_sb3.py`, task-agnostic, driven by `ConfigFactory`.
 9. Full verification (below).
 
 Steps 1 and 2 are the ones that are tempting to skip. Skipping them makes every
@@ -255,12 +285,24 @@ later step unverifiable.
 - Golden rollouts for all four systems: match at `atol=1e-9`.
 - Invariant sets: `P`, `center`, `c` match the committed artifacts.
 - LQR dataset slice: labels, terminal states and `p_success` match exactly.
-- Flag-semantics tests pass for all four environments.
-- Export round-trip: train briefly, export, load through `PendulumRL`, and assert
-  its forward matches SB3's deterministic `predict()` on random observations
-  within `1e-6`. The existing port achieved `~3e-7`
-  (`forward_max_err` in `manifest.json`), so this tolerance is established rather
-  than invented.
+- Flag-semantics tests pass for all four environments, and `truncated` agrees
+  with the legacy `info['TimeLimit.truncated']` on every step.
+- **`stable_baselines3.common.env_checker.check_env` passes on every registered
+  environment.** This is the primary evidence that the migration is correct: it
+  validates the Gymnasium API contract directly — tuple arity, `reset` signature,
+  space conformance, dtype — rather than inferring correctness from tests that
+  happen to pass. It is also generic, so it covers systems that have no golden
+  fixtures.
+- **Training smoke per task:** a short `train_sb3.py` run on
+  `inverted_pendulum`, `cartpole` and `quadrotor` completes and writes a
+  loadable SB3 model. Asserts the framework is genuinely task-agnostic rather
+  than pendulum-shaped.
+
+There is deliberately no export round-trip check, because no exporter is in
+scope. The follow-on that adds the pendulum exporter must assert that its
+output, loaded through `PendulumRL`, matches SB3's deterministic `predict()`
+within `1e-6`; the existing port achieved `~3e-7` (`forward_max_err` in
+`manifest.json`), so that tolerance is established rather than invented.
 
 The pre-existing `test_pendulum_experiment.py` subprocess failure is out of
 scope and must remain the only failure; it must not be papered over as part of
@@ -268,6 +310,11 @@ this work.
 
 ## Out of scope
 
+- **Per-system exporters, including the pendulum's.** The immediate follow-on:
+  a native torch controller per system plus the exporter that fills it, starting
+  with the pendulum's 8-key `.pt` so `PendulumRL` and the `--controller
+  v3_strong` collection vocabulary pick up newly trained policies. Until it
+  lands, trained policies cannot be run in-repo.
 - **Noise-matched training.** Training policies under a noise preset so the
   closed loop is optimised for the noise it is collected at. This is the
   motivating follow-on and gets its own spec once the training path exists.
