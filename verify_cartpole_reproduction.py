@@ -5,8 +5,9 @@ Samples a few trajectories, re-runs them, and compares results.
 """
 
 import os
-import numpy as np
 from functools import partial
+
+import numpy as np
 
 from safe_control_gym.utils.registration import make
 
@@ -41,7 +42,8 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
 
     for step in range(max_steps):
         action = ctrl.select_action(obs, info)
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         x, x_dot, theta, theta_dot = obs[:4]
         trajectory.append([x, normalize_angle(theta), x_dot, theta_dot])
@@ -104,8 +106,8 @@ def main():
     random_indices = sorted(np.random.choice(116242, size=80, replace=False).tolist())
     test_indices = random_indices
 
-    print("Verifying trajectory reproduction...")
-    print("=" * 80)
+    print('Verifying trajectory reproduction...')
+    print('=' * 80)
 
     match_count = 0
     pi_edge_count = 0
@@ -115,7 +117,7 @@ def main():
     for idx in test_indices:
         filepath = os.path.join(traj_dir, f'sequence_{idx}.txt')
         if not os.path.exists(filepath):
-            print(f"  sequence_{idx}.txt not found, skipping")
+            print(f'  sequence_{idx}.txt not found, skipping')
             continue
 
         # Read existing trajectory
@@ -154,33 +156,33 @@ def main():
 
         if match:
             match_count += 1
-            status = "MATCH"
+            status = 'MATCH'
         elif is_pi_edge:
             pi_edge_count += 1
-            status = "PI_EDGE (expected)"
+            status = 'PI_EDGE (expected)'
         else:
             mismatch_count += 1
-            status = "MISMATCH"
+            status = 'MISMATCH'
 
-        print(f"  sequence_{idx}: len={len(existing_traj)} vs {len(new_traj)}, "
-              f"max_diff={max_diff:.8f}, init_theta={init_theta:.4f}, {status}")
+        print(f'  sequence_{idx}: len={len(existing_traj)} vs {len(new_traj)}, '
+              f'max_diff={max_diff:.8f}, init_theta={init_theta:.4f}, {status}')
 
         if not match and not is_pi_edge and len(existing_traj) > 0:
-            print(f"    Existing first: {existing_traj[0]}")
-            print(f"    New first:      {new_traj[0]}")
+            print(f'    Existing first: {existing_traj[0]}')
+            print(f'    New first:      {new_traj[0]}')
             if len(existing_traj) > 1 and len(new_traj) > 1:
-                print(f"    Existing second: {existing_traj[1]}")
-                print(f"    New second:      {new_traj[1]}")
+                print(f'    Existing second: {existing_traj[1]}')
+                print(f'    New second:      {new_traj[1]}')
 
-    print("=" * 80)
-    print(f"Results: {match_count} match, {pi_edge_count} pi-edge (expected), {mismatch_count} unexpected mismatch (out of {tested_count})")
+    print('=' * 80)
+    print(f'Results: {match_count} match, {pi_edge_count} pi-edge (expected), {mismatch_count} unexpected mismatch (out of {tested_count})')
     if mismatch_count == 0:
-        print("SUCCESS: All non-edge-case trajectories match!")
+        print('SUCCESS: All non-edge-case trajectories match!')
     else:
-        print("FAILURE: Unexpected mismatches found.")
+        print('FAILURE: Unexpected mismatches found.')
 
     # Also verify ROA labels for the sampled trajectories
-    print("\nVerifying ROA labels...")
+    print('\nVerifying ROA labels...')
 
     # Read roa_labels to build a lookup by init state
     roa_lookup = {}
@@ -212,10 +214,10 @@ def main():
 
         if existing_label is not None:
             match = new_label == existing_label
-            status = "MATCH" if match else "MISMATCH"
-            print(f"  sequence_{idx}: existing={existing_label}, new={new_label}, {status}")
+            status = 'MATCH' if match else 'MISMATCH'
+            print(f'  sequence_{idx}: existing={existing_label}, new={new_label}, {status}')
         else:
-            print(f"  sequence_{idx}: init state not found in roa_labels (state={state_key})")
+            print(f'  sequence_{idx}: init state not found in roa_labels (state={state_key})')
 
     env.close()
     ctrl.close()

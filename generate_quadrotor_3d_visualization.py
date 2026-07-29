@@ -24,18 +24,18 @@ Usage:
 import argparse
 import os
 import time
-import numpy as np
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, shared_memory
 
+import numpy as np
 import pybullet as pb
+from tqdm import tqdm
 
-from safe_control_gym.utils.registration import make
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 try:
-    import scipy.linalg
+    import scipy.linalg  # noqa: F401 (side-effecting pre-import, not referenced directly)
 except ImportError:
     pass
 
@@ -86,7 +86,8 @@ def run_trajectory(env, ctrl, init_state, max_steps):
 
     for step in range(max_steps):
         action = ctrl.select_action(obs, info)
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         if done:
             return info.get('goal_reached', False)
 
@@ -173,7 +174,7 @@ def _worker_process_chunk(chunk_info):
             abs(z_dot) >= cfg['z_dot_termination'] or
             abs(p_body) >= cfg['p_termination'] or
             abs(q_body) >= cfg['q_termination'] or
-            abs(r_body) >= cfg['r_termination']):
+                abs(r_body) >= cfg['r_termination']):
             _worker_labels[idx] = 0
         else:
             success = run_trajectory(_worker_env, _worker_ctrl, state, max_steps)
@@ -185,7 +186,7 @@ def _worker_process_chunk(chunk_info):
 def generate_slice(slice_name, grid_states, env_config, num_workers):
     """Generate labels for a grid of initial states."""
     n_states = len(grid_states)
-    print(f"\nGenerating {slice_name}: {n_states} states using {num_workers} workers...")
+    print(f'\nGenerating {slice_name}: {n_states} states using {num_workers} workers...')
 
     labels = np.zeros(n_states, dtype=np.int8)
     shm = shared_memory.SharedMemory(create=True, size=labels.nbytes)
@@ -208,7 +209,7 @@ def generate_slice(slice_name, grid_states, env_config, num_workers):
                 pbar.update(count)
 
     elapsed = time.time() - t0
-    print(f"  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)")
+    print(f'  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)')
 
     result_labels = np.array(shm_labels)
     shm.close()
@@ -232,15 +233,15 @@ def save_csv(grid_states, labels, filepath):
                     f'{p_body:.6f},{q_body:.6f},{r_body:.6f},'
                     f'{phi_n:.6f},{theta_n:.6f},{psi_n:.6f},'
                     f'{label}\n')
-    print(f"  Saved {len(labels)} states to {filepath}")
+    print(f'  Saved {len(labels)} states to {filepath}')
 
 
 def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
                title, filepath, N):
     import matplotlib
     matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
 
     label_grid = labels.reshape(N, N)
     fig, ax = plt.subplots(1, 1, figsize=(8, 7))
@@ -270,7 +271,7 @@ def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
     plt.tight_layout()
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  Saved plot to {filepath}")
+    print(f'  Saved plot to {filepath}')
 
 
 def main():
@@ -417,7 +418,7 @@ def main():
                    sd['row_label'], sd['col_label'], sd['title'],
                    os.path.join(args.output_dir, f"viz_{sd['suffix']}.png"), N)
 
-    print("\nDone!")
+    print('\nDone!')
 
 
 if __name__ == '__main__':

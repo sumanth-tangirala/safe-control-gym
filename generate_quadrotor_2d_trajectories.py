@@ -6,18 +6,19 @@ Discretizes the initial state space with 0.05 resolution and saves trajectories.
 
 import argparse
 import os
-import numpy as np
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
-import pybullet as p  # Import at module level to avoid multiprocessing issues
 
-from safe_control_gym.utils.registration import make
+import numpy as np
+import pybullet as p  # Import at module level to avoid multiprocessing issues
+from tqdm import tqdm
+
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 # Pre-import scipy to avoid multiprocessing import errors
 try:
-    import scipy.linalg
+    import scipy.linalg  # noqa: F401 (side-effecting pre-import, not referenced directly)
 except ImportError:
     pass
 
@@ -135,7 +136,7 @@ def generate_discretized_initial_states(bounds, resolution=0.05, termination_thr
                                     abs(theta) >= termination_thresholds['theta'] or
                                     abs(x_dot) >= termination_thresholds['x_dot'] or
                                     abs(z_dot) >= termination_thresholds['z_dot'] or
-                                    abs(theta_dot) >= termination_thresholds['theta_dot']):
+                                        abs(theta_dot) >= termination_thresholds['theta_dot']):
                                     continue
 
                             states.append([x, z, theta, x_dot, z_dot, theta_dot])
@@ -186,13 +187,13 @@ def generate_random_initial_states(bounds, num_samples, termination_thresholds=N
                 abs(theta) >= termination_thresholds['theta'] or
                 abs(x_dot) >= termination_thresholds['x_dot'] or
                 abs(z_dot) >= termination_thresholds['z_dot'] or
-                abs(theta_dot) >= termination_thresholds['theta_dot']):
+                    abs(theta_dot) >= termination_thresholds['theta_dot']):
                 continue
 
         states.append([x, z, theta, x_dot, z_dot, theta_dot])
 
     if len(states) < num_samples:
-        print(f"Warning: Could only generate {len(states)} valid states out of {num_samples} requested")
+        print(f'Warning: Could only generate {len(states)} valid states out of {num_samples} requested')
 
     return states
 
@@ -230,7 +231,7 @@ def generate_stratified_initial_states(bounds, discretizations, termination_thre
     n_x, n_z, n_theta = len(x_vals), len(z_vals), len(theta_vals)
     n_x_dot, n_z_dot, n_theta_dot = len(x_dot_vals), len(z_dot_vals), len(theta_dot_vals)
     total_points = n_x * n_z * n_theta * n_x_dot * n_z_dot * n_theta_dot
-    print(f"Grid dimensions: {n_x} x {n_z} x {n_theta} x {n_x_dot} x {n_z_dot} x {n_theta_dot} = {total_points} points")
+    print(f'Grid dimensions: {n_x} x {n_z} x {n_theta} x {n_x_dot} x {n_z_dot} x {n_theta_dot} = {total_points} points')
 
     # Vectorized generation using meshgrid
     grid = np.meshgrid(x_vals, z_vals, theta_vals, x_dot_vals, z_dot_vals, theta_dot_vals, indexing='ij')
@@ -250,7 +251,7 @@ def generate_stratified_initial_states(bounds, discretizations, termination_thre
             (np.abs(states[:, 5]) < termination_thresholds['theta_dot'])
         )
         states = states[valid_mask]
-        print(f"After filtering: {len(states)} valid states")
+        print(f'After filtering: {len(states)} valid states')
 
     return states.tolist()
 
@@ -307,8 +308,9 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000):
         # Get action from LQR controller
         action = ctrl.select_action(obs, info)
 
-        # Take step in environment (old Gym API returns 4 values)
-        obs, reward, done, info = env.step(action)
+        # Take step in environment
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         # Extract state (env obs order: x, x_dot, z, z_dot, theta, theta_dot)
         x, x_dot, z, z_dot, theta, theta_dot = obs[:6]
@@ -364,16 +366,16 @@ def process_single_trajectory(args_tuple):
 
     # Create environment and controller for this worker
     env_func = partial(make,
-                      'quadrotor',
-                      quad_type=QuadType.TWO_D,
-                      task=env_config['task'],
-                      ctrl_freq=env_config['ctrl_freq'],
-                      pyb_freq=env_config['pyb_freq'],
-                      episode_len_sec=env_config['episode_len_sec'],
-                      done_on_out_of_bound=env_config['done_on_out_of_bound'],
-                      cost=env_config['cost'],
-                      gui=False,
-                      randomized_init=False)
+                       'quadrotor',
+                       quad_type=QuadType.TWO_D,
+                       task=env_config['task'],
+                       ctrl_freq=env_config['ctrl_freq'],
+                       pyb_freq=env_config['pyb_freq'],
+                       episode_len_sec=env_config['episode_len_sec'],
+                       done_on_out_of_bound=env_config['done_on_out_of_bound'],
+                       cost=env_config['cost'],
+                       gui=False,
+                       randomized_init=False)
 
     ctrl = make('lqr',
                 env_func,
@@ -492,7 +494,7 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path):
     traj_files = sorted(glob.glob(os.path.join(trajectories_dir, 'sequence_*.txt')))
 
     if not traj_files:
-        print(f"Warning: No trajectory files found in {trajectories_dir}")
+        print(f'Warning: No trajectory files found in {trajectories_dir}')
         return 0, 0, 0
 
     total_states = 0
@@ -500,7 +502,7 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path):
     failure_traj_count = 0
 
     with open(output_path, 'w') as f_out:
-        for traj_file in tqdm(traj_files, desc="Generating ROA labels"):
+        for traj_file in tqdm(traj_files, desc='Generating ROA labels'):
             # Read trajectory
             states = []
             with open(traj_file, 'r') as f_in:
@@ -627,47 +629,47 @@ def main():
 
     # Handle --generate_roa_only mode
     if args.generate_roa_only:
-        print(f"Generating ROA labels from existing trajectory files...")
-        print(f"Trajectories directory: {trajectories_dir}")
+        print('Generating ROA labels from existing trajectory files...')
+        print(f'Trajectories directory: {trajectories_dir}')
 
         total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path
         )
 
-        print(f"\nROA labels saved to: {roa_labels_path}")
-        print(f"  Total trajectories processed: {success_trajs + failure_trajs}")
-        print(f"  Successful trajectories: {success_trajs}")
-        print(f"  Failed trajectories: {failure_trajs}")
-        print(f"  Total state-label pairs: {total_states}")
+        print(f'\nROA labels saved to: {roa_labels_path}')
+        print(f'  Total trajectories processed: {success_trajs + failure_trajs}')
+        print(f'  Successful trajectories: {success_trajs}')
+        print(f'  Failed trajectories: {failure_trajs}')
+        print(f'  Total state-label pairs: {total_states}')
         return
 
     # Check existing trajectories and calculate how many more are needed
     existing_count, start_idx = count_existing_trajectories(trajectories_dir)
 
     if existing_count > 0:
-        print(f"Found {existing_count} existing trajectories in {trajectories_dir}")
-        print(f"Next trajectory index: {start_idx}")
+        print(f'Found {existing_count} existing trajectories in {trajectories_dir}')
+        print(f'Next trajectory index: {start_idx}')
 
     if args.random_init:
         # For random init, check if we already have enough trajectories
         if existing_count >= args.num_trajs:
-            print(f"Target of {args.num_trajs} trajectories already reached ({existing_count} exist).")
-            print(f"Skipping trajectory generation, generating ROA labels from existing files...")
+            print(f'Target of {args.num_trajs} trajectories already reached ({existing_count} exist).')
+            print('Skipping trajectory generation, generating ROA labels from existing files...')
 
             total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
                 trajectories_dir, roa_labels_path
             )
 
-            print(f"\nROA labels saved to: {roa_labels_path}")
-            print(f"  Total trajectories processed: {success_trajs + failure_trajs}")
-            print(f"  Successful trajectories: {success_trajs}")
-            print(f"  Failed trajectories: {failure_trajs}")
-            print(f"  Total state-label pairs: {total_states}")
+            print(f'\nROA labels saved to: {roa_labels_path}')
+            print(f'  Total trajectories processed: {success_trajs + failure_trajs}')
+            print(f'  Successful trajectories: {success_trajs}')
+            print(f'  Failed trajectories: {failure_trajs}')
+            print(f'  Total state-label pairs: {total_states}')
             return
 
         # Calculate how many more trajectories to generate
         num_to_generate = args.num_trajs - existing_count
-        print(f"Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}")
+        print(f'Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}')
 
     # Set default termination thresholds
     # Position termination
@@ -718,8 +720,8 @@ def main():
     if args.stratified:
         # Stratified grid sampling
         if existing_count > 0:
-            print(f"Warning: {existing_count} trajectories already exist. Stratified mode will add new trajectories starting from index {start_idx}.")
-        print("Generating stratified initial states...")
+            print(f'Warning: {existing_count} trajectories already exist. Stratified mode will add new trajectories starting from index {start_idx}.')
+        print('Generating stratified initial states...')
         discretizations = {
             'x': args.x_disc,
             'z': args.z_disc,
@@ -731,27 +733,27 @@ def main():
         initial_states = generate_stratified_initial_states(
             bounds, discretizations, termination_thresholds
         )
-        print(f"Generated {len(initial_states)} stratified initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} stratified initial states (excluding those that violate termination bounds)')
     elif args.random_init:
-        print(f"Generating {num_to_generate} random initial states...")
+        print(f'Generating {num_to_generate} random initial states...')
         initial_states = generate_random_initial_states(bounds, num_to_generate, termination_thresholds, args.seed)
-        print(f"Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)')
     else:
         # For discretized mode, generate all states (resumption not supported for grid)
         if existing_count > 0:
-            print(f"Warning: {existing_count} trajectories already exist. Discretized mode will add new trajectories starting from index {start_idx}.")
-        print("Generating discretized initial states...")
+            print(f'Warning: {existing_count} trajectories already exist. Discretized mode will add new trajectories starting from index {start_idx}.')
+        print('Generating discretized initial states...')
         initial_states = generate_discretized_initial_states(bounds, args.resolution, termination_thresholds)
-        print(f"Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)')
 
     # Confirmation prompt for stratified mode
     if args.stratified and not args.yes:
         print(f"\n{'='*60}")
-        print(f"Will generate {len(initial_states):,} trajectories.")
+        print(f'Will generate {len(initial_states):,} trajectories.')
         print(f"{'='*60}")
-        response = input("Proceed? [y/N]: ").strip().lower()
+        response = input('Proceed? [y/N]: ').strip().lower()
         if response != 'y':
-            print("Aborted.")
+            print('Aborted.')
             return
 
     # Calculate control frequency based on save_freq
@@ -788,12 +790,12 @@ def main():
         'theta_dot_termination': args.theta_dot_termination
     }
 
-    print(f"Termination thresholds: x=±{args.x_termination}, z=[{args.z_min_termination}, {args.z_max_termination}], "
-          f"theta=±{args.theta_termination}, x_dot=±{args.x_dot_termination}, "
-          f"z_dot=±{args.z_dot_termination}, theta_dot=±{args.theta_dot_termination}")
-    print(f"Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)")
-    print(f"Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)")
-    print(f"Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)")
+    print(f'Termination thresholds: x=±{args.x_termination}, z=[{args.z_min_termination}, {args.z_max_termination}], '
+          f'theta=±{args.theta_termination}, x_dot=±{args.x_dot_termination}, '
+          f'z_dot=±{args.z_dot_termination}, theta_dot=±{args.theta_dot_termination}')
+    print(f'Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)')
+    print(f'Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)')
+    print(f'Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)')
 
     # Initialize statistics tracking
     # State order: [x, z, theta, x_dot, z_dot, theta_dot]
@@ -815,7 +817,7 @@ def main():
         # Get number of CPUs available (respecting taskset/affinity)
         num_workers = args.num_workers if args.num_workers else get_available_cpus()
 
-        print(f"Generating trajectories using {num_workers} CPU cores (parallel mode)...")
+        print(f'Generating trajectories using {num_workers} CPU cores (parallel mode)...')
 
         # Create arguments for each individual trajectory
         # Use start_idx to allow resuming from a previous run
@@ -829,7 +831,7 @@ def main():
             traj_results = list(tqdm(
                 pool.imap_unordered(process_single_trajectory, trajectory_args),
                 total=len(initial_states),
-                desc="Generating trajectories"
+                desc='Generating trajectories'
             ))
 
         # Aggregate statistics from all trajectories
@@ -855,20 +857,20 @@ def main():
 
     else:
         # Sequential execution
-        print(f"Generating trajectories sequentially (single core)...")
+        print('Generating trajectories sequentially (single core)...')
 
         # Create environment and controller once for sequential execution
         env_func = partial(make,
-                          'quadrotor',
-                          quad_type=QuadType.TWO_D,
-                          task=env_config['task'],
-                          ctrl_freq=env_config['ctrl_freq'],
-                          pyb_freq=env_config['pyb_freq'],
-                          episode_len_sec=env_config['episode_len_sec'],
-                          done_on_out_of_bound=env_config['done_on_out_of_bound'],
-                          cost=env_config['cost'],
-                          gui=False,
-                          randomized_init=False)
+                           'quadrotor',
+                           quad_type=QuadType.TWO_D,
+                           task=env_config['task'],
+                           ctrl_freq=env_config['ctrl_freq'],
+                           pyb_freq=env_config['pyb_freq'],
+                           episode_len_sec=env_config['episode_len_sec'],
+                           done_on_out_of_bound=env_config['done_on_out_of_bound'],
+                           cost=env_config['cost'],
+                           gui=False,
+                           randomized_init=False)
 
         ctrl = make('lqr',
                     env_func,
@@ -888,7 +890,7 @@ def main():
         env.state_space.high[4] = env_config['theta_termination']
 
         # Process trajectories sequentially
-        for i, init_state in enumerate(tqdm(initial_states, desc="Generating trajectories")):
+        for i, init_state in enumerate(tqdm(initial_states, desc='Generating trajectories')):
             # Run trajectory
             trajectory, success, timeout = run_trajectory(env, ctrl, init_state, env_config['max_steps'])
 
@@ -938,22 +940,22 @@ def main():
         ctrl.close()
 
     if args.skip_save:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories (files not saved)")
-        print(f"Note: ROA labels cannot be generated when --skip_save is used")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories (files not saved)')
+        print('Note: ROA labels cannot be generated when --skip_save is used')
     else:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}")
-        print(f"Each file contains a trajectory with states in format: x,z,theta,x_dot,z_dot,theta_dot")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}')
+        print('Each file contains a trajectory with states in format: x,z,theta,x_dot,z_dot,theta_dot')
 
         # Generate ROA labels from saved trajectory files (post-processing)
-        print(f"\nGenerating ROA labels from saved trajectories...")
+        print('\nGenerating ROA labels from saved trajectories...')
         roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
         total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path
         )
-        print(f"ROA labels saved to: {roa_labels_path}")
-        print(f"  Total state-label pairs: {total_states}")
-        print(f"  From successful trajectories: {success_trajs}")
-        print(f"  From failed trajectories: {failure_trajs}")
+        print(f'ROA labels saved to: {roa_labels_path}')
+        print(f'  Total state-label pairs: {total_states}')
+        print(f'  From successful trajectories: {success_trajs}')
+        print(f'  From failed trajectories: {failure_trajs}')
 
     # Print success rate and trajectory statistics
     success_rate = (stats['success_count'] / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
@@ -962,28 +964,28 @@ def main():
     failed_rate = (failed_count / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
 
     print(f"\n{'='*80}")
-    print(f"Trajectory Statistics:")
+    print('Trajectory Statistics:')
     print(f"{'='*80}")
     print(f"  Total trajectories:     {stats['total_count']}")
     print(f"  Successful (goal):      {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds): {failed_count} ({failed_rate:.2f}%)")
+    print(f'  Failed (out of bounds): {failed_count} ({failed_rate:.2f}%)')
     print(f"  Timeout (max steps):    {stats['timeout_count']} ({timeout_rate:.2f}%)")
     print(f"  Max trajectory length:  {stats['max_traj_length']} states")
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")
-    print(f"Actual Achieved Bounds Across All Trajectories:")
+    print('Actual Achieved Bounds Across All Trajectories:')
     print(f"{'='*80}")
 
     # Helper function to format state
     # State order: [x, z, theta, x_dot, z_dot, theta_dot]
     def format_state(state):
         if state is None:
-            return "N/A (initial state)"
-        return f"[x={state[0]:>7.3f}, z={state[1]:>7.3f}, θ={state[2]:>7.3f}, ẋ={state[3]:>7.3f}, ż={state[4]:>7.3f}, θ̇={state[5]:>7.3f}]"
+            return 'N/A (initial state)'
+        return f'[x={state[0]:>7.3f}, z={state[1]:>7.3f}, θ={state[2]:>7.3f}, ẋ={state[3]:>7.3f}, ż={state[4]:>7.3f}, θ̇={state[5]:>7.3f}]'
 
     for var_name, var_label in [('x', 'x'), ('z', 'z'), ('theta', 'theta'), ('x_dot', 'x_dot'), ('z_dot', 'z_dot'), ('theta_dot', 'theta_dot')]:
-        print(f"\n  {var_label}:")
+        print(f'\n  {var_label}:')
         print(f"    Min: {stats[var_name]['min']:>10.6f}")
         if stats[var_name]['prev_at_min'] is not None:
             print(f"         Previous state: {format_state(stats[var_name]['prev_at_min'])}")

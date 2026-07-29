@@ -6,14 +6,15 @@ Uses random sampling and binary search to efficiently find appropriate bounds.
 
 import argparse
 import os
-import numpy as np
 from functools import partial
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
-import pybullet as p
 
-from safe_control_gym.utils.registration import make
+import numpy as np
+import pybullet as p
+from tqdm import tqdm
+
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 
 def normalize_angle(angle):
@@ -74,7 +75,8 @@ def run_trajectory(env, ctrl, init_state, max_steps):
 
     while not done and steps < max_steps:
         action = ctrl.select_action(obs, info)
-        obs, reward, done, info = env.step(action)  # Old Gym API returns 4 values
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         steps += 1
 
         # Check for goal reached
@@ -103,16 +105,16 @@ def evaluate_single_trajectory(args):
     pyb_freq = ctrl_freq * 50  # 5000 Hz
 
     env_func = partial(make,
-                      'quadrotor',
-                      quad_type=QuadType.TWO_D,
-                      task='stabilization',
-                      ctrl_freq=ctrl_freq,
-                      pyb_freq=pyb_freq,
-                      episode_len_sec=10,
-                      done_on_out_of_bound=True,
-                      cost='quadratic',
-                      gui=False,
-                      randomized_init=False)
+                       'quadrotor',
+                       quad_type=QuadType.TWO_D,
+                       task='stabilization',
+                       ctrl_freq=ctrl_freq,
+                       pyb_freq=pyb_freq,
+                       episode_len_sec=10,
+                       done_on_out_of_bound=True,
+                       cost='quadratic',
+                       gui=False,
+                       randomized_init=False)
 
     ctrl = make('lqr',
                 env_func,
@@ -190,13 +192,13 @@ def evaluate_bounds(bounds, n_samples, seed=None, parallel=True, num_workers=Non
             results = list(tqdm(
                 pool.imap(evaluate_single_trajectory, worker_args),
                 total=n_samples,
-                desc="Evaluating",
+                desc='Evaluating',
                 leave=False
             ))
     else:
         # Run sequentially
         results = []
-        for args in tqdm(worker_args, desc="Evaluating", leave=False):
+        for args in tqdm(worker_args, desc='Evaluating', leave=False):
             results.append(evaluate_single_trajectory(args))
 
     # Count successes and timeouts
@@ -243,9 +245,9 @@ def binary_search_scale(base_bounds, target_success_rate, n_samples, tolerance=0
     Returns:
         tuple: (best_scale, best_bounds, best_stats)
     """
-    print(f"\nBinary search for {target_success_rate*100:.0f}% success rate...")
-    print(f"Scale range: [{min_scale}, {max_scale}]")
-    print("-" * 70)
+    print(f'\nBinary search for {target_success_rate*100:.0f}% success rate...')
+    print(f'Scale range: [{min_scale}, {max_scale}]')
+    print('-' * 70)
 
     low, high = min_scale, max_scale
     best_scale = None
@@ -261,7 +263,7 @@ def binary_search_scale(base_bounds, target_success_rate, n_samples, tolerance=0
         success_rate = stats['success_rate']
         diff = abs(success_rate - target_success_rate)
 
-        print(f"Iter {i+1}: scale={mid:.3f}, success_rate={success_rate*100:.1f}%")
+        print(f'Iter {i+1}: scale={mid:.3f}, success_rate={success_rate*100:.1f}%')
 
         if diff < best_diff:
             best_diff = diff
@@ -270,7 +272,7 @@ def binary_search_scale(base_bounds, target_success_rate, n_samples, tolerance=0
             best_stats = stats
 
         if diff <= tolerance:
-            print(f"  -> Within tolerance! Found good scale.")
+            print('  -> Within tolerance! Found good scale.')
             break
 
         # Higher scale = harder = lower success rate
@@ -286,9 +288,9 @@ def grid_search_individual(base_bounds, n_samples, seed=None):
     """
     Grid search over individual bound dimensions to understand sensitivity.
     """
-    print("\n" + "=" * 70)
-    print("INDIVIDUAL DIMENSION SENSITIVITY ANALYSIS")
-    print("=" * 70)
+    print('\n' + '=' * 70)
+    print('INDIVIDUAL DIMENSION SENSITIVITY ANALYSIS')
+    print('=' * 70)
 
     # Test scaling each dimension individually (theta stays fixed at pi)
     dimensions = ['x', 'z_max', 'x_dot', 'z_dot', 'theta_dot']
@@ -297,7 +299,7 @@ def grid_search_individual(base_bounds, n_samples, seed=None):
     results = {}
 
     for dim in dimensions:
-        print(f"\nScaling {dim}:")
+        print(f'\nScaling {dim}:')
         results[dim] = []
 
         for sf in scale_factors:
@@ -317,15 +319,15 @@ def maximize_success_rate(base_bounds, n_samples, seed=None):
     Find the scale factor that maximizes success rate.
     Tests a comprehensive range and reports detailed statistics.
     """
-    print("\n" + "=" * 70)
-    print("MAXIMIZE SUCCESS RATE")
-    print("=" * 70)
-    print("Testing comprehensive range of scale factors to find maximum achievable success rate.")
-    print(f"Using {n_samples} samples per configuration for reliable statistics.")
+    print('\n' + '=' * 70)
+    print('MAXIMIZE SUCCESS RATE')
+    print('=' * 70)
+    print('Testing comprehensive range of scale factors to find maximum achievable success rate.')
+    print(f'Using {n_samples} samples per configuration for reliable statistics.')
 
     # Test more granular range
     scale_factors = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0,
-                    1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0]
+                     1.2, 1.4, 1.6, 1.8, 2.0, 2.5, 3.0]
 
     results = []
     best_success_rate = 0
@@ -334,37 +336,37 @@ def maximize_success_rate(base_bounds, n_samples, seed=None):
     best_stats = None
 
     print(f"\n{'Scale':<10} {'Success Rate':<15} {'Timeout Rate':<15} {'Status':<20}")
-    print("-" * 70)
+    print('-' * 70)
 
-    for sf in tqdm(scale_factors, desc="Testing scale factors"):
+    for sf in tqdm(scale_factors, desc='Testing scale factors'):
         bounds = scale_bounds(base_bounds, sf)
         stats = evaluate_bounds(bounds, n_samples, seed=seed)
         results.append((sf, stats))
 
-        status = ""
+        status = ''
         if stats['success_rate'] > best_success_rate:
             best_success_rate = stats['success_rate']
             best_scale = sf
             best_bounds = bounds
             best_stats = stats
-            status = "← NEW BEST"
+            status = '← NEW BEST'
 
         print(f"{sf:<10.2f} {stats['success_rate']*100:<15.1f}% {stats['timeout_rate']*100:<15.1f}% {status:<20}")
 
-    print("\n" + "=" * 70)
-    print("BEST CONFIGURATION FOUND")
-    print("=" * 70)
-    print(f"Scale factor: {best_scale:.3f}")
+    print('\n' + '=' * 70)
+    print('BEST CONFIGURATION FOUND')
+    print('=' * 70)
+    print(f'Scale factor: {best_scale:.3f}')
     print(f"Success rate: {best_stats['success_rate']*100:.1f}%")
     print(f"Timeout rate: {best_stats['timeout_rate']*100:.1f}%")
-    print(f"\nBounds:")
+    print('\nBounds:')
     for k, v in best_bounds.items():
-        print(f"  {k}: {v:.4f}")
+        print(f'  {k}: {v:.4f}')
 
     # Also find configurations near common target rates
-    print("\n" + "=" * 70)
-    print("CONFIGURATIONS NEAR TARGET RATES")
-    print("=" * 70)
+    print('\n' + '=' * 70)
+    print('CONFIGURATIONS NEAR TARGET RATES')
+    print('=' * 70)
 
     target_rates = [0.40, 0.50, 0.60, 0.70]
     for target in target_rates:
@@ -412,18 +414,18 @@ def main():
         'theta_dot': args.base_theta_dot
     }
 
-    print("=" * 70)
-    print("2D QUADROTOR BOUNDS CALIBRATION")
-    print("=" * 70)
-    print(f"\nBase bounds:")
+    print('=' * 70)
+    print('2D QUADROTOR BOUNDS CALIBRATION')
+    print('=' * 70)
+    print('\nBase bounds:')
     for k, v in base_bounds.items():
-        print(f"  {k}: {v}")
-    print(f"\nTarget success rate: {args.target_success_rate*100:.0f}%")
-    print(f"Samples per evaluation: {args.n_samples}")
+        print(f'  {k}: {v}')
+    print(f'\nTarget success rate: {args.target_success_rate*100:.0f}%')
+    print(f'Samples per evaluation: {args.n_samples}')
 
     # First, evaluate base bounds
-    print("\n" + "-" * 70)
-    print("Evaluating base bounds...")
+    print('\n' + '-' * 70)
+    print('Evaluating base bounds...')
     base_stats = evaluate_bounds(base_bounds, args.n_samples, seed=args.seed)
     print(f"Base bounds success rate: {base_stats['success_rate']*100:.1f}%")
     print(f"  (success: {base_stats['success_count']}, timeout: {base_stats['timeout_count']}, total: {base_stats['total_count']})")
@@ -436,9 +438,9 @@ def main():
             base_bounds, n_samples_maximize, seed=args.seed
         )
 
-        print("\n" + "-" * 70)
-        print("RECOMMENDED BOUNDS FOR MAXIMUM SUCCESS RATE")
-        print("-" * 70)
+        print('\n' + '-' * 70)
+        print('RECOMMENDED BOUNDS FOR MAXIMUM SUCCESS RATE')
+        print('-' * 70)
         print(f"  --x_bound {best_bounds['x']:.4f} \\")
         print(f"  --z_min {best_bounds['z_min']:.4f} \\")
         print(f"  --z_max {best_bounds['z_max']:.4f} \\")
@@ -454,18 +456,18 @@ def main():
             args.tolerance, seed=args.seed
         )
 
-        print("\n" + "=" * 70)
-        print("RECOMMENDED BOUNDS (from binary search)")
-        print("=" * 70)
-        print(f"Scale factor: {best_scale:.3f}")
+        print('\n' + '=' * 70)
+        print('RECOMMENDED BOUNDS (from binary search)')
+        print('=' * 70)
+        print(f'Scale factor: {best_scale:.3f}')
         print(f"Success rate: {best_stats['success_rate']*100:.1f}%")
-        print(f"\nBounds:")
+        print('\nBounds:')
         for k, v in best_bounds.items():
-            print(f"  {k}: {v:.4f}")
+            print(f'  {k}: {v:.4f}')
 
-        print("\n" + "-" * 70)
-        print("Command line arguments for generate_quadrotor_2d_trajectories.py:")
-        print("-" * 70)
+        print('\n' + '-' * 70)
+        print('Command line arguments for generate_quadrotor_2d_trajectories.py:')
+        print('-' * 70)
         print(f"  --x_bound {best_bounds['x']:.4f} \\")
         print(f"  --z_min {best_bounds['z_min']:.4f} \\")
         print(f"  --z_max {best_bounds['z_max']:.4f} \\")
@@ -476,14 +478,14 @@ def main():
 
     if args.mode in ['grid', 'all']:
         # Grid search over scale factors
-        print("\n" + "=" * 70)
-        print("GRID SEARCH OVER SCALE FACTORS")
-        print("=" * 70)
+        print('\n' + '=' * 70)
+        print('GRID SEARCH OVER SCALE FACTORS')
+        print('=' * 70)
 
         scale_factors = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
         print(f"\n{'Scale':<10} {'Success Rate':<15} {'Timeout Rate':<15}")
-        print("-" * 40)
+        print('-' * 40)
 
         for sf in scale_factors:
             bounds = scale_bounds(base_bounds, sf)

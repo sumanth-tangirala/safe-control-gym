@@ -13,13 +13,15 @@ Usage:
 
 import argparse
 import os
+import tempfile
+from functools import partial
+
 import numpy as np
 import pybullet as p
 import pybullet_data
-import tempfile
-from functools import partial
-from safe_control_gym.utils.registration import make
+
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 # ============ CONFIGURATION ============
 # Initial state: [x, z, theta, x_dot, z_dot, theta_dot] (output order)
@@ -117,6 +119,7 @@ def normalize_angle(angle):
 def _patch_safe_ppo_act():
     """Monkey-patch SafePPO act() to work around torch/numpy incompatibility."""
     import torch
+
     from safe_control_gym.controllers.safe_explorer import safe_ppo_utils
 
     def patched_act(self, obs, c=None):
@@ -223,15 +226,16 @@ def run_and_record(output_dir, model_path):
     pos0, orn0 = p.getBasePositionAndOrientation(env.DRONE_ID, physicsClientId=env.PYB_CLIENT)
     poses.append((list(pos0), list(orn0)))
 
-    print(f"Initial state: x={x:.3f}, z={z:.3f}, theta={theta:.3f}, x_dot={x_dot:.3f}, z_dot={z_dot:.3f}, theta_dot={theta_dot:.3f}")
-    print(f"Running physics rollout (max {MAX_STEPS} steps)...")
+    print(f'Initial state: x={x:.3f}, z={z:.3f}, theta={theta:.3f}, x_dot={x_dot:.3f}, z_dot={z_dot:.3f}, theta_dot={theta_dot:.3f}')
+    print(f'Running physics rollout (max {MAX_STEPS} steps)...')
 
     success = False
     with torch.no_grad():
         for step in range(MAX_STEPS):
             normalized_obs = ctrl.obs_normalizer(obs)
             action = ctrl.select_action(normalized_obs, info)
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
 
             # Record pose
             pos_i, orn_i = p.getBasePositionAndOrientation(env.DRONE_ID, physicsClientId=env.PYB_CLIENT)
@@ -251,7 +255,7 @@ def run_and_record(output_dir, model_path):
     env.close()
 
     # ---- Phase 2: Replay with scaled drone, capture video ----
-    print("Rendering video with scaled drone...")
+    print('Rendering video with scaled drone...')
 
     client = p.connect(p.DIRECT)
     p.setAdditionalSearchPath(pybullet_data.getDataPath(), physicsClientId=client)
@@ -307,12 +311,12 @@ def run_and_record(output_dir, model_path):
     p.disconnect(client)
 
     # Save video
-    video_path = os.path.join(output_dir, "quadrotor_2d_rollout.mp4")
+    video_path = os.path.join(output_dir, 'quadrotor_2d_rollout.mp4')
     save_video(frames, video_path, FPS)
 
     # Save x-z trajectory plot
     state_history = np.array(state_history)
-    plot_path = os.path.join(output_dir, "quadrotor_2d_rollout_xz.png")
+    plot_path = os.path.join(output_dir, 'quadrotor_2d_rollout_xz.png')
     plot_xz_trajectory(state_history, plot_path, success)
 
 
@@ -322,7 +326,7 @@ def save_video(frames, path, fps):
     for frame in frames:
         writer.append_data(frame)
     writer.close()
-    print(f"Saved video: {path} ({len(frames)} frames, {fps} fps, {len(frames)/fps:.1f}s)")
+    print(f'Saved video: {path} ({len(frames)} frames, {fps} fps, {len(frames)/fps:.1f}s)')
 
 
 def plot_xz_trajectory(states, path, success):
@@ -341,7 +345,7 @@ def plot_xz_trajectory(states, path, success):
     for i in range(n - 1):
         t = i / max(n - 1, 1)
         color = (0.2 + 0.6 * t, 0.3 * (1 - t), 0.8 * (1 - t))
-        ax.plot(x_vals[i:i+2], z_vals[i:i+2], color=color, linewidth=1.5)
+        ax.plot(x_vals[i:i + 2], z_vals[i:i + 2], color=color, linewidth=1.5)
 
     # Mark start and end
     ax.plot(x_vals[0], z_vals[0], 'bo', markersize=10, label='Start', zorder=5)
@@ -371,7 +375,7 @@ def plot_xz_trajectory(states, path, success):
     plt.tight_layout()
     plt.savefig(path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"Saved plot: {path}")
+    print(f'Saved plot: {path}')
 
 
 def main():
@@ -384,7 +388,7 @@ def main():
     args = parser.parse_args()
 
     run_and_record(args.output_dir, args.model_path)
-    print("\nDone!")
+    print('\nDone!')
 
 
 if __name__ == '__main__':

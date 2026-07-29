@@ -21,13 +21,12 @@ Usage:
 
 import argparse
 import os
-import sys
 import time
-import numpy as np
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, shared_memory
-import struct
+
+import numpy as np
+from tqdm import tqdm
 
 from safe_control_gym.utils.registration import make
 
@@ -63,7 +62,8 @@ def run_trajectory(env, ctrl, init_state, max_steps):
 
     for step in range(max_steps):
         action = ctrl.select_action(obs, info)
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         if done:
             return info.get('goal_reached', False)
 
@@ -72,7 +72,6 @@ def run_trajectory(env, ctrl, init_state, max_steps):
 
 def _worker_init(shm_name, shm_shape, shm_dtype, env_config):
     """Initialize per-worker env/ctrl once, attach to shared memory for results."""
-    import pybullet as p
     global _worker_env, _worker_ctrl, _worker_shm, _worker_labels, _worker_config
 
     _worker_config = env_config
@@ -134,7 +133,7 @@ def _worker_process_chunk(chunk_info):
 def generate_slice(slice_name, grid_states, env_config, num_workers):
     """Generate labels for a grid of initial states using parallel workers with shared memory."""
     n_states = len(grid_states)
-    print(f"\nGenerating {slice_name}: {n_states} states using {num_workers} workers...")
+    print(f'\nGenerating {slice_name}: {n_states} states using {num_workers} workers...')
 
     # Create shared memory for labels
     labels = np.zeros(n_states, dtype=np.int8)
@@ -162,7 +161,7 @@ def generate_slice(slice_name, grid_states, env_config, num_workers):
                 pbar.update(count)
 
     elapsed = time.time() - t0
-    print(f"  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)")
+    print(f'  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)')
 
     # Copy results from shared memory
     result_labels = np.array(shm_labels)
@@ -179,7 +178,7 @@ def save_csv(grid_states, labels, filepath):
         for state, label in zip(grid_states, labels):
             x, x_dot, theta, theta_dot = state
             f.write(f'{x:.6f},{normalize_angle(theta):.6f},{x_dot:.6f},{theta_dot:.6f},{label}\n')
-    print(f"  Saved {len(labels)} states to {filepath}")
+    print(f'  Saved {len(labels)} states to {filepath}')
 
 
 def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
@@ -187,8 +186,8 @@ def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
     """Plot a 2D heatmap of ROA labels."""
     import matplotlib
     matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
 
     label_grid = labels.reshape(N, N)
 
@@ -219,7 +218,7 @@ def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
     plt.tight_layout()
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  Saved plot to {filepath}")
+    print(f'  Saved plot to {filepath}')
 
 
 def main():
@@ -360,7 +359,7 @@ def main():
                    sd['row_label'], sd['col_label'], sd['title'],
                    os.path.join(args.output_dir, f"viz_{sd['suffix']}.png"), N)
 
-    print("\nDone!")
+    print('\nDone!')
 
 
 if __name__ == '__main__':

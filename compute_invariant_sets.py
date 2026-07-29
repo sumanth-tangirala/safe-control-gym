@@ -104,6 +104,7 @@ class Cartpole(System):
 
     def __init__(self):
         from functools import partial
+
         from safe_control_gym.utils.registration import make
         env_func = partial(make, 'cartpole', task='stabilization', ctrl_freq=100,
                            pyb_freq=5000, episode_len_sec=1000,
@@ -135,7 +136,8 @@ class Cartpole(System):
         out[0] = env.state
         for t in range(steps):
             action = self.ctrl.select_action(obs, info)
-            obs, _, done, info = env.step(action)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated  # noqa: F841 (unused, matches pre-migration behaviour)
             out[t + 1] = obs[:4]
         return out
 
@@ -156,8 +158,9 @@ class Quad3D(System):
 
     def __init__(self):
         from functools import partial
-        from safe_control_gym.utils.registration import make
+
         from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+        from safe_control_gym.utils.registration import make
         task_info = {'stabilization_goal': [0, 0, 1],
                      'stabilization_goal_tolerance': 0.0}
         env_func = partial(make, 'quadrotor', quad_type=QuadType.THREE_D,
@@ -190,7 +193,8 @@ class Quad3D(System):
         out[0] = obs[:12]
         for t in range(steps):
             action = self.ctrl.select_action(obs, info)
-            obs, _, done, info = env.step(action)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated  # noqa: F841 (unused, matches pre-migration behaviour)
             out[t + 1] = obs[:12]
         return out
 
@@ -209,9 +213,10 @@ class Quad2D(System):
     def __init__(self):
         import tempfile
         from functools import partial
+
         import generate_quadrotor_2d_trajectories_rl as g
-        from safe_control_gym.utils.registration import make
         from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+        from safe_control_gym.utils.registration import make
         self._g = g
         algo = 'safe_explorer_ppo'
         model_path = g.get_default_model_path(
@@ -264,7 +269,8 @@ class Quad2D(System):
         out[0] = obs[:6]
         for t in range(steps):
             action = self.ctrl.select_action(self.ctrl.obs_normalizer(obs), info)
-            obs, _, done, info = env.step(action)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated  # noqa: F841 (unused, matches pre-migration behaviour)
             out[t + 1] = obs[:6]
         return out
 

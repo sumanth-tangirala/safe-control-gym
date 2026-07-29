@@ -20,21 +20,20 @@ Usage:
 
 import argparse
 import os
-import sys
-import time
 import tempfile
-import numpy as np
+import time
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, shared_memory
 
+import numpy as np
 import pybullet as p
+from tqdm import tqdm
 
-from safe_control_gym.utils.registration import make
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 try:
-    import scipy.linalg
+    import scipy.linalg  # noqa: F401 (side-effecting pre-import, not referenced directly)
 except ImportError:
     pass
 
@@ -141,7 +140,8 @@ def run_trajectory(env, ctrl, init_state, max_steps):
         for step in range(max_steps):
             normalized_obs = ctrl.obs_normalizer(obs)
             action = ctrl.select_action(normalized_obs, info)
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             if done:
                 return info.get('goal_reached', False)
 
@@ -151,6 +151,7 @@ def run_trajectory(env, ctrl, init_state, max_steps):
 def _patch_safe_ppo_act():
     """Monkey-patch SafePPO act() to work around torch/numpy incompatibility."""
     import torch
+
     from safe_control_gym.controllers.safe_explorer import safe_ppo_utils
 
     def patched_act(self, obs, c=None):
@@ -211,7 +212,7 @@ def _worker_process_chunk(chunk_info):
             z <= cfg['z_min_termination'] or z >= cfg['z_max_termination'] or
             abs(x_dot) >= cfg['x_dot_termination'] or
             abs(z_dot) >= cfg['z_dot_termination'] or
-            abs(theta_dot) >= cfg['theta_dot_termination']):
+                abs(theta_dot) >= cfg['theta_dot_termination']):
             _worker_labels[idx] = 0
         else:
             success = run_trajectory(_worker_env, _worker_ctrl, state, max_steps)
@@ -223,7 +224,7 @@ def _worker_process_chunk(chunk_info):
 def generate_slice(slice_name, grid_states, num_workers):
     """Generate labels for a grid of initial states."""
     n_states = len(grid_states)
-    print(f"\nGenerating {slice_name}: {n_states} states using {num_workers} workers...")
+    print(f'\nGenerating {slice_name}: {n_states} states using {num_workers} workers...')
 
     labels = np.zeros(n_states, dtype=np.int8)
     shm = shared_memory.SharedMemory(create=True, size=labels.nbytes)
@@ -246,7 +247,7 @@ def generate_slice(slice_name, grid_states, num_workers):
                 pbar.update(count)
 
     elapsed = time.time() - t0
-    print(f"  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)")
+    print(f'  Completed in {elapsed:.1f}s ({n_states / elapsed:.0f} states/s)')
 
     result_labels = np.array(shm_labels)
     shm.close()
@@ -261,15 +262,15 @@ def save_csv(grid_states, labels, filepath):
         for state, label in zip(grid_states, labels):
             x, z, theta, x_dot, z_dot, theta_dot = state
             f.write(f'{x:.6f},{z:.6f},{normalize_angle(theta):.6f},{x_dot:.6f},{z_dot:.6f},{theta_dot:.6f},{label}\n')
-    print(f"  Saved {len(labels)} states to {filepath}")
+    print(f'  Saved {len(labels)} states to {filepath}')
 
 
 def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
                title, filepath, N):
     import matplotlib
     matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
 
     label_grid = labels.reshape(N, N)
     fig, ax = plt.subplots(1, 1, figsize=(8, 7))
@@ -299,7 +300,7 @@ def plot_slice(labels, axis1_vals, axis2_vals, axis1_label, axis2_label,
     plt.tight_layout()
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  Saved plot to {filepath}")
+    print(f'  Saved plot to {filepath}')
 
 
 def main():
@@ -367,7 +368,7 @@ def main():
     }
     env_func = partial(make, 'quadrotor', **env_kwargs)
 
-    print("Building controller in parent process...")
+    print('Building controller in parent process...')
     temp_dir = tempfile.mkdtemp()
     algo_config = ALGO_CONFIG.copy()
     ctrl = make('safe_explorer_ppo', env_func, **algo_config, output_dir=temp_dir)
@@ -458,7 +459,7 @@ def main():
                    sd['row_label'], sd['col_label'], sd['title'],
                    os.path.join(args.output_dir, f"viz_{sd['suffix']}.png"), N)
 
-    print("\nDone!")
+    print('\nDone!')
 
 
 if __name__ == '__main__':
