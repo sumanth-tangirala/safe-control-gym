@@ -10,17 +10,21 @@ import sys
 
 DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
 
+# `[^|;&\n]*` deliberately excludes newlines: a real bypass is one command on one
+# line, whereas a heredoc or multi-line script can mention `git commit` and a
+# flag many lines apart and is not a bypass. Crossing newlines produced false
+# denials on ordinary scripts.
 RULES = [
-    (re.compile(r'\bgit\s+(commit|push)\b[^|;&]*\s(--no-verify|-n)\b'),
+    (re.compile(r'\bgit\s+(commit|push)\b[^|;&\n]*\s(--no-verify|-n)\b'),
      'pre-commit is this repo\'s only lint gate (isort/autopep8/flake8, see '
      '.pre-commit-config.yaml). Fix the reported failure instead of bypassing it.'),
 
     # (?![\w-]) so --force-with-lease, the safe form, is not caught by the --force prefix.
-    (re.compile(r'\bgit\s+push\b[^|;&]*\s(--force|-f)(?![\w-])'),
+    (re.compile(r'\bgit\s+push\b[^|;&\n]*\s(--force|-f)(?![\w-])'),
      'Plain force-push discards commits with no recovery for anyone who already fetched. '
      'Use --force-with-lease, or say explicitly that you want the history overwritten.'),
 
-    (re.compile(r'\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)+[^|;&]*' + re.escape(DATA_ROOT)),
+    (re.compile(r'\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+)+[^|;&\n]*' + re.escape(DATA_ROOT)),
      f'Recursive delete under the shared dataset root ({DATA_ROOT}). These datasets are '
      'hours of compute and are read by other people. Delete them yourself if you mean it.'),
 
