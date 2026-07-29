@@ -6,6 +6,9 @@ temp-data/
 .claude/settings.local.json
 CLAUDE.local.md
 
+# Subagent-driven-development scratch: ledgers, briefs, review packages
+.superpowers/
+
 # acados
 c_generated_code/
 acados_*
