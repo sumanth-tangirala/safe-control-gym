@@ -125,7 +125,8 @@ class BaseExperiment:
                 # inner sim loop to accomodate different control frequencies
                 for _ in range(sim_steps):
                     steps += 1
-                    obs, _, done, info = self.env.step(action)
+                    obs, _, terminated, truncated, info = self.env.step(action)
+                    done = terminated or truncated
                     if done_on_max_steps:
                         done = done and steps >= self.MAX_STEPS
                     if done:
@@ -142,7 +143,8 @@ class BaseExperiment:
                 # inner sim loop to accomodate different control frequencies
                 for _ in range(sim_steps):
                     steps += 1
-                    obs, _, done, info = self.env.step(action)
+                    obs, _, terminated, truncated, info = self.env.step(action)
+                    done = terminated or truncated
                     if steps >= n_steps:
                         self.env.save_data()
                         for data_key, data_val in self.ctrl.results_dict.items():
@@ -357,7 +359,8 @@ class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
     def step(self, action):
         '''Wrapper for the gym.env step function.'''
 
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
         # save to episode data container
         step_data = dict(
             obs=obs,
@@ -375,7 +378,7 @@ class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
         for key, val in step_data.items():
             self.episode_data[key].append(val)
 
-        return obs, reward, done, info
+        return obs, reward, terminated, truncated, info
 
 
 class MetricExtractor:

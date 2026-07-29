@@ -1086,7 +1086,8 @@ class GPMPC(MPC):
                 print('Infeasible MPC Problem')
                 break
             # Repeat input for more efficient control.
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             self.results_dict['obs'].append(obs)
             self.results_dict['reward'].append(reward)
             self.results_dict['done'].append(done)

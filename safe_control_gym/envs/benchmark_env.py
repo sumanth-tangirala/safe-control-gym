@@ -444,19 +444,21 @@ class BenchmarkEnv(gym.Env, ABC):
 
         return extended_obs
 
-    def after_step(self, obs, rew, done, info):
+    def after_step(self, obs, rew, terminated, truncated, info):
         '''Post-processing after calling `.step()`.
 
         Args:
             obs (ndarray): The observation after this step.
             rew (float): The reward after this step.
-            done (bool): Whether the evaluation is done.
+            terminated (bool): Whether the evaluation is terminated.
+            truncated (bool): Whether the evaluation is truncated.
             info (dict): The info after this step.
 
         Returns:
             obs (ndarray): The udpdated observation after this step.
             rew (float): The udpdated reward after this step.
-            done (bool): Whether the evaluation is done.
+            terminated (bool): Whether the evaluation is terminated.
+            truncated (bool): Whether the evaluation is truncated.
             info (dict): The udpdated info after this step.
         '''
         # Increment counters
@@ -476,7 +478,7 @@ class BenchmarkEnv(gym.Env, ABC):
             if self.constraints.is_violated(self, c_value=c_value):
                 info['constraint_violation'] = 1
                 if self.DONE_ON_VIOLATION:
-                    done = True
+                    terminated = True
                     if self.COST == Cost.RL_REWARD and self.use_constraint_penalty:
                         rew = 0
             else:
@@ -494,12 +496,13 @@ class BenchmarkEnv(gym.Env, ABC):
                 else:
                     rew -= self.constraint_penalty
 
-        # Terminate when reaching time limit,
-        # but distinguish between done due to true termination or time limit reached
+        # Time limit is truncation, not termination. The legacy info key is
+        # retained: six controllers still read it, and it is what the migration
+        # tests cross-check `truncated` against.
         if self.ctrl_step_counter >= self.CTRL_STEPS:
-            info['TimeLimit.truncated'] = not done
-            done = True
-        return obs, rew, done, info
+            info['TimeLimit.truncated'] = not terminated
+            truncated = True
+        return obs, rew, terminated, truncated, info
 
     def _generate_trajectory(self,
                              traj_type='figure8',

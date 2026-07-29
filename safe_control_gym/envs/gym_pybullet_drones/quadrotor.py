@@ -325,13 +325,14 @@ class Quadrotor(BaseAviary):
         # Set prior/symbolic info.
         self._setup_symbolic()
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         '''(Re-)initializes the environment to start an episode.
 
         Mandatory to call at least once after __init__().
 
         Args:
             seed (int): An optional seed to reseed the environment.
+            options (dict): Unused. Accepted for gymnasium 1.x compatibility.
 
         Returns:
             obs (ndarray): The initial state of the environment.
@@ -408,7 +409,8 @@ class Quadrotor(BaseAviary):
         Returns:
             obs (ndarray): The state of the environment after the step.
             reward (float): The scalar reward/cost of the step.
-            done (bool): Whether the conditions for the end of an episode are met in the step.
+            terminated (bool): Whether the MDP has reached a terminal state in the step.
+            truncated (bool): Whether the episode was truncated by the time limit.
             info (dict): A dictionary with information about the constraints evaluations and violations.
         '''
 
@@ -444,10 +446,12 @@ class Quadrotor(BaseAviary):
         # Standard Gym return.
         obs = self._get_observation()
         rew = self._get_reward()
-        done = self._get_done()
+        terminated = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
     def render(self, mode='human'):
         '''Retrieves a frame from PyBullet rendering.

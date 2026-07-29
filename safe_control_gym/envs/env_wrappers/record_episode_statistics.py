@@ -66,7 +66,8 @@ class RecordEpisodeStatistics(AttributeForwardingMixin, gym.Wrapper):
     def step(self,
              action
              ):
-        observation, reward, done, info = self.env.step(action)
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        done = terminated or truncated
         self.episode_return += reward
         self.episode_length += 1
         # Add other tracked stats.
@@ -87,7 +88,7 @@ class RecordEpisodeStatistics(AttributeForwardingMixin, gym.Wrapper):
                 if key in self.queued_stats:
                     self.queued_stats[key].append(deepcopy(self.episode_stats[key]))
                 self.episode_stats[key] *= 0
-        return observation, reward, done, info
+        return observation, reward, terminated, truncated, info
 
 
 class VecRecordEpisodeStatistics(VecEnvWrapper):
