@@ -31,7 +31,29 @@ RULES = [
     (re.compile(r'\brm\s+[^|;&]*\binvariant_sets/'),
      'invariant_sets/*.npz are the success-ellipsoid artifacts every generator loads at '
      'startup. Regenerate with compute_invariant_sets.py rather than deleting them.'),
+
+    (re.compile(r'--output[_-]dir[= ]\s*[\'"]?' + re.escape(DATA_ROOT)),
+     f'That writes directly into the shared dataset root ({DATA_ROOT}). Those datasets '
+     'are hours of compute and are read by other people. Collect to a scratch directory '
+     'and have someone move it deliberately.'),
 ]
+
+# Six generator/visualisation scripts DEFAULT --output_dir to the shared data root
+# (e.g. generate_quadrotor_2d_trajectories_rl.py -> .../quadrotor2D_rl). Omitting the
+# flag therefore overwrites shipped datasets, and guard_write.py cannot see it because
+# a script invoked through Bash never touches the Write/Edit tools.
+GENERATOR = re.compile(r'\bgenerate_\w*trajector\w*\.py\b')
+OUTPUT_DIR = re.compile(r'--output[_-]dir\b')
+
+
+def check_generator_output(command):
+    '''Require an explicit --output_dir on any trajectory generator.'''
+    if not GENERATOR.search(command) or OUTPUT_DIR.search(command):
+        return None
+    return ('This runs a trajectory generator without --output_dir. Several of them '
+            f'default to the shared dataset root ({DATA_ROOT}), so omitting it can '
+            'overwrite shipped datasets. Pass an explicit --output_dir under a scratch '
+            'directory.')
 
 
 def main():
@@ -41,12 +63,16 @@ def main():
         return 0
 
     command = (payload.get('tool_input') or {}).get('command') or ''
-    for pattern, reason in RULES:
-        if pattern.search(command):
-            json.dump({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                              'permissionDecision': 'deny',
-                                              'permissionDecisionReason': reason}}, sys.stdout)
-            return 0
+
+    reasons = [reason for pattern, reason in RULES if pattern.search(command)]
+    missing_output_dir = check_generator_output(command)
+    if missing_output_dir:
+        reasons.append(missing_output_dir)
+
+    if reasons:
+        json.dump({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                                          'permissionDecision': 'deny',
+                                          'permissionDecisionReason': reasons[0]}}, sys.stdout)
     return 0
 
 
