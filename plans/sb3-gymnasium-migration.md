@@ -28,13 +28,15 @@ Spec: `docs/superpowers/specs/2026-07-28-sb3-gymnasium-migration-design.md`.
 - **Verification bar:** `tests/test_examples/` + `tests/test_build.py` at
   **68 passed, 2 skipped**; `tests/test_inverted_pendulum/` at **74 passed**
   with only the known `test_pendulum_experiment.py` subprocess failure.
-- **The known pendulum failure survives Task 3.** Its first-order cause was found
-  in Task 1 -- the editable install pointed at a deleted sibling clone, so
-  `safe_control_gym` resolved only from a cwd inside this repo. Task 3's
-  `pip install -e .` repaired that (imports now resolve from anywhere), and the
-  test STILL fails. So there is a second, unrelated cause. The bar therefore
-  stays **74 passed, 1 failed** throughout, and that one failure remains out of
-  scope. Do not "fix" it as part of migration work.
+- **From Task 3 onward the pendulum bar is 75 passed, 0 failed.** The old
+  "known failure" was a broken editable install: `safe_control_gym.pth` pointed
+  at a deleted sibling clone, so the package resolved only from a cwd inside
+  this repo, and the test shells out to a script under `examples/` where it does
+  not. `pip install -e .` in Task 3 repaired it. Measured directly after Task 3:
+  `tests/test_inverted_pendulum/` returns **75 passed** in 38s, and
+  `test_pendulum_experiment.py` passes both in isolation and in the full run.
+  A run still reporting 74/1 is measuring a stale environment, not a real
+  failure -- re-run it.
 - **stable-baselines3 may be imported only by**
   `safe_control_gym/experiments/train_sb3.py`. `envs/` and `controllers/` stay
   SB3-free.
