@@ -39,26 +39,36 @@ def _fixtures():
 
 
 def _read_labels(root):
-    '''Parse roa_labels.txt: one line per rollout, `state..., label`.'''
-    starts, labels = [], []
+    '''Parse roa_labels.txt into (states, labels), making NO assumption about
+    what a line means.
+
+    The collectors disagree: the pendulum writes one line per rollout, while
+    the quadrotor collectors write one line per state (every state except the
+    terminal one carries its trajectory's label, see
+    `generate_roa_labels_from_trajectories`). An oracle's job is to detect that
+    the output changed, not to interpret it -- so this pins whatever was
+    written and leaves the semantics to the collector.
+    '''
+    states, labels = [], []
     with open(os.path.join(root, 'roa_labels.txt')) as handle:
         for line in handle:
             parts = [float(p) for p in line.strip().split(',') if p]
             if not parts:
                 continue
-            starts.append(parts[:-1])
+            states.append(parts[:-1])
             labels.append(int(parts[-1]))
-    return starts, labels
+    return states, labels
 
 
-def _read_terminals(root, count):
-    '''Last state of each trajectories/sequence_<i>.txt.'''
-    terminals = []
-    for i in range(count):
-        path = os.path.join(root, 'trajectories', f'sequence_{i}.txt')
-        rows = np.loadtxt(path, delimiter=',', ndmin=2)
-        terminals.append(rows[-1].tolist())
-    return terminals
+def _read_terminals(root):
+    '''Last state of every trajectories/sequence_<i>.txt, in numeric order.
+
+    Globbed rather than indexed by a count, because the number of sequence
+    files need not equal the number of roa_labels lines.
+    '''
+    paths = glob.glob(os.path.join(root, 'trajectories', 'sequence_*.txt'))
+    paths.sort(key=lambda p: int(os.path.basename(p)[len('sequence_'):-len('.txt')]))
+    return [np.loadtxt(p, delimiter=',', ndmin=2)[-1].tolist() for p in paths]
 
 
 @pytest.mark.parametrize('fixture', _fixtures(),
@@ -73,11 +83,17 @@ def test_slice_reproduces(fixture, tmp_path):
 
     starts, labels = _read_labels(str(out))
     assert len(starts) == golden['n'], \
-        f'rollout count changed: {len(starts)} vs {golden["n"]}'
+        f'roa_labels line count changed: {len(starts)} vs {golden["n"]}'
     assert labels == golden['labels'], 'success labels changed'
     np.testing.assert_allclose(starts, golden['starts'], atol=1e-12)
 
-    terminals = _read_terminals(str(out), golden['n'])
+    # Globbed independently: the number of sequence files need not equal the
+    # number of roa_labels lines, because the quadrotor collectors write one
+    # line per state rather than one per rollout.
+    terminals = _read_terminals(str(out))
+    assert len(terminals) == len(golden['terminal_states']), \
+        (f'trajectory file count changed: {len(terminals)} vs '
+         f'{len(golden["terminal_states"])}')
     np.testing.assert_allclose(terminals, golden['terminal_states'], atol=1e-12)
 
 
