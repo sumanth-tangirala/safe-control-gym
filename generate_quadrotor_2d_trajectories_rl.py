@@ -1216,6 +1216,34 @@ def main():
     print(f'Using algorithm: {args.algo}')
     print(f'Loading model from: {model_path}')
 
+    # Resolve termination defaults and build the thresholds dict BEFORE any call to
+    # generate_roa_labels_from_trajectories. That function dereferences
+    # termination_thresholds['x'] to classify out-of-bounds, so passing None raises
+    # TypeError. Both were previously resolved only further down, leaving the
+    # early --random_init resume path with unresolved args and no thresholds.
+    if args.x_termination is None:
+        args.x_termination = args.x_bound
+    if args.z_min_termination is None:
+        args.z_min_termination = args.z_min
+    if args.z_max_termination is None:
+        args.z_max_termination = args.z_max
+    if args.x_dot_termination is None:
+        args.x_dot_termination = args.x_dot_bound
+    if args.z_dot_termination is None:
+        args.z_dot_termination = args.z_dot_bound
+    if args.theta_dot_termination is None:
+        args.theta_dot_termination = args.theta_dot_bound
+
+    termination_thresholds = {
+        'x': args.x_termination,
+        'z_min': args.z_min_termination,
+        'z_max': args.z_max_termination,
+        'theta': args.theta_termination,
+        'x_dot': args.x_dot_termination,
+        'z_dot': args.z_dot_termination,
+        'theta_dot': args.theta_dot_termination
+    }
+
     # Check existing trajectories and calculate how many more are needed
     existing_count, start_idx = count_existing_trajectories(trajectories_dir)
 
@@ -1229,9 +1257,12 @@ def main():
             print(f'Target of {args.num_trajs} trajectories already reached ({existing_count} exist).')
             print('Skipping trajectory generation, generating ROA labels from existing files...')
 
-            total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
-                trajectories_dir, roa_labels_path
+            total_states, success_trajs, oob_count, timeout_count = generate_roa_labels_from_trajectories(
+                trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
+                termination_thresholds=termination_thresholds,
+                invariant=args.invariant_terminal_sets
             )
+            failure_trajs = oob_count + timeout_count
 
             print(f'\nROA labels saved to: {roa_labels_path}')
             print(f'  Total trajectories processed: {success_trajs + failure_trajs}')
@@ -1558,10 +1589,12 @@ def main():
         # Generate ROA labels from saved trajectory files (post-processing)
         print('\nGenerating ROA labels from saved trajectories...')
         roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
-        total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
+        total_states, success_trajs, oob_count, timeout_count = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
+            termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
+        failure_trajs = oob_count + timeout_count
         print(f'ROA labels saved to: {roa_labels_path}')
         print(f'  Total state-label pairs: {total_states}')
         print(f'  From successful trajectories: {success_trajs}')
@@ -1569,8 +1602,10 @@ def main():
 
         # Generate eval_states.txt and trajectory_labels.txt
         print('\nGenerating eval_states.txt and trajectory_labels.txt...')
-        total_trajs, eval_success, eval_failure = generate_eval_states_and_labels(
+        # Only total_trajs is reported below; the per-outcome counts are unused here.
+        total_trajs, _, _, _ = generate_eval_states_and_labels(
             trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance,
+            termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
         print(f'  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)')
