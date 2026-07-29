@@ -703,7 +703,7 @@ class Quadrotor(BaseAviary):
             self.STATE_UNITS = ['m', 'm/s', 'm', 'm/s', 'm', 'm/s',
                                 'rad', 'rad', 'rad', 'rad/s', 'rad/s', 'rad/s']
         # Define the state space for the dynamics.
-        self.state_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        self.state_space = spaces.Box(low=low, high=high, dtype=np.float64)
 
         # Concatenate reference for RL.
         if self.COST == Cost.RL_REWARD and self.TASK == Task.TRAJ_TRACKING and self.obs_goal_horizon > 0:
@@ -718,7 +718,7 @@ class Quadrotor(BaseAviary):
 
         # Define obs space exposed to the controller.
         # Note how the obs space can differ from state space (i.e. augmented with the next reference states for RL)
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float64)
 
     def _setup_disturbances(self):
         '''Sets up the disturbances.'''

@@ -497,7 +497,7 @@ class CartPole(BenchmarkEnv):
                               self.x_dot_threshold,
                               self.theta_threshold_radians * 2,
                               self.theta_dot_threshold])
-        self.state_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float32)
+        self.state_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float64)
 
         # Concatenate goal info for RL
         if self.COST == Cost.RL_REWARD and self.TASK == Task.TRAJ_TRACKING and self.obs_goal_horizon > 0:
@@ -509,7 +509,7 @@ class CartPole(BenchmarkEnv):
             obs_bound = np.concatenate([obs_bound] * 2)
         # Define obs space exposed to the controller
         # Note obs space is often different to state space for RL (with additional task info)
-        self.observation_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float32)
+        self.observation_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float64)
 
         # Define obs/state labels and units.
         self.STATE_LABELS = ['x', 'x_dot', 'theta', 'theta_dot']
