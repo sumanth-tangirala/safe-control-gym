@@ -67,7 +67,7 @@ work on that follow-on and were not treated as source for this ingest.
 `INDEX.md` summaries updated for architecture.md, workflows.md, compute.md and
 glossary.md to match.
 
-## [2026-07-29] ingest | gymnasium migration + quad2d ellipsoid finding
+## [2026-07-29] ingest | quad2d ellipsoid finding
 
 Migrated all four envs to the Gymnasium 5-tuple and added task-agnostic SB3
 training (`plans/sb3-gymnasium-migration.md`). Filed the quad2d invariant-set
