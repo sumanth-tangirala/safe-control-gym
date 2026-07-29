@@ -139,16 +139,36 @@ rather than recovering information the environments threw away. That lowers the
 risk materially: `truncated` can be cross-checked against
 `info['TimeLimit.truncated']` during the migration, and the two must agree.
 
-**The defect is in the consumers, not the environments.** All 15 modules that
-read `env.step` take the 4-tuple `done` and never inspect
-`info['TimeLimit.truncated']` — so a horizon timeout is treated identically to a
-goal reach, and value bootstrapping at the end of an episode is wrong for
-exactly the algorithms this work exists to train. Fixing it is the point of
-choosing migration over adaptation.
+**There is no bootstrapping defect.** An earlier draft of this spec claimed the
+collapse into `done` corrupted value bootstrapping. That is wrong, and the code
+says so: all six RL controllers already read the info key and compensate.
+`sac.py:287-304` is the clearest instance —
 
-Consequence: RL controllers legitimately produce different numbers after the
-migration. That difference is the fix landing, not a regression. LQR is
-unaffected and is held bit-exact (see below).
+    # time truncation is not true termination
+    ...
+    if 'TimeLimit.truncated' in inff and inff['TimeLimit.truncated']:
+        terminal_idx.append(idx)
+        terminal_obs.append(inf['terminal_observation'])
+    ...
+    true_mask[idx] = 1.0
+
+— and `ppo`, `ddpg`, `rarl`, `rap` and `safe_ppo` all reference
+`TimeLimit.truncated` the same way.
+
+So the migration's justification is narrower and more honest than "fixing a
+bug":
+
+1. It is what lets SB3, and any other Gymnasium-native tool, consume these
+   environments at all.
+2. It replaces a stringly-typed convention (`info['TimeLimit.truncated']`,
+   which every consumer must know to look for and six of them separately
+   reimplement) with a first-class return value that cannot be forgotten.
+
+Consequence, and this is a strengthening: because the semantics already hold,
+a correct migration must produce **identical numbers everywhere**, RL included.
+The earlier draft exempted RL dataset outputs from bit-exactness on the grounds
+that the fix would shift them. That exemption is withdrawn — nothing should
+shift, and anything that does is a migration bug.
 
 ### Safety net, built before anything is touched
 
@@ -187,8 +207,14 @@ migration commit:
    `invariant_sets/*.npz`. Cheap, and exercises the closed-loop step map
    directly.
 
-Held bit-exact: golden rollouts, invariant sets, and the **LQR** dataset slice.
-Allowed to change: **RL** dataset outputs, per the previous section.
+Held bit-exact: **everything**. Golden rollouts, invariant sets, and the dataset
+slice for both LQR and RL controllers. Nothing is exempt, because the
+truncation semantics the migration formalises are already honoured by every
+consumer (see the previous section). A number that moves is a migration bug,
+not a fix landing.
+
+The dataset slice is therefore captured twice — once with `--controller lqr`
+and once with `--controller v3_strong` — so the RL path is covered too.
 
 ### Flag semantics need their own tests
 
@@ -284,7 +310,10 @@ later step unverifiable.
 - `tests/test_inverted_pendulum/`: **74 passed**, with only the known subprocess failure.
 - Golden rollouts for all four systems: match at `atol=1e-9`.
 - Invariant sets: `P`, `center`, `c` match the committed artifacts.
-- LQR dataset slice: labels, terminal states and `p_success` match exactly.
+- Dataset slice, both `lqr` and `v3_strong`: labels and terminal states match exactly.
+- The six RL controllers' `TimeLimit.truncated` compensation blocks
+  (`ppo`, `ddpg`, `sac`, `rarl`, `rap`, `safe_ppo`) read the new `truncated`
+  flag and remain behaviour-identical.
 - Flag-semantics tests pass for all four environments, and `truncated` agrees
   with the legacy `info['TimeLimit.truncated']` on every step.
 - **`stable_baselines3.common.env_checker.check_env` passes on every registered
