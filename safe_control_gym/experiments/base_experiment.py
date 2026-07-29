@@ -9,6 +9,7 @@ import numpy as np
 from munch import munchify
 from termcolor import colored
 
+from safe_control_gym.envs.env_wrappers.forwarding import AttributeForwardingMixin
 from safe_control_gym.math_and_models.metrics.performance_metrics import compute_cvar
 from safe_control_gym.utils.utils import is_wrapped
 
@@ -307,7 +308,7 @@ class BaseExperiment:
             self.safety_filter.save(safety_filter_path)
 
 
-class RecordDataWrapper(gym.Wrapper):
+class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
     '''A wrapper to standardizes logging for benchmark envs.
 
     currently saved info

@@ -7,10 +7,11 @@ from copy import deepcopy
 import gymnasium as gym
 import numpy as np
 
+from safe_control_gym.envs.env_wrappers.forwarding import AttributeForwardingMixin
 from safe_control_gym.envs.env_wrappers.vectorized_env.vec_env import VecEnvWrapper
 
 
-class RecordEpisodeStatistics(gym.Wrapper):
+class RecordEpisodeStatistics(AttributeForwardingMixin, gym.Wrapper):
     '''Keep track of episode length and returns per instantiated env
 
        Based on OpenAI's Gym wrapper record_episode_statistics.py
