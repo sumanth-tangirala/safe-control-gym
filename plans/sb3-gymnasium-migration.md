@@ -57,7 +57,7 @@ system, so there is no in-repo generator to copy. Write one, then use it.
 **Interfaces:**
 - Produces: `generate_env_rollouts.build(task, task_config, scenarios)` returning
   the dict written to JSON, with keys `params` (dict) and `scenarios` (list of
-  `{'x0': [...], 'actions': [[...], ...], 'states': [[...], ...]}`). Task 5-7
+  `{'x0': [...], 'actions': [[...], ...], 'states': [[...], ...]}`). Task 5-6
   rely on `tests/test_envs/test_env_rollouts.py` still passing unchanged.
 
 - [ ] **Step 1: Write the generator**
@@ -422,13 +422,16 @@ the forwarded surface visible and greppable, and makes a typo raise instead of
 silently resolving to the wrapped env.
 
 **Files:**
+- Create: `safe_control_gym/envs/env_wrappers/forwarding.py`
 - Modify: `safe_control_gym/envs/env_wrappers/record_episode_statistics.py:13` (class `RecordEpisodeStatistics`)
 - Modify: `safe_control_gym/experiments/base_experiment.py:310` (class `RecordDataWrapper`)
 - Create: `tests/test_envs/test_wrapper_forwarding.py`
 
 **Interfaces:**
-- Produces: `RecordEpisodeStatistics.constraints`, `RecordDataWrapper.GUI`,
-  `RecordDataWrapper.done_on_out_of_bound`, plus the shared set below.
+- Produces: `forwarding.AttributeForwardingMixin` with class attribute
+  `FORWARDED` (tuple of str). Both wrappers inherit it, so
+  `RecordEpisodeStatistics.constraints`, `RecordDataWrapper.GUI` and
+  `RecordDataWrapper.done_on_out_of_bound` all resolve.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -478,15 +481,29 @@ def test_unknown_attribute_still_raises(wrapper_cls):
 Run: `python -m pytest tests/test_envs/test_wrapper_forwarding.py -q`
 Expected: FAIL with `AttributeError: 'RecordDataWrapper' object has no attribute 'GUI'`.
 
-- [ ] **Step 3: Add forwarding to both wrappers**
+- [ ] **Step 3: Write the shared mixin**
 
-Add this block inside `class RecordDataWrapper` (after `__init__`) and inside
-`class RecordEpisodeStatistics` (after `__init__`). Identical in both:
+One definition, so the forwarded list cannot drift between the two wrappers.
+
+`safe_control_gym/envs/env_wrappers/forwarding.py`:
 
 ```python
-    # gymnasium 1.0 removed Wrapper.__getattr__ passthrough. These are the
-    # attributes call sites read through a wrapper; keep the list explicit so
-    # the forwarded surface is greppable.
+'''Allowlisted attribute forwarding for env wrappers.
+
+gymnasium 1.0 removed ``Wrapper.__getattr__`` passthrough to the wrapped env,
+which this codebase relied on in ~11 places. This restores it for a named set
+only, so the forwarded surface stays greppable and a typo raises instead of
+silently resolving.
+'''
+
+
+class AttributeForwardingMixin:
+    '''Forward the attributes in ``FORWARDED`` to ``self.env``.
+
+    Mix in *before* ``gym.Wrapper`` so this ``__getattr__`` wins.
+    '''
+
+    # Attributes call sites read through a wrapper. Extend deliberately.
     FORWARDED = ('GUI', 'CTRL_FREQ', 'PYB_FREQ', 'NAME', 'symbolic', 'state',
                  'constraints', 'done_on_out_of_bound', 'X_GOAL', 'TASK',
                  'denormalize_action', 'normalize_action')
@@ -498,6 +515,26 @@ Add this block inside `class RecordDataWrapper` (after `__init__`) and inside
             f'{type(self).__name__!r} object has no attribute {name!r}; add it '
             f'to FORWARDED if it should pass through to the wrapped env.')
 ```
+
+- [ ] **Step 3b: Inherit it in both wrappers**
+
+In `record_episode_statistics.py`, add the import and change the declaration:
+
+```python
+from safe_control_gym.envs.env_wrappers.forwarding import AttributeForwardingMixin
+
+class RecordEpisodeStatistics(AttributeForwardingMixin, gym.Wrapper):
+```
+
+In `base_experiment.py`, the same:
+
+```python
+from safe_control_gym.envs.env_wrappers.forwarding import AttributeForwardingMixin
+
+class RecordDataWrapper(AttributeForwardingMixin, gym.Wrapper):
+```
+
+Add no other code to either class.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -524,7 +561,7 @@ call sites depend on is visible and a typo raises instead of silently missing."
 
 ---
 
-### Task 5: `benchmark_env` returns the 5-tuple
+### Task 5: `benchmark_env` and the three environments return the 5-tuple
 
 **Files:**
 - Modify: `safe_control_gym/envs/benchmark_env.py:447-502` (`after_step`)
@@ -561,34 +598,16 @@ Final block becomes:
         return obs, rew, terminated, truncated, info
 ```
 
-- [ ] **Step 2: Confirm nothing calls it yet with the new shape**
+- [ ] **Step 2: Update each environment's `step` in the same commit**
 
-Run: `grep -rn "after_step(" --include="*.py" safe_control_gym/`
-Expected: the definition plus three call sites (`inverted_pendulum.py:189`,
-`cartpole.py`, `quadrotor.py`), all still passing four positional arguments.
-Task 6 fixes them. The suite is expected to be broken between Tasks 5 and 6.
+`after_step` has three callers (`inverted_pendulum.py:189`, `cartpole.py:298`,
+`quadrotor.py:449`). Changing its signature without them leaves the suite red,
+so both halves land in one commit.
 
-- [ ] **Step 3: Commit**
-
-```bash
-git add safe_control_gym/envs/benchmark_env.py
-git commit -m "Split done into terminated/truncated in BenchmarkEnv.after_step
-
-Constraint violation is termination; the time limit is truncation. The legacy
-info['TimeLimit.truncated'] key is kept deliberately -- six controllers read it
-and the migration tests cross-check the new flag against it."
-```
-
----
-
-### Task 6: The three environments return the 5-tuple
-
-**Files:**
-- Modify: `safe_control_gym/envs/gym_control/inverted_pendulum.py:159-204`
-- Modify: `safe_control_gym/envs/gym_control/cartpole.py:299,301`
-- Modify: `safe_control_gym/envs/gym_pybullet_drones/quadrotor.py:450,328`
-
-- [ ] **Step 1: Update each `step`**
+Files also modified here:
+`safe_control_gym/envs/gym_control/inverted_pendulum.py:159-204`,
+`safe_control_gym/envs/gym_control/cartpole.py:299,301`,
+`safe_control_gym/envs/gym_pybullet_drones/quadrotor.py:450,328`.
 
 In all three, replace the tail of `step`. Pattern, using
 `inverted_pendulum.py:185-190` as the worked example:
@@ -607,7 +626,7 @@ In all three, replace the tail of `step`. Pattern, using
 `cartpole.py:299` and `quadrotor.py:450` take the identical change; both already
 compute `done = self._get_done()` the same way.
 
-- [ ] **Step 2: Add `options` to each `reset`**
+- [ ] **Step 3: Add `options` to each `reset`**
 
 Gymnasium 1.x requires `reset(self, *, seed=None, options=None)`. All three are
 currently `def reset(self, seed=None)`. Change each to:
@@ -621,24 +640,22 @@ currently `def reset(self, seed=None)`. Change each to:
 by keyword already, but `dummy_vec_env.py:36` calls `reset()` positionally-free,
 and `compute_invariant_sets.py` may not.
 
-- [ ] **Step 3: Run the pendulum env tests**
+- [ ] **Step 4: Run the pendulum env tests**
 
 Run: `python -m pytest tests/test_inverted_pendulum/test_env.py -q`
 Expected: PASS. If `test_env.py` unpacks four values from `step`, update those
 unpack sites to five — the fixture values themselves must not change.
 
-- [ ] **Step 4: Run the golden rollouts from Task 1**
+- [ ] **Step 5: Run the golden rollouts from Task 1**
 
 Run: `python -m pytest tests/test_envs/test_env_rollouts.py -q`
 Expected: `3 passed` at `atol=1e-9`. This is the first real proof the migration
 has not perturbed physics.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add safe_control_gym/envs/gym_control/inverted_pendulum.py \
-        safe_control_gym/envs/gym_control/cartpole.py \
-        safe_control_gym/envs/gym_pybullet_drones/quadrotor.py
+git add safe_control_gym/envs/
 git commit -m "Return the gymnasium 5-tuple from all three environments
 
 _get_done() is termination; truncation comes from the time limit in after_step.
@@ -648,7 +665,7 @@ reproduce at atol=1e-9."
 
 ---
 
-### Task 7: Wrappers and vectorized envs
+### Task 6: Wrappers and vectorized envs
 
 **Files:**
 - Modify: `safe_control_gym/envs/env_wrappers/record_episode_statistics.py:64-91`
@@ -712,7 +729,7 @@ data and the VecEnv contract above them are unchanged."
 
 ---
 
-### Task 8: Behaviour-preserving consumers
+### Task 7: Behaviour-preserving consumers
 
 Fifteen of the 21 unpack sites do not distinguish the two flags. They collapse
 immediately and behave identically.
@@ -756,7 +773,7 @@ Run:
 grep -rn "done, info = .*\.step(" --include="*.py" safe_control_gym/ | grep -v "truncated"
 ```
 
-Expected: only the six sites Task 9 handles
+Expected: only the six sites Task 8 handles
 (`ppo.py:269`, `ddpg.py:287`, `sac.py:281`, `rarl.py:368`, `rap.py:380`,
 `safe_ppo.py:314`).
 
@@ -777,7 +794,7 @@ each collapses to done = terminated or truncated at the unpack."
 
 ---
 
-### Task 9: The six truncation-compensation blocks
+### Task 8: The six truncation-compensation blocks
 
 These are the sites that already do the right thing via the info key. They keep
 doing it; the flag becomes the source of truth and the info key becomes the
@@ -806,7 +823,7 @@ At `sac.py:281`:
 
 Leave lines 287-304 — the `terminal_info` / `TimeLimit.truncated` loop and
 `true_mask[idx] = 1.0` — **exactly as they are**. These run against the
-vectorized env's per-sub-env `info['n']`, which Task 7 did not change. Apply the
+vectorized env's per-sub-env `info['n']`, which Task 6 did not change. Apply the
 same unpack change at the other five sites.
 
 - [ ] **Step 2: Write the behaviour-identity test**
@@ -914,7 +931,7 @@ formalisation cannot silently diverge from the convention it replaces."
 
 ---
 
-### Task 10: `check_env` conformance
+### Task 9: `check_env` conformance
 
 **Files:**
 - Create: `tests/test_envs/test_gymnasium_conformance.py`
@@ -972,7 +989,7 @@ the ones with no golden fixtures."
 
 ---
 
-### Task 11: Task-agnostic SB3 training entry point
+### Task 10: Task-agnostic SB3 training entry point
 
 **Files:**
 - Create: `safe_control_gym/experiments/train_sb3.py`
