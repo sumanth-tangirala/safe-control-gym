@@ -316,6 +316,13 @@ class CartPole(BenchmarkEnv):
         '''
 
         super().before_reset(seed=seed)
+
+        # Initialize episode state flags (needed for _get_info() before first step).
+        # _get_done() returns early when the goal is reached, so out_of_bounds is
+        # not always assigned before _get_info() reads it.
+        self.out_of_bounds = False
+        self.goal_reached = False
+
         # PyBullet simulation reset.
         p.resetSimulation(physicsClientId=self.PYB_CLIENT)
         p.setGravity(0, 0, -self.GRAVITY_ACC, physicsClientId=self.PYB_CLIENT)

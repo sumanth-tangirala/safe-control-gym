@@ -13,9 +13,24 @@ cased here.
         --kv_overrides sb3_config.total_timesteps=200000
 
 --use_gpu (like every other entry point in this repo) selects SB3's device;
-it defaults to CPU. For the small `net_arch: [256, 256]` policies used here,
-GPU is typically *slower* than CPU once kernel-launch overhead is counted --
-that is expected, not a bug.
+it defaults to CPU.
+
+**Pass --use_gpu if a GPU is free.** Measured on an idle ilab2 (64 cores,
+RTX A4500), SAC on the pendulum with `net_arch: [256, 256]`, 4000 steps, both
+devices back to back on the same host with OMP/MKL threads pinned to 8:
+
+    cpu     65.6 steps/s   ->  200k steps ~ 51 min
+    cuda   111.0 steps/s   ->  200k steps ~ 30 min   (1.69x faster)
+
+An earlier version of this docstring claimed GPU would be *slower* here, on the
+general principle that small MLP policies favour CPU. That was asserted, not
+measured, and it is wrong for this workload -- the first attempt to check it ran
+on a box at load average 74 and measured contention rather than devices. Benchmark
+on an idle host before trusting any claim of this kind, including this one.
+
+The environment is never the bottleneck either way: the pendulum steps at
+~12,500/s, so 200k steps is ~16s of simulation against tens of minutes of
+gradient work.
 '''
 import os
 
