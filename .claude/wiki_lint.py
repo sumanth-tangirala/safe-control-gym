@@ -12,6 +12,7 @@ Exits 1 if anything is stale, so it can gate a commit.
 '''
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +139,43 @@ def check_log(problems):
         problems.append('log.md entries are not newest-first')
 
 
+def check_staleness():
+    '''Has the source moved on without the wiki?
+
+    Advisory, not a failure. Whether a source change *needs* a wiki edit is a
+    judgement call -- a typo fix does not, a new entry point does. Failing the
+    lint on every source commit would train people to ignore it. Instead this
+    reports the drift and the SessionStart hook surfaces it every session, so
+    the decision is made deliberately rather than forgotten.
+
+    Returns a list of advisory lines (empty when the wiki is current).
+    '''
+    def git(*args):
+        result = subprocess.run(('git',) + args, cwd=ROOT,
+                                capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else ''
+
+    last_wiki = git('log', '-1', '--format=%H', '--',
+                    '.claude/docs/', '.claude/INDEX.md')
+    if not last_wiki:
+        return []
+
+    drifted = git('log', '--oneline', f'{last_wiki}..HEAD', '--',
+                  'safe_control_gym/', '*.py')
+    if not drifted:
+        return []
+
+    commits = drifted.splitlines()
+    lines = [f'wiki may be stale: {len(commits)} source commit(s) since the last '
+             f'wiki update ({last_wiki[:8]})']
+    lines += [f'    {c}' for c in commits[:5]]
+    if len(commits) > 5:
+        lines.append(f'    ... and {len(commits) - 5} more')
+    lines.append('    Run the ingest operation in CLAUDE.md, or accept the drift '
+                 'deliberately.')
+    return lines
+
+
 def main():
     problems = []
     check_facts(problems)
@@ -147,13 +185,20 @@ def main():
     check_local_leaks(problems)
     check_log(problems)
 
-    if not problems:
-        print(f'wiki ok: {len(wiki_pages())} pages, {len(FACTS)} facts verified against source, '
-              'no machine-specific paths')
-        return 0
-    for problem in problems:
-        print(f'stale: {problem}')
-    return 1
+    advisories = check_staleness()
+
+    if problems:
+        for problem in problems:
+            print(f'wrong: {problem}')
+        for line in advisories:
+            print(line)
+        return 1
+
+    print(f'wiki ok: {len(wiki_pages())} pages, {len(FACTS)} facts verified against source, '
+          'no machine-specific paths')
+    for line in advisories:
+        print(line)
+    return 0
 
 
 if __name__ == '__main__':

@@ -23,6 +23,16 @@ plan=$(ls -t plans/*.md 2>/dev/null | head -1)
 spec=$(ls -t docs/superpowers/specs/*.md 2>/dev/null | head -1)
 [[ -n $spec ]] && lines+=("newest spec: ${spec}")
 
+# Wiki drift. Advisory: whether a source change needs a wiki edit is a
+# judgement call, so this surfaces it rather than blocking on it. Correctness
+# failures (a page quoting a constant the code no longer has) are separate and
+# do fail the lint.
+if [[ -x .claude/wiki_lint.py ]]; then
+    while IFS= read -r line; do
+        [[ -n $line ]] && lines+=("${line}")
+    done < <(python3 .claude/wiki_lint.py 2>/dev/null | grep -E '^(wrong|wiki may be stale|    )')
+fi
+
 context=$(printf 'Repo state:\n'; printf -- '- %s\n' "${lines[@]}")
 
 python3 -c '

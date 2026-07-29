@@ -150,6 +150,24 @@ pendulum alone steps at ~12,500/s.
 `stable_baselines3`; see `.claude/docs/architecture.md` for why, and for the
 current gap (no exporter, so a trained model has no in-repo consumer yet).
 
+## Exporting a trained policy
+
+SB3 writes a `.zip` (policy + critics + optimizers). `pendulum_rl` loads an
+8-key `.pt` (actor weights plus run constants). Convert with:
+
+```bash
+python scripts/export_sb3_pendulum.py <model.zip> <out.pt> --action_repeat 4
+```
+
+It extends `controllers/pendulum_rl/models/manifest.json` with the git SHA,
+source zip, and SB3/torch versions. `tests/test_envs/test_export_sb3_pendulum.py`
+verifies the round trip against SB3's own `predict(deterministic=True)` over 200
+random states at `1e-6`; the original external port achieved `~3e-7`, so that
+bar is established rather than invented.
+
+Pendulum only. Cartpole and the quadrotors have no native actor controller to
+export into, so their trained policies cannot yet be run or collected with.
+
 ## Collection runs
 
 **These take hours. Never run one in the foreground of a turn.** Background it

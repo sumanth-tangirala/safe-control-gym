@@ -13,6 +13,15 @@ grep '^## \[' .claude/log.md | grep ingest  # what has been read into the wiki
 
 ---
 
+## [2026-07-29] ingest | SB3-to-native pendulum exporter + wiki staleness check
+
+Filed `scripts/export_sb3_pendulum.py` into `workflows.md` and the closed
+train->export->run->collect loop into `architecture.md`. Added a staleness
+advisory to `wiki_lint.py`: it reports source commits landed since the wiki was
+last touched, and `session_start.sh` surfaces it every session. Advisory, not a
+failure -- whether a source change needs a wiki edit is a judgement call, and
+failing the lint on every commit would train people to ignore it.
+
 ## [2026-07-29] ingest | gymnasium/SB3 migration lands in architecture, workflows, glossary, compute
 
 The prior entry below described the migration's code but only actually filed

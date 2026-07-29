@@ -57,11 +57,18 @@ keep working in an environment where SB3 is not installed. A test
 this by blanking `sys.modules['stable_baselines3']` and importing both
 packages.
 
-Consequence: an SB3-trained policy currently has **no in-repo consumer**.
-Training produces SB3-native `.zip` checkpoints; nothing loads them until a
-per-system exporter exists (the pendulum's is the immediate follow-on, the
-pattern `PendulumRL` already established for the externally-trained models).
-This is a known, deliberate gap, not an oversight.
+The seam back is a **per-system exporter**. `scripts/export_sb3_pendulum.py`
+reads the SB3 `.zip` and writes the 8-key `.pt` that `pendulum_rl` loads, so a
+pendulum policy trained here can be run and collected with via
+`--controller <name>`. Export scripts may import SB3 — they are scripts, never
+imported by the library — but `envs/` and `controllers/` may not.
+
+**Only the pendulum has this.** Cartpole and the quadrotors can be trained by
+`train_sb3.py`, but have no native actor controller to export *into*, so their
+policies are inspectable and retrainable yet cannot be run in-repo. Closing that
+for a second system means writing its actor controller first, and for cartpole
+also teaching its generator the `disturbances` noise mechanism — the pendulum's
+`pendulum_noise.py` is pendulum-only.
 
 Keeping a generator's logic in the root script is the existing convention. Do
 not push collection policy (grids, splits, stopping rules, success labels) down
