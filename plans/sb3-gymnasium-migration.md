@@ -326,40 +326,74 @@ def test_slice_reproduces(controller, tmp_path):
         np.testing.assert_allclose(rows[-1], expected, atol=1e-12)
 ```
 
-- [ ] **Step 4: Write the invariant-set test**
+- [ ] **Step 4: Write the invariant-set test (in memory — it must never write)**
+
+`compute_invariant_sets.py` rewrites `invariant_sets/<system>.npz` **in place**
+(`compute_invariant_sets.py:354-355`). A test must never invoke it: those
+artifacts are committed inputs, and a test that mutates tracked files is a
+footgun even when git can restore them. The four `.npz` files are also now
+mode `-r--r-----` on disk, so an in-place write fails loudly.
+
+Recompute the same quantities in memory instead and compare. Import the pieces;
+do not call `compute_system`, which is the function that saves.
 
 `tests/test_envs/test_invariant_sets.py`:
 
 ```python
-'''Recomputing the invariant sets must reproduce the committed artifacts.
+'''The invariant-set artifacts must still match a fresh recomputation.
 
 Exercises the closed-loop step map directly, so it catches a migration that
 perturbs stepping without changing any golden rollout.
+
+This recomputes IN MEMORY. It must never call compute_system() or the script
+entry point: both write invariant_sets/<system>.npz in place, and those
+artifacts are committed inputs, not test scratch.
 '''
+import importlib.util
 import os
-import subprocess
-import sys
 
 import numpy as np
 import pytest
+from scipy.linalg import solve_discrete_lyapunov
 
 REPO = os.path.join(os.path.dirname(__file__), '..', '..')
 SETS = os.path.join(REPO, 'invariant_sets')
 
 
-@pytest.mark.parametrize('system', ['pendulum', 'cartpole', 'quad2d', 'quad3d'])
-def test_invariant_set_reproduces(system, tmp_path):
-    golden = np.load(os.path.join(SETS, f'{system}.npz'))
-    result = subprocess.run(
-        [sys.executable, 'compute_invariant_sets.py', '--systems', system],
-        cwd=REPO, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr[-2000:]
+def _load_module():
+    spec = importlib.util.spec_from_file_location(
+        'compute_invariant_sets', os.path.join(REPO, 'compute_invariant_sets.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    fresh = np.load(os.path.join(SETS, f'{system}.npz'))
-    np.testing.assert_allclose(fresh['P'], golden['P'], atol=1e-12)
-    np.testing.assert_allclose(fresh['center'], golden['center'], atol=1e-12)
-    np.testing.assert_allclose(float(fresh['c']), float(golden['c']), atol=1e-12)
+
+@pytest.mark.parametrize('system', ['pendulum', 'cartpole', 'quad2d', 'quad3d'])
+def test_invariant_set_recomputes_in_memory(system):
+    mod = _load_module()
+    golden = np.load(os.path.join(SETS, f'{system}.npz'))
+
+    instance = mod.SYSTEMS[system]()
+    s0 = instance.attractor()
+    A_d = mod.fd_linearize(instance, s0)
+    P = solve_discrete_lyapunov(A_d.T, np.diag(instance.Q_diag))
+
+    np.testing.assert_allclose(s0, golden['center'], atol=1e-12)
+    np.testing.assert_allclose(P, golden['P'], atol=1e-12)
+
+
+def test_artifacts_are_not_writable():
+    '''Guard the guard: these are committed inputs, not scratch.'''
+    for system in ('pendulum', 'cartpole', 'quad2d', 'quad3d'):
+        path = os.path.join(SETS, f'{system}.npz')
+        assert not os.access(path, os.W_OK), \
+            f'{path} is writable; it must stay read-only so an in-place ' \
+            f'recomputation fails loudly instead of silently clobbering it'
 ```
+
+`c` is a property of the system definition rather than of the recomputation, so
+it is not re-derived here; `P` and `center` are what the step map determines and
+are what a migration would move.
 
 - [ ] **Step 5: Run both**
 
