@@ -1118,9 +1118,13 @@ cased here.
     python -m safe_control_gym.experiments.train_sb3 \\
         --task inverted_pendulum --algo sac --output_dir results/pendulum_sac \\
         --kv_overrides sb3_config.total_timesteps=200000
+
+Add --use_gpu to train on CUDA. It is off by default and usually the slower
+choice for these small MLP policies; see the comment on device selection below.
 '''
 import os
 
+import torch
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CheckpointCallback
 
@@ -1158,8 +1162,23 @@ def train():
     save_freq = int(sb3_config.get('save_freq', 10000))
 
     env = build_env(config)
-    model = algo('MlpPolicy', env, seed=config.seed, verbose=1,
+
+    # ConfigFactory already carries --use_gpu; pass it through rather than
+    # letting SB3 guess with device='auto'.
+    #
+    # Default is CPU on purpose. SB3's own guidance is that MlpPolicy is usually
+    # FASTER on CPU: at net_arch [256, 256] the per-step host<->device transfer
+    # costs more than the matmul it saves, and SAC does one small-batch gradient
+    # step per env step, so there is no large-batch parallelism for a GPU to
+    # exploit. Measured on this repo: the pendulum env alone runs 12,476
+    # steps/s, so 200k steps is ~16s of simulation -- the environment is not the
+    # bottleneck and neither is the network. GPU is worth revisiting only for a
+    # much larger policy, image observations, or many parallel envs.
+    device = 'cuda' if config.get('use_gpu', False) and torch.cuda.is_available() else 'cpu'
+    model = algo('MlpPolicy', env, seed=config.seed, verbose=1, device=device,
                  policy_kwargs={'net_arch': list(sb3_config.get('net_arch', [256, 256]))})
+    print(f'[train_sb3] task={config.task} algo={config.algo} device={device} '
+          f'steps={total_timesteps}', flush=True)
     # Periodic checkpoints, not only best: the shipped strong/weak model pairs
     # are best-vs-intermediate checkpoints of one run, so dropping intermediates
     # would make that axis unreproducible.
@@ -1225,7 +1244,27 @@ def test_sb3_not_imported_by_library():
 - [ ] **Step 4: Run it**
 
 Run: `python -m pytest tests/test_envs/test_train_sb3.py -q`
-Expected: `4 passed`. If `--kv_overrides` cannot express the nested
+Expected: `4 passed`.
+
+- [ ] **Step 4b: Confirm device selection is honoured, not just accepted**
+
+Run both and read the `[train_sb3] ... device=` line each prints:
+
+```bash
+python -m safe_control_gym.experiments.train_sb3 --task inverted_pendulum --algo sac \
+    --output_dir /tmp/sb3_cpu --kv_overrides sb3_config.total_timesteps=512
+python -m safe_control_gym.experiments.train_sb3 --task inverted_pendulum --algo sac --use_gpu \
+    --output_dir /tmp/sb3_gpu --kv_overrides sb3_config.total_timesteps=512
+```
+
+Expected: `device=cpu` for the first, `device=cuda` for the second **when a GPU
+is present**, and `device=cpu` for the second when one is not — the guard is
+`torch.cuda.is_available()`, so `--use_gpu` on a CPU-only box must degrade
+rather than crash. Report both lines.
+
+Do not treat GPU being slower as a bug: for `net_arch [256, 256]` it is the
+expected outcome, and the flag exists for larger future policies, not for
+speed today. If `--kv_overrides` cannot express the nested
 `sb3_config.*` keys, add an `sb3_config` block to the task's registered yaml
 defaults and override the leaf keys instead — do not add per-task branching to
 `train_sb3.py`.
