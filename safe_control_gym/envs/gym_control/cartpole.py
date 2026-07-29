@@ -253,7 +253,8 @@ class CartPole(BenchmarkEnv):
         Returns:
             obs (ndarray): The state of the environment after the step.
             reward (float): The scalar reward/cost of the step.
-            done (bool): Whether the conditions for the end of an episode are met in the step.
+            terminated (bool): Whether the MDP has reached a terminal state in the step.
+            truncated (bool): Whether the episode was truncated by the time limit.
             info (dict): A dictionary with information about the constraints evaluations and violations.
         '''
 
@@ -293,18 +294,21 @@ class CartPole(BenchmarkEnv):
         # Standard Gym return.
         obs = self._get_observation()
         rew = self._get_reward()
-        done = self._get_done()
+        terminated = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         '''(Re-)initializes the environment to start an episode.
 
         Mandatory to call at least once after __init__().
 
         Args:
             seed (int): An optional seed to reseed the environment.
+            options (dict): Unused. Accepted for gymnasium 1.x compatibility.
 
         Returns:
             obs (ndarray): The initial state of the environment.
@@ -700,10 +704,10 @@ class CartPole(BenchmarkEnv):
         # Done if state is out-of-bounds.
         if self.done_on_out_of_bound:
             x, x_dot, theta, theta_dot = self.state
-            if (x <= -self.x_threshold or x >= self.x_threshold or
-                x_dot <= -self.x_dot_threshold or x_dot >= self.x_dot_threshold or
-                theta <= -self.theta_threshold_radians or theta >= self.theta_threshold_radians or
-                theta_dot <= -self.theta_dot_threshold or theta_dot >= self.theta_dot_threshold):
+            out_of_bounds = (
+                x <= -self.x_threshold or x >= self.x_threshold or x_dot <= -self.x_dot_threshold or x_dot >= self.x_dot_threshold or theta <= -self.theta_threshold_radians or theta >= self.theta_threshold_radians or theta_dot <= -self.theta_dot_threshold or theta_dot >= self.theta_dot_threshold
+            )
+            if out_of_bounds:
                 self.out_of_bounds = True
                 return True
         self.out_of_bounds = False

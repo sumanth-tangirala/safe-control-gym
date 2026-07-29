@@ -49,11 +49,11 @@ def test_dynamics_matches_source_env(name):
     env.close()
 
 
-def test_step_returns_old_gym_four_tuple():
+def test_step_returns_gymnasium_five_tuple():
     env = make_env()
     env.reset()
     out = env.step(np.array([0.0]))
-    assert len(out) == 4, 'env.step must return (obs, reward, done, info)'
+    assert len(out) == 5, 'env.step must return (obs, reward, terminated, truncated, info)'
     env.close()
 
 
@@ -106,7 +106,7 @@ def test_done_on_goal_reached():
     env = make_env()
     env.reset()
     env.state = np.array([0.0, 0.0], dtype=np.float64)  # exactly upright at rest
-    _, _, done, info = env.step(np.array([0.0]))
-    assert done is True
+    _, _, terminated, _, info = env.step(np.array([0.0]))
+    assert terminated is True
     assert info.get('goal_reached') is True
     env.close()

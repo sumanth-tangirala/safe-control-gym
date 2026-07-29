@@ -157,7 +157,7 @@ class InvertedPendulum(BenchmarkEnv):
         return self.PENDULUM_MASS * self.PENDULUM_LENGTH ** 2
 
     def step(self, action):
-        '''Advance one control step (returns the old-Gym 4-tuple).'''
+        '''Advance one control step (returns the gymnasium 5-tuple).'''
         u = super().before_step(action)
         u = float(np.asarray(u).flat[0])
 
@@ -184,13 +184,18 @@ class InvertedPendulum(BenchmarkEnv):
 
         obs = self._get_observation()
         rew = self._get_reward()
-        done = self._get_done()
+        terminated = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
-    def reset(self, seed=None):
-        '''(Re-)initialize the environment; returns ``(obs, info)``.'''
+    def reset(self, seed=None, options=None):
+        '''(Re-)initialize the environment; returns ``(obs, info)``.
+
+        ``options`` is accepted for gymnasium 1.x compatibility and ignored.
+        '''
         super().before_reset(seed=seed)
         init_values = {'init_theta': self.INIT_THETA, 'init_theta_dot': self.INIT_THETA_DOT}
         if self.RANDOMIZED_INIT:
@@ -214,10 +219,10 @@ class InvertedPendulum(BenchmarkEnv):
     def _setup_symbolic(self, prior_prop={}, **kwargs):
         '''Create the CasADi symbolic dynamics/observation/cost model.'''
         g = self.GRAVITY_ACC
-        l = prior_prop.get('pendulum_length', self.PENDULUM_LENGTH)
+        length = prior_prop.get('pendulum_length', self.PENDULUM_LENGTH)
         m = prior_prop.get('pendulum_mass', self.PENDULUM_MASS)
         b = self.DAMPING
-        inertia = m * l ** 2
+        inertia = m * length ** 2
         dt = self.CTRL_TIMESTEP
         # Input variables.
         theta = cs.MX.sym('theta')
@@ -226,7 +231,7 @@ class InvertedPendulum(BenchmarkEnv):
         U = cs.MX.sym('U')
         nx, nu = 2, 1
         # Dynamics (theta = 0 upright).
-        theta_ddot = (g / l) * cs.sin(theta) + U / inertia - (b / inertia) * theta_dot
+        theta_ddot = (g / length) * cs.sin(theta) + U / inertia - (b / inertia) * theta_dot
         X_dot = cs.vertcat(theta_dot, theta_ddot)
         # Observation (full state).
         Y = cs.vertcat(theta, theta_dot)
@@ -240,7 +245,7 @@ class InvertedPendulum(BenchmarkEnv):
         cost = {'cost_func': cost_func, 'vars': {'X': X, 'U': U, 'Xr': Xr, 'Ur': Ur, 'Q': Q, 'R': R}}
         params = {
             'pendulum_mass': m,
-            'pendulum_length': l,
+            'pendulum_length': length,
             'gravity': g,
             'damping': b,
             'X_EQ': np.zeros(self.state_dim),
