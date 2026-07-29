@@ -13,6 +13,16 @@ grep '^## \[' .claude/log.md | grep ingest  # what has been read into the wiki
 
 ---
 
+## [2026-07-29] ingest | gymnasium migration + quad2d ellipsoid finding
+
+Migrated all four envs to the Gymnasium 5-tuple and added task-agnostic SB3
+training (`plans/sb3-gymnasium-migration.md`). Filed the quad2d invariant-set
+finding into `docs/datasets.md`: its ellipsoid is not reproducible because a
+ReLU policy puts a crease inside the finite-difference stencil, and that is
+expected rather than a defect, because `validate()` is what establishes
+invariance. Human ruled no investigation needed; recorded so it is not
+re-derived.
+
 ## [2026-07-28] lint | split machine-specific facts out of the wiki
 
 Moved the conda env path and the cluster/machine guidance to CLAUDE.local.md

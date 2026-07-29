@@ -152,6 +152,37 @@ python compute_invariant_sets.py --systems pendulum cartpole quad2d quad3d
 exceeds `c` and all samples converge. Do not skip it when publishing a new
 artifact.
 
+The four `.npz` are mode `-r--r-----` on disk on purpose. The script rewrites
+them in place, so a test or stray run that recomputes them would silently
+clobber committed artifacts; read-only makes that fail loudly instead.
+
+### quad2d's ellipsoid is not reproducible, and that is expected
+
+Recomputing with current code reproduces `pendulum` and `cartpole` bit-exactly
+at `atol=1e-12`. It does **not** reproduce `quad2d` (max |dP| 3.22, ~0.39% of
+the matrix scale) or `quad3d` (5.76e-11, noise-level). Two runs in one session
+are bit-identical to each other, so the computation is deterministic — the
+committed artifacts are simply not what today's code produces.
+
+Cause: `quad2d` is the only system whose closed loop contains a **trained neural
+network** (`safe_explorer_ppo`); the others use analytic controllers. ReLU
+networks are piecewise-linear, so the step map has creases. `fd_linearize`
+finite-differences it with `FD_EPS = 1e-4`, and a crease inside that stencil
+means `A_d` is not a well-defined Jacobian — measured at the attractor, the
+forward and backward differences disagree by ~5% (-0.438 vs -0.462). `P`
+inherits that indeterminacy.
+
+**This does not invalidate the labels.** `compute_system` runs `validate()`,
+which samples the ellipsoid boundary and checks empirically that trajectories
+never leave it. Invariance is established by that check, not by `P` being
+canonical, so a slightly different `P` that still validates still gives sound
+success labels.
+
+Consequence for tooling: do not gate `quad2d` or `quad3d` at a tight tolerance
+against the committed artifacts. `tests/test_envs/test_invariant_sets.py` was
+deliberately dropped for this reason — a test that fails for a reason nobody
+intends to fix teaches people to ignore the suite.
+
 ---
 
 Related: [architecture.md](architecture.md) for the library the generators call into, [workflows.md](workflows.md) for launching a run, [compute.md](compute.md) for where to launch it, [glossary.md](glossary.md) for every term used above.
