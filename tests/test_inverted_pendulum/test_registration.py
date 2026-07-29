@@ -2,16 +2,15 @@
 and produce sensible closed-loop behavior.'''
 
 import json
-import math
 import os
 from functools import partial
 
 import numpy as np
 
-from safe_control_gym.utils.registration import make, get_config
-from safe_control_gym.envs.gym_control.inverted_pendulum import InvertedPendulum
 from safe_control_gym.controllers.pendulum_lqr.pendulum_lqr import PendulumLQR
 from safe_control_gym.controllers.pendulum_rl.pendulum_rl import PendulumRL
+from safe_control_gym.envs.gym_control.inverted_pendulum import InvertedPendulum
+from safe_control_gym.utils.registration import get_config, make
 
 FIX = os.path.join(os.path.dirname(__file__), 'fixtures')
 GOLDEN_K = json.load(open(os.path.join(FIX, 'lqr_gain.json')))['K']
@@ -56,7 +55,8 @@ def test_lqr_stabilizes_from_inside_roa():
     obs, info = env.reset()
     done = False
     for _ in range(1000):
-        obs, _, done, info = env.step(ctrl.select_action(obs, info))
+        obs, _, terminated, truncated, info = env.step(ctrl.select_action(obs, info))
+        done = terminated or truncated
         if done:
             break
     assert info.get('goal_reached') is True, 'LQR from inside the ROA should reach upright'
@@ -74,7 +74,8 @@ def test_rl_swings_up_from_below():
     ctrl.reset()
     reached, min_dist = False, np.inf
     for _ in range(1000):
-        obs, _, done, info = env.step(ctrl.select_action(obs, info))
+        obs, _, terminated, truncated, info = env.step(ctrl.select_action(obs, info))
+        done = terminated or truncated
         min_dist = min(min_dist, float(np.linalg.norm(env.state)))
         if done and info.get('goal_reached'):
             reached = True

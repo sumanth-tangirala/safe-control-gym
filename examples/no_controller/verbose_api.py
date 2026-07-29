@@ -77,7 +77,8 @@ def run():
         # Sample a random action.
         action = env.action_space.sample()
         # Step the environment and print all returned information.
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         print_str_with_style(str(i) + '-th step.', 7)
         out = '\tApplied action: ' + str(action) + '\n'

@@ -126,7 +126,7 @@ class LINEAR_MPSC(MPSC):
                 u = np.random.rand(self.model.nu) / 20 - 1 / 40 + self.U_EQ
             else:
                 u = env.action_space.sample()  # Will yield a random action within action space.
-            x_next_obs, _, _, _ = env.step(u)
+            x_next_obs, _, _, _, _ = env.step(u)
             x_next_linear = np.squeeze(self.dynamics_func(x0=init_state - self.X_EQ, p=u - self.U_EQ)['xf'].toarray()) + self.X_EQ
             w[:, i] = x_next_obs - x_next_linear
         A_cl = self.discrete_dfdx + self.discrete_dfdu @ self.lqr_gain

@@ -349,7 +349,7 @@ class CBF_NN(CBF):
                 blended_input = (1 - input_blending_weight[i]) * uncertified_action + input_blending_weight[i] * safe_action
 
                 # Step the system
-                obs, _, _, info = env.step(blended_input)
+                obs, _, _, _, info = env.step(blended_input)
                 print(f'obs: {obs}')
                 print(f'action: {safe_action}')
 

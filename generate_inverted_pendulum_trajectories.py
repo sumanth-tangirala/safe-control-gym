@@ -214,7 +214,8 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None)
     for _ in range(max_steps):
         obs_in = ctrl.obs_normalizer(obs) if hasattr(ctrl, 'obs_normalizer') else obs
         action = ctrl.select_action(obs_in, info)
-        obs, _, done, info = env.step(action)
+        obs, _, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         trajectory.append([normalize_angle(env.state[0]), float(env.state[1])])
         if not invariant and done:
             success = bool(info.get('goal_reached', False))

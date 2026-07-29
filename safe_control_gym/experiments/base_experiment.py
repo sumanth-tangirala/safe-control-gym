@@ -125,7 +125,8 @@ class BaseExperiment:
                 # inner sim loop to accomodate different control frequencies
                 for _ in range(sim_steps):
                     steps += 1
-                    obs, _, done, info = self.env.step(action)
+                    obs, _, terminated, truncated, info = self.env.step(action)
+                    done = terminated or truncated
                     if done_on_max_steps:
                         done = done and steps >= self.MAX_STEPS
                     if done:
@@ -142,7 +143,8 @@ class BaseExperiment:
                 # inner sim loop to accomodate different control frequencies
                 for _ in range(sim_steps):
                     steps += 1
-                    obs, _, done, info = self.env.step(action)
+                    obs, _, terminated, truncated, info = self.env.step(action)
+                    done = terminated or truncated
                     if steps >= n_steps:
                         self.env.save_data()
                         for data_key, data_val in self.ctrl.results_dict.items():

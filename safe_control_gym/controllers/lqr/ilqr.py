@@ -377,7 +377,8 @@ class iLQR(BaseController):
                 self.input_stack = np.vstack((self.input_stack, action))
 
             # Step forward.
-            obs, cost, done, info = env.step(action)
+            obs, cost, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             total_cost -= cost
 
             if done:

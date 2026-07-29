@@ -8,15 +8,12 @@ sample statistics rather than golden values.
 import numpy as np
 import pytest
 
-from safe_control_gym.envs.gym_control.pendulum_noise import (
-    NoiseModel,
-    ActuationGaussianNoiseModel,
-    TruncatedActuationGaussianNoiseModel,
-    VelocityProportionalNoiseModel,
-    ControlProportionalNoiseModel,
-    NOISE_PRESETS,
-    build_noise_model,
-)
+from safe_control_gym.envs.gym_control.inverted_pendulum import InvertedPendulum
+from safe_control_gym.envs.gym_control.pendulum_noise import (NOISE_PRESETS, ActuationGaussianNoiseModel,
+                                                              ControlProportionalNoiseModel, NoiseModel,
+                                                              TruncatedActuationGaussianNoiseModel,
+                                                              VelocityProportionalNoiseModel,
+                                                              build_noise_model)
 
 
 def rng():
@@ -104,8 +101,6 @@ def test_control_proportional_std_grows_with_control():
 
 # --- env integration ---------------------------------------------------------
 
-from safe_control_gym.envs.gym_control.inverted_pendulum import InvertedPendulum
-
 
 def make_env(noise=None, **kw):
     cfg = dict(ctrl_freq=100, pyb_freq=100, randomized_init=False, cost='quadratic', noise=noise)
@@ -118,7 +113,8 @@ def rollout(env, x0, actions, seed=0):
     env.state = np.array(x0, dtype=np.float64)
     states, obss = [], []
     for u in actions:
-        obs, _, done, _ = env.step(np.array([u], dtype=np.float64))
+        obs, _, terminated, truncated, _ = env.step(np.array([u], dtype=np.float64))
+        done = terminated or truncated
         states.append(env.state.copy())
         obss.append(np.asarray(obs, dtype=np.float64).copy())
         if done:
