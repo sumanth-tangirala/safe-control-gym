@@ -2,26 +2,21 @@
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
 #       --env_id quadrotor2d_stabilization --algo sac --output_dir logs \
-#       --overrides configs/sb3/quadrotor2d_stabilization_sac.yaml --use_gpu
+#       --overrides configs/sb3/quadrotor2d_stabilization_sac.yaml
 #
-# Training-specific values live here, never in the env yaml: a composite id's
-# yaml must stay a faithful copy of its base so runs under the two ids remain
-# comparable (tests/test_envs/test_composite_env_ids.py).
+# The initial-state range and the termination bounds both come from
+# configs/collection/quadrotor2d_stabilization.yaml, transcribed from the shipped
+# dataset's dataset_description.json. Training and evaluation read that one
+# file, so the regime a policy learns in is the regime it is scored in.
 #
-# A hand-written starting point, not a tuned result. No hyperparameter search
-# has been run for this system.
+# Deliberately NOT set here: init_state_randomization_info. Splitting the start
+# range across two files is how the two silently diverge.
 #
-# Note on continuity: this trains vanilla SAC. The shipped quadrotor2D_rl
-# dataset was generated with Safe Explorer PPO (see its
-# dataset_description.json), a native controller with a learned constraint
-# projection that SB3 has no equivalent of. A policy from this config is a new
-# controller, not a reproduction of that one.
-
-task_config:
-  # The env yaml ships randomized_init: False, which would give SAC the same
-  # initial state every episode and a policy that generalises nowhere. The env
-  # yaml is left alone; the training run asks for randomisation instead.
-  randomized_init: True
+# Hyperparameters below are hand-written starting points. No search has been run.
+#
+# Note the collection regime is strict here: termination at |x_dot| > 1.0 m/s,
+# where the env default allowed 30. Under random actions episodes last ~8 steps.
+# That severity is the dataset's, and is much of why its success rate is 0.0802.
 
 sb3_config:
   total_timesteps: 500000
@@ -29,3 +24,4 @@ sb3_config:
   save_freq: 50000
   eval_freq: 50000
   n_eval_episodes: 10
+  collection_bounds: configs/collection/quadrotor2d_stabilization.yaml

@@ -37,13 +37,14 @@ def trained_run(tmp_path_factory):
     return runs[0]
 
 
-def _evaluate(run, seed, n_episodes=4, out_name='eval.json'):
+def _evaluate(run, seed, n_episodes=4, out_name='eval.json', eval_bounds=None):
     destination = os.path.join(str(run), out_name)
-    result = subprocess.run(
-        [sys.executable, '-m', 'safe_control_gym.experiments.eval_policy',
-         '--run', str(run), '--n_episodes', str(n_episodes), '--seed', str(seed),
-         '--out', destination],
-        cwd=REPO, capture_output=True, text=True)
+    command = [sys.executable, '-m', 'safe_control_gym.experiments.eval_policy',
+               '--run', str(run), '--n_episodes', str(n_episodes), '--seed', str(seed),
+               '--out', destination]
+    if eval_bounds:
+        command += ['--eval_bounds', eval_bounds]
+    result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-3000:]
     with open(destination) as handle:
         return json.load(handle)
@@ -66,7 +67,7 @@ def test_report_is_complete(trained_run):
     exactly the case the design is worried about.
     '''
     report = _evaluate(trained_run, seed=0)
-    assert report['verdict'] in ('PASS', 'FAIL')
+    assert report['verdict'] in ('PASS', 'FAIL', 'NON_DISCRIMINATING')
     assert report['baseline_id'] == 'lqr'
     assert report['goal_tolerance'] > 0
     for block in ('policy', 'baseline'):
@@ -74,6 +75,50 @@ def test_report_is_complete(trained_run):
                     'out_of_bounds_rate', 'constraint_violation_rate',
                     'terminated_frac', 'truncated_frac'):
             assert key in report[block], f'{block} is missing {key}'
+
+
+def test_saturated_baseline_is_not_a_pass(trained_run):
+    '''A baseline at 0 or 1 ranks nothing, and must not be reported as PASS.
+
+    This is not hypothetical: cartpole's default init box is +/-0.05 on all four
+    dimensions, and LQR solves all of it. Measured over 30 episodes there, LQR
+    scores exactly 1.0000 -- so the bar becomes "within 0.05 of perfect" and any
+    adequate policy clears it. Over cartpole's collection box the same LQR
+    scores 0.0667, which does rank things.
+
+    The fixture trains on the default box precisely so this path is exercised.
+    '''
+    report = _evaluate(trained_run, seed=0, n_episodes=6, out_name='eval_sat.json')
+    if report['baseline']['success_rate'] in (0.0, 1.0):
+        assert report['verdict'] == 'NON_DISCRIMINATING', (
+            'a saturated baseline was reported as '
+            f"{report['verdict']}, which reads as a real result")
+    else:
+        assert report['verdict'] in ('PASS', 'FAIL')
+
+
+def test_eval_bounds_override_the_training_region(trained_run):
+    '''--eval_bounds must actually move where episodes start.
+
+    The point of the flag is that a policy is judged on the region the dataset
+    covers rather than the one it trained in. If the override silently failed,
+    every number would look plausible and be answering the easier question.
+    '''
+    bounds = os.path.join(REPO, 'configs/collection/cartpole_stabilization.yaml')
+    report = _evaluate(trained_run, seed=0, n_episodes=6,
+                       out_name='eval_bounds.json', eval_bounds=bounds)
+    assert report['eval_bounds'] == bounds
+    assert report['reference_success'] == pytest.approx(0.1797)
+    assert report['beats_reference'] is not None
+
+    # cartpole's default box is +/-0.05; the collection box is +/-6 in x and
+    # +/-pi in theta. Starts must reflect that, which also proves the
+    # env_attributes raising x_threshold from 2.4 and theta from pi/2 took
+    # effect -- without them these states terminate at step one.
+    default_report = _evaluate(trained_run, seed=0, n_episodes=6,
+                               out_name='eval_default.json')
+    assert report['policy']['mean_episode_length'] != \
+        default_report['policy']['mean_episode_length']
 
 
 def test_skip_baseline_yields_no_verdict(trained_run):

@@ -1,0 +1,51 @@
+# The collection regime for the 3D quadrotor.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds).
+#
+# Source: DATA_ROOT/deterministic/quadrotor3D_lqr/dataset_description.json.
+#
+# This is the system whose dataset departs furthest from the env defaults, and
+# state_space_bounds is REQUIRED here, not defensive:
+#
+#   z      collection 0.1-3.0   default -0.05-2.0    exceeds by 1.0 m
+#   p,q,r  collection +/-24.0   default +/-8.727     2.8x beyond
+#
+# Sampling that region without moving the bounds gives episodes that terminate
+# on the first step over much of the box.
+#
+# CAVEAT on attitude. The dataset stores orientation as a unit quaternion
+# (qw, qx, qy, qz) covering all orientations, while this env is 12-D Euler
+# (phi, theta, psi). Uniform sampling over Euler angles is NOT uniform over
+# orientations, so the ranges below approximate the dataset's coverage rather
+# than reproduce it. phi and theta are masked from the out_of_bounds test in any
+# case, so this affects the start distribution only, not termination.
+
+init_state_randomization_info:
+  init_x: {distrib: 'uniform', low: -1.8, high: 1.8}
+  init_x_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_y: {distrib: 'uniform', low: -1.8, high: 1.8}
+  init_y_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_z: {distrib: 'uniform', low: 0.1, high: 3.0}
+  init_z_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_phi: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_theta: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_psi: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_p: {distrib: 'uniform', low: -24.0, high: 24.0}
+  init_q: {distrib: 'uniform', low: -24.0, high: 24.0}
+  init_r: {distrib: 'uniform', low: -24.0, high: 24.0}
+
+state_space_bounds:
+  x: [-1.8, 1.8]
+  x_dot: [-3.0, 3.0]
+  y: [-1.8, 1.8]
+  y_dot: [-3.0, 3.0]
+  z: [0.1, 3.0]
+  z_dot: [-3.0, 3.0]
+  p: [-24.0, 24.0]
+  q: [-24.0, 24.0]
+  r: [-24.0, 24.0]
+
+# 219657/1000000 of eval_states.txt labelled 1, produced by lqr.
+reference_success: 0.2197
+reference_dataset: 'deterministic/quadrotor3D_lqr'

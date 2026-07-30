@@ -1,0 +1,44 @@
+# The collection regime for the cartpole.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds).
+#
+# Source: DATA_ROOT/deterministic/cartpole_pybullet/dataset_description.json,
+# where initial_state_bounds and termination_thresholds are identical.
+#
+# env_attributes is required, and it corrects the defaults in BOTH directions:
+#
+#   x        default 2.4     -> 6.0    far too tight; collection samples +/-6
+#   theta    default pi/2    -> inf    far too tight; over half of +/-pi died
+#   x_dot    default 20      -> 5.0    too loose; the dataset kills earlier
+#   theta_dot default 20     -> 5.0    too loose
+#
+# Same assignments as generate_cartpole_trajectories.py:262-265.
+
+init_state_randomization_info:
+  init_x:
+    distrib: 'uniform'
+    low: -6.0
+    high: 6.0
+  init_x_dot:
+    distrib: 'uniform'
+    low: -5.0
+    high: 5.0
+  init_theta:
+    distrib: 'uniform'
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: 'uniform'
+    low: -5.0
+    high: 5.0
+
+env_attributes:
+  x_threshold: 6.0
+  x_dot_threshold: 5.0
+  theta_threshold_radians: .inf
+  theta_dot_threshold: 5.0
+
+# 20887/116242 of eval_states.txt labelled 1, produced by lqr.
+reference_success: 0.1797
+reference_dataset: 'deterministic/cartpole_pybullet'

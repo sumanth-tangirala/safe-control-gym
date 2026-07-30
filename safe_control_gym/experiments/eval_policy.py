@@ -43,8 +43,14 @@ import munch
 import numpy as np
 import yaml
 
-from safe_control_gym.experiments.train_sb3 import ALGOS, build_env
+from safe_control_gym.experiments.success import at_goal, goal_tolerance
+from safe_control_gym.experiments.train_sb3 import (ALGOS, apply_collection_bounds, build_env,
+                                                    load_collection_bounds, with_collection_init)
 from safe_control_gym.utils.registration import get_config, make
+
+# Re-exported: callers reach for these here, and success.py is where they are
+# defined so the training-time callback cannot drift from the acceptance bar.
+__all__ = ['at_goal', 'baseline_id', 'episode_seeds', 'evaluate', 'goal_tolerance']
 
 # Systems whose LQR is not the generic one.
 BASELINE_OVERRIDES = {'inverted_pendulum': 'pendulum_lqr',
@@ -56,33 +62,6 @@ DEFAULT_MARGIN = 0.05
 def baseline_id(env_id):
     '''Which LQR controller stabilises this system.'''
     return BASELINE_OVERRIDES.get(env_id, 'lqr')
-
-
-def goal_tolerance(env):
-    '''Radius of the goal ball, by whichever name this env gives it.
-
-    Resolved on `.unwrapped`, not on the wrapper. `AttributeForwardingMixin`
-    forwards an allowlist that contains neither `goal_threshold` nor
-    `TASK_INFO`, so on the pendulum -- the one system whose training config
-    wraps the env -- every lookup here raised AttributeError.
-
-    The pendulum names it `goal_threshold` (0.075, from its yaml); cartpole and
-    the quadrotors use `TASK_INFO['stabilization_goal_tolerance']`. Checking the
-    pendulum's name first matters: its TASK_INFO also happens to hold 0.075
-    today, so reading TASK_INFO would agree by coincidence and diverge silently
-    the moment the yaml changed.
-    '''
-    base = env.unwrapped
-    threshold = getattr(base, 'goal_threshold', None)
-    if threshold is not None:
-        return float(threshold)
-    return float(base.TASK_INFO['stabilization_goal_tolerance'])
-
-
-def at_goal(env, tolerance):
-    '''The envs' own stabilization test, applied to the current state.'''
-    base = env.unwrapped
-    return bool(np.linalg.norm(np.asarray(base.state) - np.asarray(base.X_GOAL)) < tolerance)
 
 
 def episode_seeds(seed, n_episodes):
@@ -154,16 +133,37 @@ def resolve_weights(run_dir, model_name):
     raise FileNotFoundError(f'No best_model.zip or model_final.zip in {run_dir}')
 
 
-def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=False):
+def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=False,
+             eval_bounds_path=None):
     '''Roll out policy and baseline from identical states; return the report.'''
     config = load_run_config(run_dir)
     env_id, algo = config['task'], config['algo']
+
+    # Which regime to score in. An explicit --eval_bounds wins; otherwise the
+    # run's own collection_bounds is reused, so a policy trained in the
+    # collection regime is scored in it by default rather than by remembering a
+    # flag. Falling back to neither means scoring on the training distribution,
+    # which is a materially easier question -- recorded in the report so a
+    # number can never be quoted without saying which region produced it.
+    trained_under = config.get('sb3_config', {}).get('collection_bounds')
+    bounds_path = eval_bounds_path or trained_under
+    bounds = load_collection_bounds(bounds_path)
+
+    # Applied to the config BEFORE either env is built, so policy and baseline
+    # face the identical distribution -- the whole comparison rests on that.
+    config = dict(config)
+    config['task_config'] = with_collection_init(dict(config['task_config']), bounds)
+    # build_env would re-read collection_bounds from sb3_config and apply the
+    # run's own regime; clear it so `bounds` is the single authority here.
+    config['sb3_config'] = {k: v for k, v in (config.get('sb3_config') or {}).items()
+                            if k != 'collection_bounds'}
     task_config = config['task_config']
     seeds = episode_seeds(seed, n_episodes)
 
     # Policy: the wrapped env it was trained on. Shaping changes the observation,
     # so a policy evaluated on the bare env would be fed the wrong vector.
     policy_env = build_env(munch.munchify(config))
+    apply_collection_bounds(policy_env, env_id, bounds)
     tolerance = goal_tolerance(policy_env)
     weights = resolve_weights(run_dir, model_name)
     model = ALGOS[algo].load(weights, device='cpu')
@@ -179,6 +179,9 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
         'env_id': env_id, 'algo': algo, 'n_episodes': n_episodes, 'seed': seed,
         'weights': os.path.basename(weights),
         'goal_tolerance': tolerance,
+        'eval_bounds': bounds_path,
+        'reference_success': bounds.get('reference_success'),
+        'reference_dataset': bounds.get('reference_dataset'),
         'policy': summarise(policy_episodes),
     }
 
@@ -195,6 +198,7 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
     # where the real defaults live, so it is loaded rather than reinvented here.
     controller = make(base_id, env_func, **get_config(base_id))
     baseline_env = env_func()
+    apply_collection_bounds(baseline_env, env_id, bounds)
     try:
         def act(obs, info):
             return controller.select_action(np.asarray(baseline_env.unwrapped.state), info)
@@ -212,12 +216,28 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
             err_msg=f'episode {i}: policy and baseline started from different states')
 
     baseline = summarise(baseline_episodes)
+    policy_success = report['policy']['success_rate']
+    reference = report.get('reference_success')
+
+    # A baseline pinned at 0 or 1 cannot rank anything: at 1.0 every adequate
+    # policy passes, at 0.0 every useless one does. Say so rather than emitting
+    # a PASS that means nothing -- this is the saturation the collection-box
+    # eval regions exist to avoid, and it must be visible when it happens.
+    if baseline['success_rate'] in (0.0, 1.0):
+        verdict = 'NON_DISCRIMINATING'
+    elif policy_success >= baseline['success_rate'] - margin:
+        verdict = 'PASS'
+    else:
+        verdict = 'FAIL'
+
     report.update({
         'baseline_id': base_id,
         'baseline': baseline,
         'margin': margin,
-        'verdict': ('PASS' if report['policy']['success_rate'] >= baseline['success_rate'] - margin
-                    else 'FAIL'),
+        'verdict': verdict,
+        # Against the controller that actually produced the shipped dataset,
+        # measured over this same region. The bar for "worth re-collecting with".
+        'beats_reference': None if reference is None else bool(policy_success >= reference),
     })
     return report
 
@@ -235,7 +255,16 @@ def render(report):
     lines.append(f"{'':22s}" + ''.join(f'{k:>22s}' for k in keys))
     for name, block in blocks:
         lines.append(f'{name:22s}' + ''.join(f'{block[k]:>22.4f}' for k in keys))
+    if report.get('reference_success') is not None:
+        lines.append(f"reference   {report['reference_success']:.4f}  "
+                     f"({report.get('reference_dataset')}) -- "
+                     f"beats_reference={report.get('beats_reference')}")
+    if report.get('eval_bounds'):
+        lines.append(f"eval region: {report['eval_bounds']}")
     lines.append(f"verdict: {report['verdict']}  (margin {report['margin']})")
+    if report['verdict'] == 'NON_DISCRIMINATING':
+        lines.append('  baseline is saturated at 0 or 1 -- this comparison ranks nothing. '
+                     'Widen the evaluation region.')
     return '\n'.join(lines)
 
 
@@ -251,10 +280,14 @@ def main():
     parser.add_argument('--skip_baseline', action='store_true',
                         help='report policy metrics only, with no verdict')
     parser.add_argument('--out', default=None, help='where to write eval.json')
+    parser.add_argument('--eval_bounds', default=None,
+                        help='yaml giving the evaluation region (see configs/eval/); '
+                             'defaults to the region the policy trained on, which is '
+                             'an easier question than the one that matters')
     args = parser.parse_args()
 
     report = evaluate(args.run, args.n_episodes, args.seed, args.margin,
-                      args.model, args.skip_baseline)
+                      args.model, args.skip_baseline, args.eval_bounds)
     destination = args.out or os.path.join(args.run, 'eval.json')
     with open(destination, 'w') as handle:
         json.dump(report, handle, indent=2, sort_keys=True)

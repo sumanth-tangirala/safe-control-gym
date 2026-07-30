@@ -2,14 +2,17 @@
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
 #       --env_id cartpole_stabilization --algo sac --output_dir logs \
-#       --overrides configs/sb3/cartpole_stabilization_sac.yaml --use_gpu
+#       --overrides configs/sb3/cartpole_stabilization_sac.yaml
 #
-# Training-specific values live here, never in the env yaml: a composite id's
-# yaml must stay a faithful copy of its base so runs under the two ids remain
-# comparable (tests/test_envs/test_composite_env_ids.py).
+# The initial-state range and the termination bounds both come from
+# configs/collection/cartpole_stabilization.yaml, transcribed from the shipped
+# dataset's dataset_description.json. Training and evaluation read that one
+# file, so the regime a policy learns in is the regime it is scored in.
 #
-# A hand-written starting point, not a tuned result. No hyperparameter search
-# has been run for this system.
+# Deliberately NOT set here: init_state_randomization_info. Splitting the start
+# range across two files is how the two silently diverge.
+#
+# Hyperparameters below are hand-written starting points. No search has been run.
 
 sb3_config:
   total_timesteps: 300000
@@ -17,3 +20,4 @@ sb3_config:
   save_freq: 30000
   eval_freq: 30000
   n_eval_episodes: 10
+  collection_bounds: configs/collection/cartpole_stabilization.yaml

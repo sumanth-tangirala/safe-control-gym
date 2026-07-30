@@ -1,0 +1,27 @@
+# The collection regime for the inverted pendulum.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds), so the regime a policy learns in cannot drift from the one it
+# is scored in.
+#
+# Source: DATA_ROOT/deterministic/pendulum_lqr_50k/dataset_description.json.
+#
+# This system needs no termination overrides at all. inverted_pendulum's
+# _get_done ends an episode only on reaching the goal -- there is no
+# out-of-bounds test -- and theta_dot is clipped at theta_dot_max rather than
+# terminated. Start range and env already agree, which is why the pendulum was
+# the one system whose training distribution was correct from the start.
+
+init_state_randomization_info:
+  init_theta:
+    distrib: 'uniform'
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: 'uniform'
+    low: -6.283185307179586
+    high: 6.283185307179586
+
+# 19204/49770 of eval_states.txt labelled 1, produced by pendulum_lqr.
+reference_success: 0.3859
+reference_dataset: 'deterministic/pendulum_lqr_50k'

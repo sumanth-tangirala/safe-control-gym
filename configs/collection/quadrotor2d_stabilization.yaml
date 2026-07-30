@@ -1,0 +1,42 @@
+# The collection regime for the 2D quadrotor.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds).
+#
+# Source: DATA_ROOT/deterministic/quadrotor2D_rl/dataset_description.json.
+#
+# No termination overrides needed: this box already fits inside the env's
+# state_space on every dimension it checks, and quadrotor.py masks the angle
+# indices out of its out_of_bounds test as periodic variables, so theta never
+# terminates however far it swings.
+#
+#   x        +/-1.0   inside +/-2.0
+#   x_dot    +/-1.0   inside +/-30
+#   z        0.1-1.5  inside -0.05-2.0
+#   z_dot    +/-1.0   inside +/-30
+#   theta    +/-pi    masked, never terminates
+#   theta_dot +/-8.0  inside +/-8.727   <- the only tight margin
+#
+# state_space_bounds is nonetheless stated explicitly rather than left implicit.
+# The alternative is relying on the env defaults happening to be wider, which is
+# true today and is not a property anything enforces.
+
+init_state_randomization_info:
+  init_x: {distrib: 'uniform', low: -1.0, high: 1.0}
+  init_x_dot: {distrib: 'uniform', low: -1.0, high: 1.0}
+  init_z: {distrib: 'uniform', low: 0.1, high: 1.5}
+  init_z_dot: {distrib: 'uniform', low: -1.0, high: 1.0}
+  init_theta: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_theta_dot: {distrib: 'uniform', low: -8.0, high: 8.0}
+
+state_space_bounds:
+  x: [-1.0, 1.0]
+  x_dot: [-1.0, 1.0]
+  z: [0.1, 1.5]
+  z_dot: [-1.0, 1.0]
+  theta_dot: [-8.0, 8.0]
+
+# 39287/489789 of eval_states.txt labelled 1, produced by upstream's
+# Safe Explorer PPO checkpoint. The lowest of any shipped dataset.
+reference_success: 0.0802
+reference_dataset: 'deterministic/quadrotor2D_rl'

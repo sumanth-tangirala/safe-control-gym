@@ -2,23 +2,21 @@
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
 #       --env_id quadrotor3d_stabilization --algo sac --output_dir logs \
-#       --overrides configs/sb3/quadrotor3d_stabilization_sac.yaml --use_gpu
+#       --overrides configs/sb3/quadrotor3d_stabilization_sac.yaml
 #
-# Training-specific values live here, never in the env yaml: a composite id's
-# yaml must stay a faithful copy of its base so runs under the two ids remain
-# comparable (tests/test_envs/test_composite_env_ids.py).
+# The initial-state range and the termination bounds both come from
+# configs/collection/quadrotor3d_stabilization.yaml, transcribed from the shipped
+# dataset's dataset_description.json. Training and evaluation read that one
+# file, so the regime a policy learns in is the regime it is scored in.
 #
-# The system most likely not to converge: 12 state dimensions, 4 actions,
-# PyBullet dynamics, and no prior evidence that this reward stabilises it at
-# all. Longer horizon and a wider network than the others for that reason, but
-# these are guesses. A non-converging run here is a result to report, not a
-# config to keep tuning silently.
-
-task_config:
-  # The env yaml ships randomized_init: False, which would give SAC the same
-  # initial state every episode and a policy that generalises nowhere. The env
-  # yaml is left alone; the training run asks for randomisation instead.
-  randomized_init: True
+# Deliberately NOT set here: init_state_randomization_info. Splitting the start
+# range across two files is how the two silently diverge.
+#
+# Hyperparameters below are hand-written starting points. No search has been run.
+#
+# The system most likely not to converge: 12 state dimensions, 4 actions, and
+# a collection regime spanning all orientations with body rates to +/-24 rad/s.
+# A non-converging run here is a result to report, not a config to keep tuning.
 
 sb3_config:
   total_timesteps: 1000000
@@ -26,3 +24,4 @@ sb3_config:
   save_freq: 100000
   eval_freq: 50000
   n_eval_episodes: 10
+  collection_bounds: configs/collection/quadrotor3d_stabilization.yaml
