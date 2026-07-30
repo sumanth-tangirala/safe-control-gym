@@ -1,33 +1,36 @@
-# Composite (system, task) id: cartpole, stabilization.
+# Composite (system, task) id [REACH]: 2D quadrotor, stabilization.
 #
-# A copy of cartpole.yaml with the task axis pinned. Building this id and
-# building `cartpole` with the same overrides must produce the same environment
+# A copy of quadrotor.yaml with the system and task axes pinned (quad_type: 2 is
+# already that file's default; it is restated here so the id is self-describing
+# rather than inheriting the meaning of a shared default). Building this id and
+# building `quadrotor` with the same overrides must produce the same environment
 # -- tests/test_envs/test_composite_env_ids.py asserts it -- so this file tracks
 # its base and must not acquire training-specific values. Put those in
 # configs/sb3/ instead.
 
 # Simulation options
-ctrl_freq: 50
-pyb_freq: 50
+ctrl_freq: 60
+pyb_freq: 240
+physics: pyb
 gui: False
+quad_type: 2
 normalized_rl_action_space: False
 episode_len_sec: 5
 # State initialization
 init_state: null
-randomized_init: True
+randomized_init: False
 init_state_randomization_info: null
 # Randomization
 inertial_prop: null
 randomized_inertial_prop: False
 inertial_prop_randomization_info: null
-# Task semantics: stabilization. terminate_on_goal False means entering the goal
-# ball does NOT end the episode, so the controller has to hold position there and
-# success is judged on the terminal state. The sibling <system>_reach id sets it
-# True, ending the episode on first contact.
+# Task semantics: reach. terminate_on_goal True ends the episode the moment the
+# goal ball is entered -- touch it and you are done, no holding required.
 #
-# The base env yamls keep terminate_on_goal True, which is what every shipped
-# dataset was collected under -- so the collectors are unaffected by this file.
-terminate_on_goal: False
+# This is what Task.STABILIZATION did unconditionally before the flag existed,
+# and therefore how EVERY shipped dataset was collected. A reach run is the one
+# directly comparable to roa_labels.txt and eval_states.txt.
+terminate_on_goal: True
 
 # Task
 task: stabilization
@@ -46,7 +49,7 @@ constraint_penalty: -1
 # Misc
 verbose: False
 # RL Hyper-parameters
-obs_wrap_angle: False
+norm_act_scale: 0.1
 obs_goal_horizon: 0
 rew_state_weight: 1.0
 rew_act_weight: 0.0001

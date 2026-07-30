@@ -42,3 +42,11 @@ env_attributes:
 # 20887/116242 of eval_states.txt labelled 1, produced by lqr.
 reference_success: 0.1797
 reference_dataset: 'deterministic/cartpole_pybullet'
+
+# The reference above was measured under REACH semantics: every shipped dataset
+# was collected before terminate_on_goal existed, when entering the goal ball
+# ended the episode. A stabilization run, which must hold position there, is a
+# strictly harder problem -- so comparing a stabilization success rate against
+# this number is comparing two different tasks. eval_policy records both so the
+# mismatch is visible rather than assumed away.
+reference_task: reach

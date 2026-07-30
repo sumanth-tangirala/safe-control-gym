@@ -44,3 +44,24 @@ register(idx='quadrotor2d_stabilization',
 register(idx='quadrotor3d_stabilization',
          entry_point='safe_control_gym.envs.gym_pybullet_drones.quadrotor:Quadrotor',
          config_entry_point='safe_control_gym.envs.gym_pybullet_drones:quadrotor3d_stabilization.yaml')
+
+# The reach variants. Same systems, terminate_on_goal True: the episode ends the
+# moment the goal ball is entered rather than requiring the controller to hold
+# there. This is what Task.STABILIZATION did unconditionally before the flag
+# existed, so a reach run is the one comparable to the shipped datasets.
+
+register(idx='inverted_pendulum_reach',
+         entry_point='safe_control_gym.envs.gym_control.inverted_pendulum:InvertedPendulum',
+         config_entry_point='safe_control_gym.envs.gym_control:inverted_pendulum_reach.yaml')
+
+register(idx='cartpole_reach',
+         entry_point='safe_control_gym.envs.gym_control.cartpole:CartPole',
+         config_entry_point='safe_control_gym.envs.gym_control:cartpole_reach.yaml')
+
+register(idx='quadrotor2d_reach',
+         entry_point='safe_control_gym.envs.gym_pybullet_drones.quadrotor:Quadrotor',
+         config_entry_point='safe_control_gym.envs.gym_pybullet_drones:quadrotor2d_reach.yaml')
+
+register(idx='quadrotor3d_reach',
+         entry_point='safe_control_gym.envs.gym_pybullet_drones.quadrotor:Quadrotor',
+         config_entry_point='safe_control_gym.envs.gym_pybullet_drones:quadrotor3d_reach.yaml')

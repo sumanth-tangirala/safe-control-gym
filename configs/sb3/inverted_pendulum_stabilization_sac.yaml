@@ -1,26 +1,28 @@
-# SAC on the inverted pendulum, stabilization.
+# SAC on inverted_pendulum, stabilization.
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
 #       --env_id inverted_pendulum_stabilization --algo sac --output_dir logs \
 #       --overrides configs/sb3/inverted_pendulum_stabilization_sac.yaml
 #
-# The initial-state range and the termination bounds both come from
-# configs/collection/inverted_pendulum_stabilization.yaml, transcribed from the shipped
-# dataset's dataset_description.json. Training and evaluation read that one
-# file, so the regime a policy learns in is the regime it is scored in.
+# Initial-state range and termination bounds both come from
+# configs/collection/inverted_pendulum.yaml, transcribed from the shipped dataset's
+# dataset_description.json. Training and evaluation read that one file, so the
+# regime a policy learns in is the regime it is scored in.
 #
-# Deliberately NOT set here: init_state_randomization_info. Splitting the start
-# range across two files is how the two silently diverge.
+# cost: sparse, deliberately. Under the dense rl_reward, reaching the goal ends
+# the episode and forfeits every remaining step, so success is irrational:
+# measured on cartpole, tightening the terminal error to the goal ball was worth
+# +4.46 return while the termination it triggers cost -181.2. SAC learned the
+# correct policy for that reward -- hover just outside the ball, 3.8x the LQR
+# return at 0.000 success. Sparse makes the goal the only positive term.
 #
-# Hyperparameters below are hand-written starting points. No search has been run.
-#
-# angle_obs and action_repeat mirror the shipped pendulum_rl policies, so a
-# newly trained policy stays loadable by the same controller.
+# Hyperparameters are hand-written starting points. No search has been run.
 
 task_config:
-  # rl_reward, not the env default `quadratic`: the quadratic branch returns a
-  # symbolic LQR loss, a cost to minimise rather than a reward to maximise.
-  cost: rl_reward
+  cost: sparse
+  sparse_goal_reward: 1.0
+  sparse_oob_reward: -1.0
+  sparse_step_reward: -0.01
 
 sb3_config:
   total_timesteps: 200000
@@ -33,4 +35,4 @@ sb3_config:
     rate_index: 1
     rate_max: 6.283185307179586
   action_repeat: 4
-  collection_bounds: configs/collection/inverted_pendulum_stabilization.yaml
+  collection_bounds: configs/collection/inverted_pendulum.yaml

@@ -40,3 +40,11 @@ state_space_bounds:
 # Safe Explorer PPO checkpoint. The lowest of any shipped dataset.
 reference_success: 0.0802
 reference_dataset: 'deterministic/quadrotor2D_rl'
+
+# The reference above was measured under REACH semantics: every shipped dataset
+# was collected before terminate_on_goal existed, when entering the goal ball
+# ended the episode. A stabilization run, which must hold position there, is a
+# strictly harder problem -- so comparing a stabilization success rate against
+# this number is comparing two different tasks. eval_policy records both so the
+# mismatch is visible rather than assumed away.
+reference_task: reach

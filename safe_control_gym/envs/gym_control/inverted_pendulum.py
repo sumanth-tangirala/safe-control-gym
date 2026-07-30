@@ -183,8 +183,13 @@ class InvertedPendulum(BenchmarkEnv):
                 break
 
         obs = self._get_observation()
-        rew = self._get_reward()
+        # _get_done BEFORE _get_reward: it is what sets goal_reached and
+        # out_of_bounds, and Cost.SPARSE reads both. Run the other way round
+        # they are a step stale. Behaviour-neutral for rl_reward and quadratic,
+        # neither of which reads those flags -- the golden rollout fixtures and
+        # the dataset-slice oracles pin that.
         terminated = self._get_done()
+        rew = self._get_reward()
         truncated = False
         info = self._get_info()
         obs, rew, terminated, truncated, info = super().after_step(
@@ -317,6 +322,8 @@ class InvertedPendulum(BenchmarkEnv):
 
     def _get_reward(self):
         '''Compute the step reward/cost.'''
+        if self.COST == Cost.SPARSE:
+            return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
             state = deepcopy(self.state)
             act = np.asarray(self.current_noisy_physical_action)
@@ -336,9 +343,14 @@ class InvertedPendulum(BenchmarkEnv):
                                                  R=self.R)['l'])
 
     def _get_done(self):
-        '''Episode ends only on reaching the upright goal (no out-of-bounds).'''
+        '''Ends on the upright goal under reach; never out-of-bounds.
+
+        This system has no out-of-bounds test at all -- theta_dot is clipped at
+        theta_dot_max rather than terminated -- so under stabilization
+        (terminate_on_goal False) an episode only ever ends at the time limit.
+        '''
         self.goal_reached = bool(np.linalg.norm(self.state - self.X_GOAL) < self.goal_threshold)
-        return self.goal_reached
+        return self.goal_reached and self.terminate_on_goal
 
     def _get_info(self):
         '''Info dict: goal flag and (weighted) mse to the goal.'''

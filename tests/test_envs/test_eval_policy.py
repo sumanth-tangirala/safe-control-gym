@@ -104,12 +104,21 @@ def test_eval_bounds_override_the_training_region(trained_run):
     covers rather than the one it trained in. If the override silently failed,
     every number would look plausible and be answering the easier question.
     '''
-    bounds = os.path.join(REPO, 'configs/collection/cartpole_stabilization.yaml')
+    bounds = os.path.join(REPO, 'configs/collection/cartpole.yaml')
     report = _evaluate(trained_run, seed=0, n_episodes=6,
                        out_name='eval_bounds.json', eval_bounds=bounds)
     assert report['eval_bounds'] == bounds
     assert report['reference_success'] == pytest.approx(0.1797)
-    assert report['beats_reference'] is not None
+
+    # The reference is a reach number -- every shipped dataset was collected
+    # before terminate_on_goal existed, when entering the goal ball ended the
+    # episode. This run is cartpole_stabilization, which must hold position
+    # there instead, so the two are not the same problem and the comparison is
+    # deliberately withheld rather than made misleadingly.
+    assert report['reference_task'] == 'reach'
+    assert report['terminate_on_goal'] is False
+    assert report['beats_reference'] is None, (
+        'a stabilization run was compared against a reach reference')
 
     # cartpole's default box is +/-0.05; the collection box is +/-6 in x and
     # +/-pi in theta. Starts must reflect that, which also proves the
@@ -119,6 +128,28 @@ def test_eval_bounds_override_the_training_region(trained_run):
                                out_name='eval_default.json')
     assert report['policy']['mean_episode_length'] != \
         default_report['policy']['mean_episode_length']
+
+
+def test_reach_run_is_compared_against_the_reach_reference(tmp_path):
+    '''The mirror of the above: matching tasks, so the comparison IS made.
+
+    Without this, "beats_reference is None" would pass whether the withholding
+    logic worked or the field were simply never populated.
+    '''
+    result = subprocess.run(
+        [sys.executable, '-m', 'safe_control_gym.experiments.train_sb3',
+         '--env_id', 'cartpole_reach', '--algo', 'sac', '--seed', '1',
+         '--output_dir', str(tmp_path)] + TRAIN,
+        cwd=REPO, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-3000:]
+    run = sorted((tmp_path / 'sac').glob('cartpole_reach_*'))[0]
+
+    bounds = os.path.join(REPO, 'configs/collection/cartpole.yaml')
+    report = _evaluate(run, seed=0, n_episodes=6, eval_bounds=bounds)
+    assert report['terminate_on_goal'] is True
+    assert report['reference_task'] == 'reach'
+    assert report['beats_reference'] is not None, (
+        'a reach run was not compared against the reach reference')
 
 
 def test_skip_baseline_yields_no_verdict(trained_run):

@@ -1,11 +1,11 @@
-# SAC on cartpole, stabilization.
+# SAC on quadrotor2d, reach.
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
-#       --env_id cartpole_stabilization --algo sac --output_dir logs \
-#       --overrides configs/sb3/cartpole_stabilization_sac.yaml
+#       --env_id quadrotor2d_reach --algo sac --output_dir logs \
+#       --overrides configs/sb3/quadrotor2d_reach_sac.yaml
 #
 # Initial-state range and termination bounds both come from
-# configs/collection/cartpole.yaml, transcribed from the shipped dataset's
+# configs/collection/quadrotor2d.yaml, transcribed from the shipped dataset's
 # dataset_description.json. Training and evaluation read that one file, so the
 # regime a policy learns in is the regime it is scored in.
 #
@@ -25,9 +25,9 @@ task_config:
   sparse_step_reward: -0.01
 
 sb3_config:
-  total_timesteps: 300000
+  total_timesteps: 500000
   net_arch: [256, 256]
-  save_freq: 30000
-  eval_freq: 30000
+  save_freq: 50000
+  eval_freq: 50000
   n_eval_episodes: 10
-  collection_bounds: configs/collection/cartpole.yaml
+  collection_bounds: configs/collection/quadrotor2d.yaml

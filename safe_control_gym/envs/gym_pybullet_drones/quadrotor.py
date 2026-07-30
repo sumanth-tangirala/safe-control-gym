@@ -445,8 +445,13 @@ class Quadrotor(BaseAviary):
         super()._advance_simulation(rpm, disturb_force)
         # Standard Gym return.
         obs = self._get_observation()
-        rew = self._get_reward()
+        # _get_done BEFORE _get_reward: it is what sets goal_reached and
+        # out_of_bounds, and Cost.SPARSE reads both. Run the other way round
+        # they are a step stale. Behaviour-neutral for rl_reward and quadratic,
+        # neither of which reads those flags -- the golden rollout fixtures and
+        # the dataset-slice oracles pin that.
         terminated = self._get_done()
+        rew = self._get_reward()
         truncated = False
         info = self._get_info()
         obs, rew, terminated, truncated, info = super().after_step(
@@ -832,6 +837,8 @@ class Quadrotor(BaseAviary):
             reward (float): The evaluated reward/cost.
         '''
         # RL cost.
+        if self.COST == Cost.SPARSE:
+            return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
             state = self.state
             act = np.asarray(self.current_noisy_physical_action)
@@ -876,10 +883,15 @@ class Quadrotor(BaseAviary):
         Returns:
             done (bool): Whether an episode is over.
         '''
-        # Done if goal reached for stabilization task with quadratic cost.
+        # Goal termination is the reach/stabilization distinction.
+        # terminate_on_goal True ends the episode on first entering the ball
+        # (reach); False lets it run, so holding position there is required
+        # (stabilization). goal_reached is set either way -- Cost.SPARSE reads
+        # it every step, which is what pays +1 per step held under
+        # stabilization and +1 once under reach.
         if self.TASK == Task.STABILIZATION:
             self.goal_reached = bool(np.linalg.norm(self.state - self.X_GOAL) < self.TASK_INFO['stabilization_goal_tolerance'])
-            if self.goal_reached:
+            if self.goal_reached and self.terminate_on_goal:
                 return True
 
         # Done if state is out-of-bounds.

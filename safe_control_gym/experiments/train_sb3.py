@@ -144,14 +144,26 @@ def build_env(config):
     return env
 
 
-# State vector order per env, for addressing state_space bounds by name.
+# State vector order per SYSTEM, for addressing state_space bounds by name.
 # quadrotor.py documents these inline in _get_done; restated here because a
 # config that says `theta_dot` is reviewable and one that says `[5]` is not.
+#
+# Keyed by system, not by env id: the state vector is a property of the system,
+# and every task variant of it shares one. Keying by env id meant every new
+# task -- reach was the first -- silently lost its entry and raised.
 STATE_ORDER = {
-    'quadrotor2d_stabilization': ['x', 'x_dot', 'z', 'z_dot', 'theta', 'theta_dot'],
-    'quadrotor3d_stabilization': ['x', 'x_dot', 'y', 'y_dot', 'z', 'z_dot',
-                                  'phi', 'theta', 'psi', 'p', 'q', 'r'],
+    'quadrotor2d': ['x', 'x_dot', 'z', 'z_dot', 'theta', 'theta_dot'],
+    'quadrotor3d': ['x', 'x_dot', 'y', 'y_dot', 'z', 'z_dot',
+                    'phi', 'theta', 'psi', 'p', 'q', 'r'],
 }
+
+
+def state_order(env_id):
+    '''The state vector layout for whichever system this env id names.'''
+    for system, order in STATE_ORDER.items():
+        if env_id.startswith(system):
+            return order
+    return None
 
 
 def apply_state_space_bounds(env, env_id, bounds):
@@ -168,10 +180,10 @@ def apply_state_space_bounds(env, env_id, bounds):
     '''
     if not bounds:
         return
-    order = STATE_ORDER.get(env_id)
+    order = state_order(env_id)
     if order is None:
         raise KeyError(f'No state order known for {env_id}; state_space_bounds '
-                       f'is only defined for {sorted(STATE_ORDER)}.')
+                       f'is only defined for systems {sorted(STATE_ORDER)}.')
     base = env.unwrapped
     for name, (low, high) in bounds.items():
         if name not in order:

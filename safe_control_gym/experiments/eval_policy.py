@@ -182,6 +182,13 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
         'eval_bounds': bounds_path,
         'reference_success': bounds.get('reference_success'),
         'reference_dataset': bounds.get('reference_dataset'),
+        # Which task the reference was measured under, against which this run
+        # ran. Every shipped dataset predates terminate_on_goal, so its numbers
+        # are reach numbers; scoring a stabilization policy against them
+        # compares two different problems. Recorded rather than silently
+        # compared, and reflected in beats_reference below.
+        'reference_task': bounds.get('reference_task'),
+        'terminate_on_goal': bool(policy_env.unwrapped.terminate_on_goal),
         'policy': summarise(policy_episodes),
     }
 
@@ -219,6 +226,12 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
     policy_success = report['policy']['success_rate']
     reference = report.get('reference_success')
 
+    # terminate_on_goal is the reach/stabilization distinction, so it is what
+    # decides whether the reference number describes the same problem.
+    ran_task = 'reach' if report['terminate_on_goal'] else 'stabilization'
+    reference_task = report.get('reference_task')
+    comparable = reference_task is None or reference_task == ran_task
+
     # A baseline pinned at 0 or 1 cannot rank anything: at 1.0 every adequate
     # policy passes, at 0.0 every useless one does. Say so rather than emitting
     # a PASS that means nothing -- this is the saturation the collection-box
@@ -237,7 +250,13 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
         'verdict': verdict,
         # Against the controller that actually produced the shipped dataset,
         # measured over this same region. The bar for "worth re-collecting with".
-        'beats_reference': None if reference is None else bool(policy_success >= reference),
+        #
+        # Withheld when the tasks differ: the references are reach numbers, and
+        # a stabilization policy holding position is solving a harder problem,
+        # so the comparison would flatter or damn it for the wrong reason. None
+        # says "not comparable", which is the honest answer.
+        'beats_reference': (None if reference is None or not comparable
+                            else bool(policy_success >= reference)),
     })
     return report
 
@@ -256,9 +275,14 @@ def render(report):
     for name, block in blocks:
         lines.append(f'{name:22s}' + ''.join(f'{block[k]:>22.4f}' for k in keys))
     if report.get('reference_success') is not None:
+        ran = 'reach' if report.get('terminate_on_goal') else 'stabilization'
+        reference_task = report.get('reference_task')
         lines.append(f"reference   {report['reference_success']:.4f}  "
-                     f"({report.get('reference_dataset')}) -- "
+                     f"({report.get('reference_dataset')}, task={reference_task}) -- "
                      f"beats_reference={report.get('beats_reference')}")
+        if reference_task is not None and reference_task != ran:
+            lines.append(f'  this run is {ran}, the reference is {reference_task} -- '
+                         f'not the same problem, so no comparison is made.')
     if report.get('eval_bounds'):
         lines.append(f"eval region: {report['eval_bounds']}")
     lines.append(f"verdict: {report['verdict']}  (margin {report['margin']})")

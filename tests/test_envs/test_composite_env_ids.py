@@ -26,6 +26,10 @@ COMPOSITE = {
     'cartpole_stabilization': 'cartpole',
     'quadrotor2d_stabilization': 'quadrotor',
     'quadrotor3d_stabilization': 'quadrotor',
+    'inverted_pendulum_reach': 'inverted_pendulum',
+    'cartpole_reach': 'cartpole',
+    'quadrotor2d_reach': 'quadrotor',
+    'quadrotor3d_reach': 'quadrotor',
 }
 
 # The ONLY keys each composite may differ from its base on. Everything else must
@@ -37,11 +41,20 @@ COMPOSITE = {
 #
 # quadrotor2d pins nothing, because quad_type: 2 is already quadrotor.yaml's
 # default. It restates it for self-description, which is a match, not a diff.
+#
+# terminate_on_goal is pinned by every composite, in both directions: the reach
+# ids set it True and the stabilization ids False, while the base yamls omit it
+# entirely and inherit the True default. That default is what every shipped
+# dataset was collected under, which is why the base yamls are left alone.
 PINNED = {
-    'inverted_pendulum_stabilization': set(),
-    'cartpole_stabilization': set(),
-    'quadrotor2d_stabilization': set(),
-    'quadrotor3d_stabilization': {'quad_type', 'task_info'},
+    'inverted_pendulum_stabilization': {'terminate_on_goal'},
+    'cartpole_stabilization': {'terminate_on_goal'},
+    'quadrotor2d_stabilization': {'terminate_on_goal'},
+    'quadrotor3d_stabilization': {'quad_type', 'task_info', 'terminate_on_goal'},
+    'inverted_pendulum_reach': {'terminate_on_goal'},
+    'cartpole_reach': {'terminate_on_goal'},
+    'quadrotor2d_reach': {'terminate_on_goal'},
+    'quadrotor3d_reach': {'quad_type', 'task_info', 'terminate_on_goal'},
 }
 
 SEED = 1234

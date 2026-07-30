@@ -1,27 +1,33 @@
-# SAC on the 3D quadrotor, stabilization.
+# SAC on quadrotor3d, stabilization.
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
 #       --env_id quadrotor3d_stabilization --algo sac --output_dir logs \
 #       --overrides configs/sb3/quadrotor3d_stabilization_sac.yaml
 #
-# The initial-state range and the termination bounds both come from
-# configs/collection/quadrotor3d_stabilization.yaml, transcribed from the shipped
-# dataset's dataset_description.json. Training and evaluation read that one
-# file, so the regime a policy learns in is the regime it is scored in.
+# Initial-state range and termination bounds both come from
+# configs/collection/quadrotor3d.yaml, transcribed from the shipped dataset's
+# dataset_description.json. Training and evaluation read that one file, so the
+# regime a policy learns in is the regime it is scored in.
 #
-# Deliberately NOT set here: init_state_randomization_info. Splitting the start
-# range across two files is how the two silently diverge.
+# cost: sparse, deliberately. Under the dense rl_reward, reaching the goal ends
+# the episode and forfeits every remaining step, so success is irrational:
+# measured on cartpole, tightening the terminal error to the goal ball was worth
+# +4.46 return while the termination it triggers cost -181.2. SAC learned the
+# correct policy for that reward -- hover just outside the ball, 3.8x the LQR
+# return at 0.000 success. Sparse makes the goal the only positive term.
 #
-# Hyperparameters below are hand-written starting points. No search has been run.
-#
-# The system most likely not to converge: 12 state dimensions, 4 actions, and
-# a collection regime spanning all orientations with body rates to +/-24 rad/s.
-# A non-converging run here is a result to report, not a config to keep tuning.
+# Hyperparameters are hand-written starting points. No search has been run.
+
+task_config:
+  cost: sparse
+  sparse_goal_reward: 1.0
+  sparse_oob_reward: -1.0
+  sparse_step_reward: -0.01
 
 sb3_config:
   total_timesteps: 1000000
   net_arch: [400, 300]
   save_freq: 100000
-  eval_freq: 50000
+  eval_freq: 100000
   n_eval_episodes: 10
-  collection_bounds: configs/collection/quadrotor3d_stabilization.yaml
+  collection_bounds: configs/collection/quadrotor3d.yaml

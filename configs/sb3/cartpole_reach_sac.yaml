@@ -1,8 +1,8 @@
-# SAC on cartpole, stabilization.
+# SAC on cartpole, reach.
 #
 #   python -m safe_control_gym.experiments.train_sb3 \
-#       --env_id cartpole_stabilization --algo sac --output_dir logs \
-#       --overrides configs/sb3/cartpole_stabilization_sac.yaml
+#       --env_id cartpole_reach --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_reach_sac.yaml
 #
 # Initial-state range and termination bounds both come from
 # configs/collection/cartpole.yaml, transcribed from the shipped dataset's
