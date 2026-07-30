@@ -357,6 +357,18 @@ def train():
     print(f'device={config.device} run_dir={run_dir}')
 
     n_envs = int(sb3_config.get('n_envs', 1))
+    # SB3's callbacks count model steps, not env steps: n_calls advances once
+    # per model.step(), which consumes n_envs env steps. Left uncorrected, a
+    # save_freq of 30000 with n_envs=4 fires every 120000 env steps -- measured
+    # on a live run, cartpole had written zero checkpoints by 69520 steps while
+    # the unvectorised pendulum had three by 62000. That silently turns ten
+    # checkpoints into two, and thins the eval curve that selects best_model by
+    # the same factor.
+    #
+    # So both frequencies are expressed in ENV steps in the config and divided
+    # here, which is what SB3's own vectorised examples do.
+    save_freq = max(save_freq // n_envs, 1)
+    eval_freq = max(eval_freq // n_envs, 1)
     env = build_train_env(config, n_envs)
     # Two more envs, alive alongside the training env for the whole run: one for
     # SB3's reward-based EvalCallback, one for the success-rate callback. They
