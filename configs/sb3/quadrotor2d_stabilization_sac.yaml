@@ -1,0 +1,31 @@
+# SAC on the 2D quadrotor, stabilization.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id quadrotor2d_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/quadrotor2d_stabilization_sac.yaml --use_gpu
+#
+# Training-specific values live here, never in the env yaml: a composite id's
+# yaml must stay a faithful copy of its base so runs under the two ids remain
+# comparable (tests/test_envs/test_composite_env_ids.py).
+#
+# A hand-written starting point, not a tuned result. No hyperparameter search
+# has been run for this system.
+#
+# Note on continuity: this trains vanilla SAC. The shipped quadrotor2D_rl
+# dataset was generated with Safe Explorer PPO (see its
+# dataset_description.json), a native controller with a learned constraint
+# projection that SB3 has no equivalent of. A policy from this config is a new
+# controller, not a reproduction of that one.
+
+task_config:
+  # The env yaml ships randomized_init: False, which would give SAC the same
+  # initial state every episode and a policy that generalises nowhere. The env
+  # yaml is left alone; the training run asks for randomisation instead.
+  randomized_init: True
+
+sb3_config:
+  total_timesteps: 500000
+  net_arch: [256, 256]
+  save_freq: 50000
+  eval_freq: 50000
+  n_eval_episodes: 10

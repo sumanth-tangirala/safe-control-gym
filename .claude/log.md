@@ -13,6 +13,43 @@ grep '^## \[' .claude/log.md | grep ingest  # what has been read into the wiki
 
 ---
 
+## [2026-07-30] ingest | composite env ids, eval CLI, and two bugs they surfaced
+
+Source: `docs/superpowers/specs/2026-07-30-rl-training-and-eval-design.md` and
+its implementation.
+
+Taken from it. Four composite `(system, task)` env ids
+(`{cartpole,inverted_pendulum,quadrotor2d,quadrotor3d}_stabilization`), because
+`--task` was carrying both the registry id and the `Task` enum at once and a run
+directory named `quadrotor_3` identified neither. They need no plumbing:
+`configuration.py:67` already resolves an id to its yaml. An RL-Zoo run layout,
+`<output_dir>/<algo>/<env_id>_<run>/` with `config.yml`/`args.yml`/`command.txt`.
+A new `eval_policy.py` scoring a policy against its system's LQR from identical
+seeded initial states. Per-system training configs under `configs/sb3/`.
+
+Two bugs the work surfaced, both recorded with their measurement:
+
+- `base_aviary.py`'s `changeDynamics` omitted `physicsClientId`, so with two
+  envs alive the second wrote damping to the first's client. The quadrotor
+  collectors hold exactly two, and the one they roll out is the second — so
+  every shipped quadrotor dataset ran at PyBullet's default damping instead of
+  zero. Rollout-env deviation from a single-env reference: `0.069001` without
+  the fix, `0.000000` with it. Fixed, because `EvalCallback` holds a second env
+  and would otherwise train against corrupted dynamics. Fixtures deliberately
+  not regenerated; the three quadrotor slices are `xfail(strict=True)` so
+  regenerating them fails the suite.
+- `info['goal_reached']` is gated on `COST == Cost.QUADRATIC`, so it is absent
+  under `rl_reward` for cartpole and both quadrotors. An earlier draft of the
+  spec claimed all four expose it uniformly; evaluation built on that would have
+  reported zero success for three of four systems while looking healthy.
+  `eval_policy` computes success from the state instead, at the terminal step.
+
+Changed: `architecture.md` (registry section — composite ids and the
+faithful-copy invariant), `datasets.md` (no shared collector output contract,
+the out-of-repo backfill scripts, `cal_set`/`test_set` having no producer, and
+the damping finding), `workflows.md` (four new test files, the run layout, the
+eval CLI), `INDEX.md` (three summaries).
+
 ## [2026-07-29] ingest | SB3-to-native pendulum exporter + wiki staleness check
 
 Filed `scripts/export_sb3_pendulum.py` into `workflows.md` and the closed

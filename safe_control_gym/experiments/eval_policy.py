@@ -1,0 +1,266 @@
+'''Score a trained policy against its system's LQR baseline.
+
+    python -m safe_control_gym.experiments.eval_policy \\
+        --run logs/sac/cartpole_stabilization_1 --n_episodes 100 --seed 0
+
+The environment is rebuilt from the run's own config.yml, shaping wrappers
+included, so evaluation cannot silently disagree with training about what the
+task was. Policy and baseline are then rolled out from the *same* seeded initial
+states -- asserted, not assumed -- and both sets of numbers are written to
+eval.json beside the weights.
+
+Why a relative bar. Every system here has an LQR (`pendulum_lqr` for the
+inverted pendulum, `lqr` elsewhere), and all five collectors already use one, so
+comparing against it needs no per-system constant invented in advance. A fixed
+threshold would have to be guessed before anyone knows what is achievable, and a
+wrong guess either passes bad policies or blocks good ones.
+
+Its failure mode is a weak baseline: where LQR itself performs badly the bar is
+vacuous and `PASS` means little. That is handled by disclosure rather than by a
+cleverer rule -- absolute numbers for both controllers are always reported next
+to the verdict.
+
+Success is computed here, not read from info['goal_reached'].
+`_get_info` in cartpole.py and quadrotor.py gates that key on
+`COST == Cost.QUADRATIC`, and RL training uses `cost: rl_reward`, so for three of
+the four systems the key is simply absent. This applies the envs' own rule --
+``||state - X_GOAL|| < tolerance`` -- directly to the state, which holds whatever
+the cost is.
+
+Success is evaluated at the TERMINAL state, not at any point in the episode.
+Under `rl_reward` an episode does not stop when the goal ball is entered, so
+"reached it at some point" counts trajectories that arrived and then left. The
+terminal state is also what the downstream flow-matching model predicts, which
+makes it the number worth reporting. `reached_goal_any_step` is recorded
+alongside it, so the gap between the two is visible rather than hidden.
+'''
+import argparse
+import json
+import os
+from functools import partial
+
+import munch
+import numpy as np
+import yaml
+
+from safe_control_gym.experiments.train_sb3 import ALGOS, build_env
+from safe_control_gym.utils.registration import get_config, make
+
+# Systems whose LQR is not the generic one.
+BASELINE_OVERRIDES = {'inverted_pendulum': 'pendulum_lqr',
+                      'inverted_pendulum_stabilization': 'pendulum_lqr'}
+
+DEFAULT_MARGIN = 0.05
+
+
+def baseline_id(env_id):
+    '''Which LQR controller stabilises this system.'''
+    return BASELINE_OVERRIDES.get(env_id, 'lqr')
+
+
+def goal_tolerance(env):
+    '''Radius of the goal ball, by whichever name this env gives it.
+
+    Resolved on `.unwrapped`, not on the wrapper. `AttributeForwardingMixin`
+    forwards an allowlist that contains neither `goal_threshold` nor
+    `TASK_INFO`, so on the pendulum -- the one system whose training config
+    wraps the env -- every lookup here raised AttributeError.
+
+    The pendulum names it `goal_threshold` (0.075, from its yaml); cartpole and
+    the quadrotors use `TASK_INFO['stabilization_goal_tolerance']`. Checking the
+    pendulum's name first matters: its TASK_INFO also happens to hold 0.075
+    today, so reading TASK_INFO would agree by coincidence and diverge silently
+    the moment the yaml changed.
+    '''
+    base = env.unwrapped
+    threshold = getattr(base, 'goal_threshold', None)
+    if threshold is not None:
+        return float(threshold)
+    return float(base.TASK_INFO['stabilization_goal_tolerance'])
+
+
+def at_goal(env, tolerance):
+    '''The envs' own stabilization test, applied to the current state.'''
+    base = env.unwrapped
+    return bool(np.linalg.norm(np.asarray(base.state) - np.asarray(base.X_GOAL)) < tolerance)
+
+
+def episode_seeds(seed, n_episodes):
+    '''Per-episode seeds. Shared by policy and baseline so inits coincide.'''
+    rng = np.random.default_rng(seed)
+    return [int(s) for s in rng.integers(0, 2 ** 31 - 1, size=n_episodes)]
+
+
+def run_episode(env, act, seed, tolerance):
+    '''One episode; returns its record.'''
+    obs, info = env.reset(seed=seed)
+    initial_state = np.asarray(env.unwrapped.state, dtype=float).copy()
+    total_reward, steps, reached_any = 0.0, 0, at_goal(env, tolerance)
+    terminated = truncated = False
+    out_of_bounds = violated = False
+
+    while not (terminated or truncated):
+        obs, reward, terminated, truncated, info = env.step(act(obs, info))
+        total_reward += float(reward)
+        steps += 1
+        reached_any = reached_any or at_goal(env, tolerance)
+        out_of_bounds = out_of_bounds or bool(info.get('out_of_bounds', False))
+        violated = violated or bool(np.any(info.get('constraint_violation', False)))
+
+    return {
+        'initial_state': initial_state.tolist(),
+        'terminal_state': np.asarray(env.unwrapped.state, dtype=float).tolist(),
+        'success': at_goal(env, tolerance),
+        'reached_goal_any_step': reached_any,
+        'return': total_reward,
+        'length': steps,
+        'terminated': bool(terminated),
+        'truncated': bool(truncated),
+        'out_of_bounds': out_of_bounds,
+        'constraint_violation': violated,
+    }
+
+
+def summarise(episodes):
+    '''Per-controller metrics block.'''
+    def frac(key):
+        return float(np.mean([e[key] for e in episodes]))
+    return {
+        'success_rate': frac('success'),
+        'reached_goal_any_step_rate': frac('reached_goal_any_step'),
+        'mean_return': float(np.mean([e['return'] for e in episodes])),
+        'mean_episode_length': float(np.mean([e['length'] for e in episodes])),
+        'out_of_bounds_rate': frac('out_of_bounds'),
+        'constraint_violation_rate': frac('constraint_violation'),
+        'terminated_frac': frac('terminated'),
+        'truncated_frac': frac('truncated'),
+    }
+
+
+def load_run_config(run_dir):
+    with open(os.path.join(run_dir, 'config.yml')) as handle:
+        return yaml.safe_load(handle)
+
+
+def resolve_weights(run_dir, model_name):
+    '''best_model if EvalCallback wrote one, else the final weights.'''
+    if model_name:
+        path = os.path.join(run_dir, model_name)
+        return path if path.endswith('.zip') else path + '.zip'
+    for candidate in ('best_model.zip', 'model_final.zip'):
+        path = os.path.join(run_dir, candidate)
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(f'No best_model.zip or model_final.zip in {run_dir}')
+
+
+def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=False):
+    '''Roll out policy and baseline from identical states; return the report.'''
+    config = load_run_config(run_dir)
+    env_id, algo = config['task'], config['algo']
+    task_config = config['task_config']
+    seeds = episode_seeds(seed, n_episodes)
+
+    # Policy: the wrapped env it was trained on. Shaping changes the observation,
+    # so a policy evaluated on the bare env would be fed the wrong vector.
+    policy_env = build_env(munch.munchify(config))
+    tolerance = goal_tolerance(policy_env)
+    weights = resolve_weights(run_dir, model_name)
+    model = ALGOS[algo].load(weights, device='cpu')
+    try:
+        policy_episodes = [
+            run_episode(policy_env, lambda obs, info: model.predict(obs, deterministic=True)[0],
+                        s, tolerance)
+            for s in seeds]
+    finally:
+        policy_env.close()
+
+    report = {
+        'env_id': env_id, 'algo': algo, 'n_episodes': n_episodes, 'seed': seed,
+        'weights': os.path.basename(weights),
+        'goal_tolerance': tolerance,
+        'policy': summarise(policy_episodes),
+    }
+
+    if skip_baseline:
+        report.update({'baseline_id': None, 'margin': margin, 'verdict': 'NO_BASELINE'})
+        return report
+
+    # Baseline: the bare env. LQR is a state-feedback law and does not consume
+    # the shaped observation.
+    base_id = baseline_id(env_id)
+    env_func = partial(make, env_id, **task_config)
+    # LQR's q_lqr/r_lqr default to None and are then passed straight to
+    # get_cost_weight_matrix, which does len() on them. The registered yaml is
+    # where the real defaults live, so it is loaded rather than reinvented here.
+    controller = make(base_id, env_func, **get_config(base_id))
+    baseline_env = env_func()
+    try:
+        def act(obs, info):
+            return controller.select_action(np.asarray(baseline_env.unwrapped.state), info)
+        baseline_episodes = [run_episode(baseline_env, act, s, tolerance) for s in seeds]
+    finally:
+        baseline_env.close()
+        controller.close()
+
+    # The whole point of sharing seeds. Asserted rather than trusted: a wrapper
+    # or a reset-order change could desynchronise them, and then the comparison
+    # is between two different problems.
+    for i, (a, b) in enumerate(zip(policy_episodes, baseline_episodes)):
+        np.testing.assert_allclose(
+            a['initial_state'], b['initial_state'], atol=0,
+            err_msg=f'episode {i}: policy and baseline started from different states')
+
+    baseline = summarise(baseline_episodes)
+    report.update({
+        'baseline_id': base_id,
+        'baseline': baseline,
+        'margin': margin,
+        'verdict': ('PASS' if report['policy']['success_rate'] >= baseline['success_rate'] - margin
+                    else 'FAIL'),
+    })
+    return report
+
+
+def render(report):
+    '''Absolute numbers for both controllers, so a weak baseline is visible.'''
+    lines = [f"{report['env_id']}  {report['algo']}  weights={report['weights']}",
+             f"{report['n_episodes']} episodes, seed {report['seed']}, "
+             f"goal tolerance {report['goal_tolerance']}"]
+    blocks = [('policy', report['policy'])]
+    if report.get('baseline'):
+        blocks.append((report['baseline_id'], report['baseline']))
+    keys = ['success_rate', 'mean_return', 'mean_episode_length',
+            'out_of_bounds_rate', 'terminated_frac']
+    lines.append(f"{'':22s}" + ''.join(f'{k:>22s}' for k in keys))
+    for name, block in blocks:
+        lines.append(f'{name:22s}' + ''.join(f'{block[k]:>22.4f}' for k in keys))
+    lines.append(f"verdict: {report['verdict']}  (margin {report['margin']})")
+    return '\n'.join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    parser.add_argument('--run', required=True, help='run directory written by train_sb3')
+    parser.add_argument('--n_episodes', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--margin', type=float, default=DEFAULT_MARGIN,
+                        help='allowed shortfall in success rate against the baseline')
+    parser.add_argument('--model', default=None,
+                        help='weights to load; defaults to best_model, else model_final')
+    parser.add_argument('--skip_baseline', action='store_true',
+                        help='report policy metrics only, with no verdict')
+    parser.add_argument('--out', default=None, help='where to write eval.json')
+    args = parser.parse_args()
+
+    report = evaluate(args.run, args.n_episodes, args.seed, args.margin,
+                      args.model, args.skip_baseline)
+    destination = args.out or os.path.join(args.run, 'eval.json')
+    with open(destination, 'w') as handle:
+        json.dump(report, handle, indent=2, sort_keys=True)
+    print(render(report))
+    print(f'wrote {destination}')
+
+
+if __name__ == '__main__':
+    main()

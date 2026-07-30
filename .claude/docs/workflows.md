@@ -65,10 +65,26 @@ holds the oracles that protect it:
 - `test_episode_flags_initialised.py` — `goal_reached`/`out_of_bounds` exist
   immediately after `reset()`, for all four environments (a CartPole gap this
   migration's review surfaced and fixed).
-- `test_train_sb3.py` — a short `train_sb3` run per task
-  (`inverted_pendulum`, `cartpole`, `quadrotor`) completes and writes a
-  loadable model, plus the assertion that `envs/` and `controllers/` still
-  import with `stable_baselines3` blanked out of `sys.modules`.
+- `test_train_sb3.py` — a short `train_sb3` run per env id, base and composite
+  alike, completes and writes a loadable model; the run directory carries
+  `config.yml`, `args.yml` and `command.txt`; a second run takes `_2` rather
+  than clobbering; `--env_id` aliases `--task` and passing both is an error;
+  four systems launched concurrently all get a directory; and `envs/` and
+  `controllers/` still import with `stable_baselines3` blanked out of
+  `sys.modules`.
+- `test_composite_env_ids.py` — each composite `(system, task)` id passes
+  `check_env`, and building it produces the same environment as building its
+  base id with the same config, asserted observation-by-observation. That
+  equivalence is what keeps runs under the two ids comparable, so a composite
+  yaml drifting from its base is a test failure rather than a silent change.
+- `test_concurrent_pybullet_envs.py` — two quadrotor envs alive in one process
+  must reproduce a single-env rollout exactly. Guards the `physicsClientId`
+  fix; reachable from ordinary training because `EvalCallback` holds a second
+  env open. See [datasets.md](datasets.md) for what it was hiding.
+- `test_eval_policy.py` — evaluation is deterministic under a fixed seed, the
+  report always carries absolute numbers for both controllers, `--skip_baseline`
+  yields `NO_BASELINE` rather than a default `PASS`, and the pendulum resolves
+  to `pendulum_lqr`.
 
 There is deliberately no `test_invariant_sets.py` in this directory: `quad2d`
 and `quad3d` do not reproduce the committed `.npz` artifacts bit-exactly (see
@@ -126,9 +142,49 @@ per-system branching in the trainer itself.
 
 ```bash
 python -m safe_control_gym.experiments.train_sb3 \
-    --task inverted_pendulum --algo sac --output_dir results/pendulum_sac \
-    --kv_overrides sb3_config.total_timesteps=200000
+    --env_id cartpole_stabilization --algo sac --output_dir logs \
+    --overrides configs/sb3/cartpole_stabilization_sac.yaml --use_gpu
 ```
+
+`--env_id` is an alias for `--task`; they are the same registry lookup, and
+passing both is an error rather than a silent precedence rule. `--task` is not
+renamed because `configuration.py` defines it once for every entry point in the
+repo.
+
+Runs land in `<output_dir>/<algo>/<env_id>_<run>/`, following RL Baselines3 Zoo:
+`best_model.zip`, `checkpoints/`, `model_final.zip`, plus `config.yml`,
+`args.yml` and `command.txt`. `<run>` auto-increments, so re-running never
+clobbers. `config.yml` is load-bearing — `eval_policy` rebuilds the environment
+and its wrappers from it, so a run without one cannot be evaluated.
+
+Per-system hyperparameters live in `configs/sb3/<env_id>_<algo>.yaml`, passed
+through `--overrides`, and never in the env yaml: a composite id's yaml has to
+stay a faithful copy of its base. The quadrotor configs override
+`task_config.randomized_init: True` there, because the env default is `False`
+and SAC would otherwise see one initial state for the whole run. All four are
+hand-written starting points; no hyperparameter search has been run.
+
+## Evaluating a trained policy
+
+```bash
+python -m safe_control_gym.experiments.eval_policy \
+    --run logs/sac/cartpole_stabilization_1 --n_episodes 100 --seed 0
+```
+
+Rolls out the policy and the system's LQR (`pendulum_lqr` for the pendulum,
+`lqr` elsewhere) from the *same* seeded initial states — asserted, not assumed —
+and writes `eval.json` beside the weights. `PASS` when the policy's success rate
+is within `--margin` (default 0.05) of the baseline's.
+
+Success is computed from the state, not read from `info['goal_reached']`:
+`_get_info` gates that key on `COST == Cost.QUADRATIC`, and training uses
+`rl_reward`, so for cartpole and both quadrotors it is absent entirely. It is
+evaluated at the **terminal** state, because under `rl_reward` an episode does
+not stop on entering the goal ball.
+
+The bar is vacuous where LQR itself is weak. The mitigation is disclosure, not a
+cleverer rule: absolute numbers for both controllers are always printed and
+stored, so never quote a verdict without them.
 
 Task-specific shaping (the pendulum's `[cos, sin, thdot/max]` observation
 re-encoding, its `action_repeat` of 4) is not hardcoded — it is an optional

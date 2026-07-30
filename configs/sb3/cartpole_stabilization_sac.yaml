@@ -1,0 +1,19 @@
+# SAC on the cartpole, stabilization.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac.yaml --use_gpu
+#
+# Training-specific values live here, never in the env yaml: a composite id's
+# yaml must stay a faithful copy of its base so runs under the two ids remain
+# comparable (tests/test_envs/test_composite_env_ids.py).
+#
+# A hand-written starting point, not a tuned result. No hyperparameter search
+# has been run for this system.
+
+sb3_config:
+  total_timesteps: 300000
+  net_arch: [256, 256]
+  save_freq: 30000
+  eval_freq: 30000
+  n_eval_episodes: 10

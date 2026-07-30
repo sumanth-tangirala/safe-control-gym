@@ -80,8 +80,24 @@ scripts decide what to collect.
 `safe_control_gym/utils/registration.py` provides `register(...)` and
 `make(idx, ...)`. Everything is looked up by string id.
 
-- Envs registered in `safe_control_gym/envs/__init__.py`:
-  `cartpole`, `quadrotor`, `inverted_pendulum`.
+- Envs registered in `safe_control_gym/envs/__init__.py`. Three name a
+  *system*: `cartpole`, `quadrotor`, `inverted_pendulum`. Four name a
+  `(system, task)` pair: `cartpole_stabilization`,
+  `inverted_pendulum_stabilization`, `quadrotor2d_stabilization`,
+  `quadrotor3d_stabilization`.
+
+  The composite ids exist because `--task` carried two axes at once — the
+  registry id and the `task:` field inside its yaml (the `Task` enum,
+  `stabilization` or `traj_tracking`) — so a run directory named `quadrotor_3`
+  said neither which `quad_type` nor which task it was. A composite id is its
+  base `entry_point` plus a yaml with both axes pinned; it needs no new plumbing
+  because `configuration.py` already resolves `--task <id>` to that id's yaml.
+  The base ids are unchanged, so every collector and example still works.
+
+  Each composite yaml must stay a faithful copy of its base — building either id
+  with the same config must give the same environment, which
+  `tests/test_envs/test_composite_env_ids.py` asserts observation-by-observation.
+  Training values go in `configs/sb3/<env_id>_<algo>.yaml`, never in the env yaml.
 - Controllers registered in `safe_control_gym/controllers/__init__.py`:
   `lqr`, `ilqr`, `mpc`, `linear_mpc`, `gp_mpc`, `mpc_acados`, `pid`, `ppo`,
   `sac`, `ddpg`, `safe_explorer_ppo`, `rarl`, `rap`, plus this fork's

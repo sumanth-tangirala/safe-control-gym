@@ -32,8 +32,50 @@ REPO = os.path.join(os.path.dirname(__file__), '..', '..')
 # The pendulum's two slices predate this file and have their own test.
 LEGACY = {'dataset_slice_lqr.json', 'dataset_slice_v3_strong.json'}
 
+# The three quadrotor slices no longer reproduce, and that is a finding rather
+# than a broken test.
+#
+# base_aviary.py's changeDynamics call omitted physicsClientId, so it targeted
+# client 0. The quadrotor collectors hold two envs at once -- LQR builds its own
+# from env_func, then the collector builds the one it rolls out -- so the
+# rollout env never received `linearDamping=0, angularDamping=0`. It ran at
+# PyBullet's default damping instead, for every quadrotor dataset ever shipped.
+#
+# Measured against a single-env reference, five steps, seed 7:
+#
+#     with physicsClientId     rollout env deviates 0.000000
+#     without (as shipped)     rollout env deviates 0.069001
+#
+# The fix is not optional -- SB3's EvalCallback holds an eval env alongside the
+# training env, so without it quadrotor training silently trains against
+# corrupted dynamics. But it changes what the collectors emit, and collection
+# work is paused pending a decision on the existing datasets.
+#
+# So the fixtures are left exactly as captured. They are the evidence of what
+# the shipped datasets contain. strict=True is the point: if someone
+# regenerates them the xfail becomes an XPASS and fails the suite, forcing the
+# decision to be made deliberately rather than by re-running a capture script.
+DAMPING_AFFECTED = {'quad2d', 'quad2d_rl', 'quad3d'}
+DAMPING_REASON = (
+    'Collector output changed with the base_aviary physicsClientId fix: the '
+    'rollout env now gets zero damping as intended. Fixtures deliberately not '
+    'regenerated while collection is paused.')
+
+
+def _slice_id(path):
+    return os.path.basename(path)[len('dataset_slice_'):-len('.json')]
+
 
 def _fixtures():
+    found = sorted(glob.glob(os.path.join(FIX, 'dataset_slice_*.json')))
+    kept = [f for f in found if os.path.basename(f) not in LEGACY]
+    return [pytest.param(f, marks=pytest.mark.xfail(strict=True, reason=DAMPING_REASON))
+            if _slice_id(f) in DAMPING_AFFECTED else f
+            for f in kept]
+
+
+def _fixture_paths():
+    '''Unmarked paths, for assertions that the damping change does not affect.'''
     found = sorted(glob.glob(os.path.join(FIX, 'dataset_slice_*.json')))
     return [f for f in found if os.path.basename(f) not in LEGACY]
 
@@ -97,7 +139,10 @@ def test_slice_reproduces(fixture, tmp_path):
     np.testing.assert_allclose(terminals, golden['terminal_states'], atol=1e-12)
 
 
-@pytest.mark.parametrize('fixture', _fixtures(),
+# _fixture_paths, not _fixtures: this reads the recorded JSON and never runs a
+# collector, so the damping change cannot affect it. Under the strict xfail it
+# would XPASS and fail the suite.
+@pytest.mark.parametrize('fixture', _fixture_paths(),
                          ids=lambda f: os.path.basename(f)[len('dataset_slice_'):-len('.json')])
 def test_slice_exercises_both_labels(fixture):
     '''A fixture where every rollout has the same label pins almost nothing.

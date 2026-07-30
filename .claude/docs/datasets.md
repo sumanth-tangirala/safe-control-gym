@@ -41,6 +41,44 @@ current design; the others still follow the older single-pass scheme. When the
 two disagree, the pendulum generator and the spec that produced it are the
 reference.
 
+There is no shared output contract. All five write `roa_labels.txt` and
+`trajectories/sequence_<i>.txt`; beyond that they diverge. Only
+`generate_quadrotor_2d_trajectories_rl.py` writes `eval_states.txt` and
+`trajectory_labels.txt` (`generate_eval_states_and_labels`, line 817). Only it
+and the pendulum generator write `dataset_description.json` — both added on
+2026-07-16 as *independent* implementations, never a shared helper, and never
+backported to the three collectors written in December 2025. The pendulum alone
+writes `success_probabilities.txt` and split-scoped descriptions.
+
+Datasets that carry files their own collector cannot produce were backfilled
+afterwards by scripts living outside this repo, under `DATA_ROOT`'s parent:
+`generate_eval_states.py` (KD-tree matches an `roa_labels.txt` row to a
+trajectory at a `1e-4` threshold to recover its final state),
+`generate_roa_labels.py` (stratified sampling for large state spaces such as
+quad3d's 12-D), and `dataset_split_randomizer.py` (`train_test_splits/`, seed
+42, train = 20,000 when total >= 25,000 else 80%). They are not version
+controlled here. `cal_set.txt` and `test_set.txt` have **no** producer anywhere.
+
+### Every shipped quadrotor dataset ran at the wrong damping
+
+`base_aviary.py`'s `changeDynamics` call omitted `physicsClientId`, so it
+targeted PyBullet client 0. The quadrotor collectors hold two envs at once — LQR
+builds one from `env_func`, then the collector builds the one it rolls out — so
+the *rollout* env never received `linearDamping=0, angularDamping=0` and ran at
+PyBullet's default instead.
+
+Measured against a single-env reference, five steps, seed 7: the rollout env
+deviates `0.069001` without the fix, `0.000000` with it. Only the quadrotors are
+affected; `base_aviary.py` is theirs alone, and the cartpole slice still
+reproduces.
+
+Fixed in the library, because SB3's `EvalCallback` holds a second env open and
+would otherwise train against corrupted dynamics. The fixtures are deliberately
+**not** regenerated — they record what the shipped datasets contain — and
+`test_slice_reproduces` is `xfail(strict=True)` for `quad2d`, `quad2d_rl` and
+`quad3d` so that regenerating them fails the suite instead of quietly blessing
+the change. Whether to re-collect is an open decision.
+
 ## Success labelling — the thing to get right
 
 The downstream model predicts terminal states, so **the success label must be a

@@ -39,7 +39,12 @@ def _train_short_sac(tmp_path):
          f'sb3_config.action_repeat={ACTION_REPEAT}'],
         cwd=REPO, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-3000:]
-    zip_path = out / 'model_final.zip'
+    # train_sb3 composes <output_dir>/<algo>/<env_id>_<run>/ rather than writing
+    # into output_dir directly, so the run directory is discovered rather than
+    # assumed -- that is the layout under test elsewhere, not here.
+    runs = sorted((out / 'sac').glob('inverted_pendulum_*'))
+    assert len(runs) == 1, f'expected one run directory, found {runs}'
+    zip_path = runs[0] / 'model_final.zip'
     assert zip_path.exists()
     return zip_path
 

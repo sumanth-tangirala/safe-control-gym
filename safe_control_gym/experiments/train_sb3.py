@@ -9,8 +9,19 @@ sb3_config.action_repeat=... select the optional wrappers. No task is special
 cased here.
 
     python -m safe_control_gym.experiments.train_sb3 \\
-        --task inverted_pendulum --algo sac --output_dir results/pendulum_sac \\
-        --kv_overrides sb3_config.total_timesteps=200000
+        --env_id cartpole_stabilization --algo sac --output_dir logs \\
+        --overrides configs/sb3/cartpole_stabilization_sac.yaml
+
+--env_id is an alias for --task. They mean the same registry lookup; --task is
+defined once in configuration.py and shared by every entry point in the repo, so
+it is not renamed, while --env_id is what a composite (system, task) id actually
+is. Pass either.
+
+Runs are written to <output_dir>/<algo>/<env_id>_<run>/, following RL Baselines3
+Zoo, with the merged config, the CLI arguments and the verbatim command stored
+beside the weights. <run> auto-increments, so re-running never clobbers.
+config.yml is what makes a run rebuildable: eval_policy reconstructs the
+environment and its wrappers from it rather than re-deriving them from flags.
 
 --use_gpu (like every other entry point in this repo) selects SB3's device;
 it defaults to CPU.
@@ -33,16 +44,40 @@ The environment is never the bottleneck either way: the pendulum steps at
 gradient work.
 '''
 import os
+import shlex
+import sys
 
+import yaml
 from stable_baselines3 import PPO, SAC
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
 from safe_control_gym.envs.env_wrappers.shaping import ActionRepeat, AngleObservation
 from safe_control_gym.utils.configuration import ConfigFactory
 from safe_control_gym.utils.registration import make
-from safe_control_gym.utils.utils import mkdirs, set_device_from_config, set_seed_from_config
+from safe_control_gym.utils.utils import set_device_from_config, set_seed_from_config
 
 ALGOS = {'sac': SAC, 'ppo': PPO}
+
+# CLI arguments worth recording separately from the merged config: reading
+# args.yml answers "what was typed" without diffing a fully-resolved config
+# against the defaults it came from.
+CLI_KEYS = ('algo', 'task', 'seed', 'use_gpu', 'output_dir', 'tag', 'restore')
+
+
+def apply_env_id_alias(argv=None):
+    '''Rewrite --env_id to --task, which is what ConfigFactory parses.
+
+    Returns the argv list to parse. Passing both is an error rather than a
+    silent precedence rule -- they name the same thing, so disagreeing values
+    mean the caller believes something untrue.
+    '''
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not any(a == '--env_id' or a.startswith('--env_id=') for a in argv):
+        return argv
+    if any(a == '--task' or a.startswith('--task=') for a in argv):
+        raise SystemExit('Pass --env_id or --task, not both: they are the same argument.')
+    return [a.replace('--env_id', '--task', 1) if a.startswith('--env_id') else a
+            for a in argv]
 
 
 def build_env(config):
@@ -59,33 +94,88 @@ def build_env(config):
     return env
 
 
+def claim_run_dir(root, algo, env_id):
+    '''<root>/<algo>/<env_id>_<n>, the lowest n not already taken.
+
+    Claimed with exist_ok=False rather than checked-then-created, so two runs
+    launched at once take different directories instead of both believing they
+    own the same one.
+
+    The parent, by contrast, must tolerate already existing: utils.mkdirs is
+    os.makedirs without exist_ok, so four systems launched together raced on
+    creating <root>/<algo> and two of them died with FileExistsError before
+    training a single step.
+    '''
+    parent = os.path.join(root, algo)
+    os.makedirs(parent, exist_ok=True)
+    run = 1
+    while True:
+        candidate = os.path.join(parent, f'{env_id}_{run}')
+        try:
+            os.makedirs(candidate)
+            return candidate
+        except FileExistsError:
+            run += 1
+
+
+def write_run_metadata(run_dir, config):
+    '''config.yml, args.yml and command.txt beside the weights.'''
+    with open(os.path.join(run_dir, 'config.yml'), 'w') as handle:
+        yaml.safe_dump(dict(config), handle, default_flow_style=False, sort_keys=True)
+    args = {key: config.get(key) for key in CLI_KEYS if config.get(key) is not None}
+    with open(os.path.join(run_dir, 'args.yml'), 'w') as handle:
+        yaml.safe_dump(args, handle, default_flow_style=False, sort_keys=True)
+    with open(os.path.join(run_dir, 'command.txt'), 'w') as handle:
+        handle.write(shlex.join([sys.executable, '-m',
+                                 'safe_control_gym.experiments.train_sb3'] + sys.argv[1:]) + '\n')
+
+
 def train():
-    '''Train and checkpoint; returns the fitted model.'''
+    '''Train and checkpoint; returns (model, run_dir).'''
+    sys.argv[1:] = apply_env_id_alias()
     config = ConfigFactory().merge()
     set_seed_from_config(config)
     set_device_from_config(config)
-    mkdirs(config.output_dir)
-    print(f'device={config.device}')
 
     sb3_config = config.get('sb3_config', {})
     algo = ALGOS[config.algo]
     total_timesteps = int(sb3_config.get('total_timesteps', 100000))
     save_freq = int(sb3_config.get('save_freq', 10000))
+    eval_freq = int(sb3_config.get('eval_freq', max(total_timesteps // 10, 1)))
+    n_eval_episodes = int(sb3_config.get('n_eval_episodes', 5))
+
+    run_dir = claim_run_dir(config.output_dir, config.algo, config.task)
+    write_run_metadata(run_dir, config)
+    print(f'device={config.device} run_dir={run_dir}')
 
     env = build_env(config)
+    # A second env, alive alongside the training env for the whole run. That was
+    # unsafe for the quadrotors until base_aviary.py's changeDynamics call was
+    # given its physicsClientId -- without it this env would silently corrupt the
+    # training env's dynamics. See tests/test_envs/test_concurrent_pybullet_envs.py.
+    eval_env = build_env(config)
+
     model = algo('MlpPolicy', env, seed=config.seed, verbose=1,
                  device=config.device,
                  policy_kwargs={'net_arch': list(sb3_config.get('net_arch', [256, 256]))})
-    # Periodic checkpoints, not only best: the shipped strong/weak model pairs
-    # are best-vs-intermediate checkpoints of one run, so dropping intermediates
-    # would make that axis unreproducible.
-    callback = CheckpointCallback(save_freq=save_freq,
-                                  save_path=os.path.join(config.output_dir, 'checkpoints'),
-                                  name_prefix='step')
-    model.learn(total_timesteps=total_timesteps, callback=callback)
-    model.save(os.path.join(config.output_dir, 'model_final'))
-    env.close()
-    return model
+    callbacks = [
+        # Periodic checkpoints, not only best: the shipped strong/weak model pairs
+        # are best-vs-intermediate checkpoints of one run, so dropping intermediates
+        # would make that axis unreproducible.
+        CheckpointCallback(save_freq=save_freq,
+                           save_path=os.path.join(run_dir, 'checkpoints'),
+                           name_prefix='step'),
+        EvalCallback(eval_env, best_model_save_path=run_dir,
+                     log_path=run_dir, eval_freq=eval_freq,
+                     n_eval_episodes=n_eval_episodes, deterministic=True),
+    ]
+    try:
+        model.learn(total_timesteps=total_timesteps, callback=callbacks)
+        model.save(os.path.join(run_dir, 'model_final'))
+    finally:
+        env.close()
+        eval_env.close()
+    return model, run_dir
 
 
 if __name__ == '__main__':

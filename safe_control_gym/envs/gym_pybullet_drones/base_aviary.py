@@ -223,7 +223,16 @@ class BaseAviary(BenchmarkEnv):
                                    p.getQuaternionFromEuler(self.INIT_RPY),
                                    flags=p.URDF_USE_INERTIA_FROM_FILE,
                                    physicsClientId=self.PYB_CLIENT)
-        p.changeDynamics(self.DRONE_ID, -1, linearDamping=0, angularDamping=0)
+        # physicsClientId is not optional here. Omitted, PyBullet targets client
+        # 0, so a second env alive in the same process writes its own DRONE_ID's
+        # damping onto the FIRST env's client -- corrupting that env, and leaving
+        # this one at PyBullet's default damping instead of 0. Two concurrent
+        # quadrotor envs diverged by 0.34 in state within five steps; sequential
+        # envs agreed exactly, because then the only client is 0.
+        # SB3's EvalCallback holds an eval env open alongside the training env,
+        # so this is reachable from ordinary training, not just from tests.
+        p.changeDynamics(self.DRONE_ID, -1, linearDamping=0, angularDamping=0,
+                         physicsClientId=self.PYB_CLIENT)
         # Update and store the drones kinematic information.
         self._update_and_store_kinematic_information()
         # Start video recording.

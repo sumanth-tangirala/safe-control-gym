@@ -66,17 +66,79 @@ the `Task` enum at `benchmark_env.py:28` (`STABILIZATION`, `TRAJ_TRACKING`).
 The real axes are **system** (cartpole, quadrotor `quad_type: 2`, quadrotor
 `quad_type: 3`, inverted_pendulum) x **task** (stabilization, traj_tracking).
 
-### A uniform success signal already exists
+### The success signal is NOT uniform — corrected during implementation
 
-All four envs set `info['goal_reached']` and `info['out_of_bounds']`:
-`inverted_pendulum.py:346`, `cartpole.py:708`, `quadrotor.py:918`. The test is
-`||state - X_GOAL|| < tolerance` in each case.
+The envs all compute `goal_reached` as `||state - X_GOAL|| < tolerance`, but
+they do not all *expose* it. `_get_info` in both `cartpole.py` and
+`quadrotor.py` gates the key:
 
-This is a goal-*ball* test evaluated during the episode, and it is **not** the
-criterion the datasets use — dataset success is membership of the terminal state
-in an invariant ellipsoid (see `.claude/docs/datasets.md`). The two answer
-different questions and this spec deliberately uses the goal-ball one; see
-Decisions.
+```python
+if self.TASK == Task.STABILIZATION and self.COST == Cost.QUADRATIC:
+    info['goal_reached'] = self.goal_reached
+```
+
+RL training uses `cost: rl_reward`, so for cartpole and both quadrotors the key
+is **absent**. Only the inverted pendulum emits it unconditionally
+(`inverted_pendulum.py:346`). Verified by inspecting a live `step()` info dict on
+cartpole: `['constraint_violation', 'current_step', 'mse', 'out_of_bounds']`.
+
+An earlier draft of this spec asserted all four expose it uniformly. That was
+wrong, and evaluation built on it would have reported a success rate of exactly
+zero for three of four systems while looking healthy.
+
+Evaluation therefore applies the envs' own rule to the state directly rather
+than reading the key, which holds whatever the cost is.
+
+This is a goal-*ball* test, and it is **not** the criterion the datasets use —
+dataset success is membership of the terminal state in an invariant ellipsoid
+(see `.claude/docs/datasets.md`). The two answer different questions and this
+spec deliberately uses the goal-ball one; see Decisions.
+
+### Two PyBullet envs in one process corrupted each other
+
+Found while asserting composite/base equivalence. `base_aviary.py`'s
+`changeDynamics` call omitted `physicsClientId`, alone among the file's PyBullet
+calls, so it targeted client 0. A second env's `reset()` then applied its own
+`DRONE_ID`'s damping to the *first* env's client — corrupting that env, and
+leaving itself at PyBullet's default damping rather than 0.
+
+Measured: two concurrent quadrotor-2D envs diverged by 0.34 in state within five
+steps; sequential envs agreed exactly, because with one env the only client is 0
+and the omission is harmless.
+
+This is reachable from ordinary training, not only from tests: SB3's
+`EvalCallback` holds an eval env open alongside the training env, and
+`DummyVecEnv` holds `n_envs` of them. Fixed, with a falsifiable regression test
+(`tests/test_envs/test_concurrent_pybullet_envs.py`).
+
+#### It also means every shipped quadrotor dataset ran at the wrong damping
+
+The quadrotor collectors hold two envs at once — `make('lqr', env_func, ...)`
+builds one internally, then `env = env_func()` builds the one actually rolled
+out (`generate_quadrotor_2d_trajectories.py:380,386`). The rollout env is the
+*second*, so it is the one that never received `linearDamping=0,
+angularDamping=0`. It ran at PyBullet's default.
+
+Measured against a single-env reference, five steps, seed 7:
+
+| | rollout env deviation |
+| --- | --- |
+| with `physicsClientId` | 0.000000 |
+| without (as every shipped quadrotor dataset was generated) | 0.069001 |
+
+Confirmed independently by the oracles: after the fix, `test_slice_reproduces`
+fails for `quad2d`, `quad2d_rl` and `quad3d` and passes for `cartpole` — exactly
+the three collectors that go through `base_aviary.py`. This is the collection
+oracles doing the job they were built for.
+
+The fixtures are **not** regenerated. They record what the shipped datasets
+contain, and collection work is paused. The three cases are marked
+`xfail(strict=True)`, so regenerating them turns the xfail into an XPASS and
+fails the suite — the decision has to be taken deliberately, not by re-running a
+capture script.
+
+Single-env behaviour is unchanged: golden quadrotor rollouts stay bit-exact, and
+the concurrent result now equals the sequential one.
 
 ### Noise is not uniform
 
@@ -99,8 +161,16 @@ quadrotor.
 ### Evaluation reports RL-standard episode metrics, not ROA grid success
 
 Mean return, mean episode length, success rate, out-of-bounds rate and
-constraint violations over N seeded episodes, via the `info['goal_reached']`
-signal every env already emits.
+constraint violations over N seeded episodes.
+
+Success is computed by `eval_policy` from the state, not read from
+`info['goal_reached']` — that key is cost-gated and absent under `rl_reward` for
+three of the four systems (see Prior state). It is evaluated at the **terminal**
+state rather than at any step: under `rl_reward` an episode does not stop on
+entering the goal ball, so "reached it at some point" would count trajectories
+that arrived and then left, and the terminal state is what the downstream model
+predicts anyway. `reached_goal_any_step_rate` is reported alongside so the gap
+between the two is visible.
 
 The alternative — rolling out a grid and labelling terminal states by
 invariant-set membership — is a better predictor of dataset quality, because it
