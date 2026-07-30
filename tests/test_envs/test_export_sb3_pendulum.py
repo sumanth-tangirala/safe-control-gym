@@ -24,25 +24,35 @@ FWD_TOL = 1e-6
 
 
 def _train_short_sac(tmp_path):
-    '''A genuinely short SAC run on inverted_pendulum, wrapped exactly as the
+    '''A genuinely short SAC run on the inverted pendulum, wrapped exactly as the
     pendulum_rl policies are: AngleObservation ([cos, sin, thdot/thdot_max])
-    plus action_repeat 4.'''
+    plus action_repeat 4.
+
+    Driven by the real config rather than by kv_overrides. The observation
+    encoding is a property of the SYSTEM now, declared in
+    configs/collection/inverted_pendulum.yaml, so `sb3_config.angle_obs=...`
+    silently does nothing -- this test trained a bare 2-channel policy and then
+    fed it the 3-channel encoding the exporter assumes.
+
+    NormalizeObservation is in that config too and is a no-op here: the three
+    channels are already bounded to [-1, 1], so it maps them to themselves and
+    the exported policy stays byte-compatible with PendulumRL.
+    '''
     out = tmp_path / 'train'
     result = subprocess.run(
         [sys.executable, '-m', 'safe_control_gym.experiments.train_sb3',
-         '--task', 'inverted_pendulum', '--algo', 'sac', '--seed', '3',
+         '--env_id', 'inverted_pendulum_stabilization', '--algo', 'sac', '--seed', '3',
          '--output_dir', str(out),
+         '--overrides', 'configs/sb3/inverted_pendulum_stabilization_sac.yaml',
          '--kv_overrides',
          'sb3_config.total_timesteps=1024', 'sb3_config.save_freq=1024',
-         'sb3_config.angle_obs.angle_index=0', 'sb3_config.angle_obs.rate_index=1',
-         f'sb3_config.angle_obs.rate_max={THETA_DOT_MAX}',
-         f'sb3_config.action_repeat={ACTION_REPEAT}'],
+         'sb3_config.eval_freq=1024'],
         cwd=REPO, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-3000:]
     # train_sb3 composes <output_dir>/<algo>/<env_id>_<run>/ rather than writing
     # into output_dir directly, so the run directory is discovered rather than
     # assumed -- that is the layout under test elsewhere, not here.
-    runs = sorted((out / 'sac').glob('inverted_pendulum_*'))
+    runs = sorted((out / 'sac').glob('inverted_pendulum_stabilization_*'))
     assert len(runs) == 1, f'expected one run directory, found {runs}'
     zip_path = runs[0] / 'model_final.zip'
     assert zip_path.exists()

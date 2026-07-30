@@ -18,19 +18,38 @@
 #
 # Hyperparameters are hand-written starting points. No search has been run.
 
+# Horizon, step cost and discount, set together because they interact.
+#
+# episode_len_sec 8 s = 480 steps, sized from the MEASURED worst-case LQR
+# steps-to-goal over the collection region (283), with margin.
+# cartpole's and quadrotor3d's worst cases were censored by their old horizons --
+# successful episodes were consuming the entire budget -- so those grow most.
+# The pendulum SHRINKS from 1000: its worst case is 289, and the extra 700 steps
+# bought nothing while costing resets and burying the terminal reward.
+#
+# sparse_step_reward -0.5/H = -0.001042, so a timeout costs -0.5 on every
+# system: half a crash. At the old flat -0.01 a timeout cost -0.01*H, which on
+# cartpole was -2.50 against a crash at -1.10 -- the agent was paid to crash
+# early. The invariant is |oob| > |step| * H.
+#
+# gamma 0.995 rather than SB3's 0.99. At 0.99 the terminal goal reward is worth
+# 0.99^480 at episode start, which for the pendulum's old 1000-step horizon was
+# 4e-5 -- invisible to the critic, and fatal when the reward is sparse.
+
 task_config:
   cost: sparse
   sparse_goal_reward: 1.0
   sparse_oob_reward: -1.0
-  sparse_step_reward: -0.01
-
+  sparse_step_reward: -0.001042
+  episode_len_sec: 8
 sb3_config:
   total_timesteps: 1000000
-  net_arch: [400, 300]
+  net_arch:
+  - 400
+  - 300
   save_freq: 100000
   eval_freq: 100000
   n_eval_episodes: 10
-  # SubprocVecEnv when > 1: env stepping is the bottleneck here, not the
-  # MLP. Evaluation envs stay unvectorised.
   n_envs: 4
   collection_bounds: configs/collection/quadrotor3d.yaml
+  gamma: 0.995

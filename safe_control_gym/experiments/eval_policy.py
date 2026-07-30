@@ -158,16 +158,24 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
     # face the identical distribution -- the whole comparison rests on that.
     config = dict(config)
     config['task_config'] = with_collection_init(dict(config['task_config']), bounds)
-    # build_env would re-read collection_bounds from sb3_config and apply the
-    # run's own regime; clear it so `bounds` is the single authority here.
-    config['sb3_config'] = {k: v for k, v in (config.get('sb3_config') or {}).items()
-                            if k != 'collection_bounds'}
+    # Point build_env at the regime being scored, rather than clearing the key.
+    #
+    # Clearing it was wrong once the observation encoding moved into this same
+    # file: build_env then applied no wrappers, so a pendulum policy expecting
+    # (cos, sin, rate) was handed the raw 2-channel state and SB3 rejected the
+    # shape. Setting it makes one file the authority for both the regime and the
+    # encoding, which is the point of having one file.
+    # sb3_config keeps the run's OWN collection_bounds, which is where the
+    # observation encoding lives -- the model's input shape was fixed at
+    # training time and must not change here. The evaluation region is passed
+    # separately as `regime`.
+    config['sb3_config'] = dict(config.get('sb3_config') or {})
     task_config = config['task_config']
     seeds = episode_seeds(seed, n_episodes)
 
     # Policy: the wrapped env it was trained on. Shaping changes the observation,
     # so a policy evaluated on the bare env would be fed the wrong vector.
-    policy_env = build_env(munch.munchify(config))
+    policy_env = build_env(munch.munchify(config), regime=bounds)
     apply_collection_bounds(policy_env, env_id, bounds)
     tolerance = goal_tolerance(policy_env)
     weights = resolve_weights(run_dir, model_name)

@@ -88,3 +88,21 @@ normalize_observation: true
 # The collectors are unaffected: they build the base env ids and never read this
 # file.
 normalized_rl_action_space: true
+
+# Initial-state curriculum: start near the goal, widen as success is earned.
+#
+# Required, not optional. Measured over 300 random episodes, the number of steps
+# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
+# so under a sparse reward those runs see no positive signal at all and cannot
+# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
+#
+# fraction 0 is a point distribution at the goal, 1 is the full collection
+# region above. Ranges contract about the GOAL value rather than the midpoint,
+# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
+#
+# Advancement is driven by measured success rate, not by a step schedule: a
+# schedule has to be guessed per system and is wrong in both directions.
+curriculum:
+  start: 0.005
+  step: 0.15
+  threshold: 0.5

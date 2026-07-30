@@ -61,6 +61,7 @@ from safe_control_gym.envs.env_wrappers.shaping import (ActionRepeat, AngleObser
                                                         RotationMatrixObservation)
 from safe_control_gym.envs.env_wrappers.vec_compat import PicklableInfo
 from safe_control_gym.experiments.callbacks import SuccessRateCallback
+from safe_control_gym.experiments.curriculum import InitStateCurriculum, set_goal_tolerance
 from safe_control_gym.utils.configuration import ConfigFactory
 from safe_control_gym.utils.registration import make
 from safe_control_gym.utils.utils import set_device_from_config, set_seed_from_config
@@ -192,7 +193,7 @@ def normalisation_bounds(env, angle_obs, rotation_obs, layout):
     return np.array(out_low), np.array(out_high)
 
 
-def build_env(config):
+def build_env(config, regime=None):
     '''Registered env plus whatever shaping the system and config ask for.
 
     Observation encoding comes from the SYSTEM's collection config, not from the
@@ -202,9 +203,17 @@ def build_env(config):
 
     action_repeat stays a training choice -- it is a control-cadence convention,
     not a property of the dynamics.
+
+    `regime` separates WHERE episodes run from HOW the policy sees them. The
+    encoding always comes from the run's own collection_bounds, because the
+    model's input shape was fixed at training time; only the start range and the
+    termination box may be overridden. Conflating the two meant evaluating a
+    4-channel cartpole policy with --eval_bounds silently switched on the
+    (cos, sin) encoding and handed it 5 channels, which SB3 rejected.
     '''
     sb3_config = config.get('sb3_config', {})
-    bounds = load_collection_bounds(sb3_config.get('collection_bounds'))
+    encoding = load_collection_bounds(sb3_config.get('collection_bounds'))
+    bounds = encoding if regime is None else regime
     task_config = with_collection_init(dict(config.task_config), bounds)
     env = make(config.task, **task_config)
     # Applied to the bare env before any wrapper, since the thresholds live on
@@ -213,8 +222,8 @@ def build_env(config):
     apply_collection_bounds(env, config.task, bounds)
     apply_env_attributes(env, sb3_config.get('env_attributes', {}))
 
-    layout = bounds.get('state_layout')
-    angle_obs = bounds.get('angle_observation')
+    layout = encoding.get('state_layout')
+    angle_obs = encoding.get('angle_observation')
     if angle_obs:
         if not layout:
             raise KeyError(f'{config.task}: angle_observation needs state_layout '
@@ -226,7 +235,7 @@ def build_env(config):
         rate_max = float(abs(env.observation_space.high[rate_index]))
         env = AngleObservation(env, angle_index, rate_index, rate_max)
 
-    rotation_obs = bounds.get('rotation_observation')
+    rotation_obs = encoding.get('rotation_observation')
     if rotation_obs:
         if not layout:
             raise KeyError(f'{config.task}: rotation_observation needs state_layout.')
@@ -236,7 +245,7 @@ def build_env(config):
     # [-1, 1] and passes through untouched. Bounds are taken from state_space --
     # the region the regime actually defines -- rather than observation_space,
     # which keeps the env's class defaults and would divide by the wrong number.
-    if bounds.get('normalize_observation'):
+    if encoding.get('normalize_observation'):
         low, high = normalisation_bounds(env, angle_obs, rotation_obs, layout)
         env = NormalizeObservation(env, low=low, high=high)
 
@@ -472,6 +481,7 @@ def train():
     write_run_metadata(run_dir, config)
     print(f'device={config.device} run_dir={run_dir}')
 
+    bounds = load_collection_bounds(sb3_config.get('collection_bounds'))
     n_envs = int(sb3_config.get('n_envs', 1))
     # SB3's callbacks count model steps, not env steps: n_calls advances once
     # per model.step(), which consumes n_envs env steps. Left uncorrected, a
@@ -505,6 +515,7 @@ def train():
                  device=config.device,
                  tensorboard_log=run_dir,
                  gradient_steps=int(sb3_config.get('gradient_steps', -1 if n_envs > 1 else 1)),
+                 gamma=float(sb3_config.get('gamma', 0.99)),
                  policy_kwargs={'net_arch': list(sb3_config.get('net_arch', [256, 256]))})
     callbacks = [
         # Periodic checkpoints, not only best: the shipped strong/weak model pairs
@@ -522,6 +533,42 @@ def train():
         SuccessRateCallback(success_env, n_episodes=n_eval_episodes,
                             eval_freq=eval_freq),
     ]
+
+    # Widen the initial states as the policy earns it. Without this, three of
+    # four systems never see a positive reward under the sparse scheme --
+    # measured over 300 random episodes, cartpole/quadrotor2d/quadrotor3d landed
+    # in the goal ball exactly zero times.
+    curriculum_cfg = bounds.get('curriculum')
+    if curriculum_cfg and bounds.get('init_state_randomization_info'):
+        curriculum_env = build_env(config)
+
+        def set_ranges(ranges, env=env, n=n_envs):
+            # A VecEnv has to be reached through env_method; a plain env is the
+            # object itself. Both end at the same attribute on the base env.
+            if n > 1:
+                env.env_method('__setattr__', 'INIT_STATE_RAND_INFO', ranges)
+            else:
+                env.unwrapped.INIT_STATE_RAND_INFO = ranges
+
+        def set_tolerance(tolerance, env=env, n=n_envs):
+            if n > 1:
+                env.env_method('__setattr__', 'goal_threshold', tolerance)
+            else:
+                set_goal_tolerance(env, tolerance)
+
+        callbacks.append(InitStateCurriculum(
+            curriculum_env, set_ranges,
+            set_tolerance if curriculum_cfg.get('tolerance_start') else None,
+            full_ranges=bounds['init_state_randomization_info'],
+            layout=bounds.get('state_layout'),
+            start=float(curriculum_cfg.get('start', 0.1)),
+            step=float(curriculum_cfg.get('step', 0.15)),
+            threshold=float(curriculum_cfg.get('threshold', 0.5)),
+            n_episodes=int(curriculum_cfg.get('n_episodes', n_eval_episodes)),
+            tolerance_start=curriculum_cfg.get('tolerance_start'),
+            eval_freq=eval_freq, verbose=1))
+    else:
+        curriculum_env = None
     try:
         model.learn(total_timesteps=total_timesteps, callback=callbacks)
         model.save(os.path.join(run_dir, 'model_final'))
@@ -529,6 +576,8 @@ def train():
         env.close()
         eval_env.close()
         success_env.close()
+        if curriculum_env is not None:
+            curriculum_env.close()
         if run is not None:
             run.finish()
     return model, run_dir
