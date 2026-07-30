@@ -28,8 +28,28 @@ COMPOSITE = {
     'quadrotor3d_stabilization': 'quadrotor',
 }
 
+# The ONLY keys each composite may differ from its base on. Everything else must
+# match value for value.
+#
+# quadrotor3d pins two: quad_type, and task_info -- THREE_D needs a 3-element
+# stabilization_goal, and task_info replaces the dict rather than merging, so
+# the whole thing is restated in the yaml.
+#
+# quadrotor2d pins nothing, because quad_type: 2 is already quadrotor.yaml's
+# default. It restates it for self-description, which is a match, not a diff.
+PINNED = {
+    'inverted_pendulum_stabilization': set(),
+    'cartpole_stabilization': set(),
+    'quadrotor2d_stabilization': set(),
+    'quadrotor3d_stabilization': {'quad_type', 'task_info'},
+}
+
 SEED = 1234
 STEPS = 20
+
+# Sentinel for "the base does not have this key at all", distinct from a key
+# whose value is legitimately None -- `task_info: null` is exactly that.
+_ABSENT = object()
 
 
 @pytest.mark.parametrize('idx', sorted(COMPOSITE))
@@ -38,6 +58,42 @@ def test_composite_id_conforms(idx):
     env = make(idx, **get_config(idx))
     check_env(env, warn=True, skip_render_check=True)
     env.close()
+
+
+@pytest.mark.parametrize('idx,base', sorted(COMPOSITE.items()))
+def test_composite_yaml_tracks_its_base(idx, base):
+    '''The composite yaml must stay a copy of its base but for the pinned keys.
+
+    This is the check that actually protects the invariant, and it is a CONFIG
+    comparison rather than a rollout one. test_composite_matches_base builds
+    both ids from the *composite's* config, so it cannot see the failure that
+    matters: someone edits cartpole.yaml, leaves cartpole_stabilization.yaml
+    alone, and the two silently diverge while every rollout test still passes.
+
+    Both directions are checked. A key added to the base and not to the
+    composite is drift; so is a key whose value the composite changed without
+    declaring it in PINNED. Adding a training value to a composite yaml fails
+    here, which is the point -- those belong in configs/sb3/.
+    '''
+    composite_config, base_config = get_config(idx), get_config(base)
+
+    missing = sorted(set(base_config) - set(composite_config))
+    assert not missing, (
+        f'{idx}.yaml is missing keys its base gained: {missing}. '
+        f'Copy them across, or pin them deliberately in PINNED.')
+
+    differs = {key for key, value in composite_config.items()
+               if base_config.get(key, _ABSENT) != value}
+    undeclared = sorted(differs - PINNED[idx])
+    assert not undeclared, (
+        f'{idx}.yaml diverges from {base}.yaml on undeclared keys: '
+        f'{ {k: (base_config.get(k, "<absent>"), composite_config[k]) for k in undeclared} }. '
+        f'Training values belong in configs/sb3/, not in an env yaml.')
+
+    unused = sorted(PINNED[idx] - differs)
+    assert not unused, (
+        f'{idx} declares {unused} as pinned but they now match the base. '
+        f'Remove them from PINNED so the allowance stays honest.')
 
 
 @pytest.mark.parametrize('idx,base', sorted(COMPOSITE.items()))
