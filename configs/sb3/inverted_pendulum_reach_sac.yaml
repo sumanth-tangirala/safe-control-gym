@@ -33,9 +33,5 @@ sb3_config:
   # SubprocVecEnv when > 1: env stepping is the bottleneck here, not the
   # MLP. Evaluation envs stay unvectorised.
   n_envs: 1
-  angle_obs:
-    angle_index: 0
-    rate_index: 1
-    rate_max: 6.283185307179586
   action_repeat: 4
   collection_bounds: configs/collection/inverted_pendulum.yaml

@@ -204,7 +204,15 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
     # Baseline: the bare env. LQR is a state-feedback law and does not consume
     # the shaped observation.
     base_id = baseline_id(env_id)
-    env_func = partial(make, env_id, **task_config)
+    # The baseline runs on the RAW action space, never the normalised one.
+    # normalized_rl_action_space exists to give the POLICY a symmetric [-1, 1]
+    # box; the env then denormalises. LQR is a state-feedback law emitting
+    # physical units, so handing it a normalised env silently rescales its
+    # output -- measured on cartpole, a 5 N command was applied as 50 N.
+    baseline_config = {k: v for k, v in task_config.items()
+                       if k != 'normalized_rl_action_space'}
+    baseline_config['normalized_rl_action_space'] = False
+    env_func = partial(make, env_id, **baseline_config)
     # LQR's q_lqr/r_lqr default to None and are then passed straight to
     # get_cost_weight_matrix, which does len() on them. The registered yaml is
     # where the real defaults live, so it is loaded rather than reinvented here.

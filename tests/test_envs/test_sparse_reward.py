@@ -192,3 +192,52 @@ def test_dense_costs_are_undisturbed(env_id):
 def test_sparse_is_a_registered_cost():
     assert Cost.SPARSE == 'sparse'
     assert Cost('sparse') is Cost.SPARSE
+
+
+def test_quadrotor3d_observes_a_rotation_matrix():
+    '''quadrotor3d must feed R, not Euler angles.
+
+    No representation of SO(3) in four or fewer dimensions is continuous
+    (Zhou et al. 2019), and this env's Euler readback is the worst case: its
+    chart is singular at pitch +/-pi/2, which is why measured pitch topped out
+    at 1.54 while roll ran to +/-pi.
+
+    Asserted as a rotation, not merely as nine numbers: orthonormal with
+    determinant +1. A transposed or mis-ordered construction still produces nine
+    plausible-looking values.
+    '''
+    import munch
+    import yaml
+
+    from safe_control_gym.experiments.train_sb3 import build_env
+    over = yaml.safe_load(open('configs/sb3/quadrotor3d_reach_sac.yaml'))
+    cfg = {'task': 'quadrotor3d_reach',
+           'task_config': {**get_config('quadrotor3d_reach'), **over.get('task_config', {})},
+           'sb3_config': over['sb3_config']}
+    env = build_env(munch.munchify(cfg))
+    try:
+        # 12 state channels, three of them Euler angles, replaced by nine.
+        assert env.observation_space.shape == (18,), env.observation_space.shape
+        for seed in range(25):
+            obs, _ = env.reset(seed=seed)
+            # Layout: x, x_dot, y, y_dot, z, z_dot, [R 3x3], p, q, r
+            matrix = np.asarray(obs[6:15]).reshape(3, 3)
+            np.testing.assert_allclose(matrix @ matrix.T, np.eye(3), atol=1e-9,
+                                       err_msg=f'seed {seed}: R is not orthonormal')
+            assert abs(np.linalg.det(matrix) - 1.0) < 1e-9, (
+                f'seed {seed}: det(R) = {np.linalg.det(matrix)}, not a rotation')
+    finally:
+        env.close()
+
+
+def test_rotation_matrix_matches_pybullet():
+    '''The convention must be PyBullet's, since that is what produced the state.'''
+    import pybullet as pb
+
+    from safe_control_gym.envs.env_wrappers.shaping import rotation_matrix_from_rpy
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        rpy = rng.uniform(-np.pi, np.pi, 3)
+        theirs = np.array(pb.getMatrixFromQuaternion(
+            pb.getQuaternionFromEuler(rpy))).reshape(3, 3)
+        np.testing.assert_allclose(rotation_matrix_from_rpy(*rpy), theirs, atol=1e-12)

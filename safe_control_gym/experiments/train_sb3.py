@@ -4,9 +4,13 @@ The only module in the package permitted to import stable-baselines3; envs/ and
 controllers/ stay SB3-free so inference and dataset collection never gain the
 dependency.
 
-Shaping is configuration, not code: --kv_overrides sb3_config.angle_obs=... and
-sb3_config.action_repeat=... select the optional wrappers. No task is special
-cased here.
+Shaping is configuration, not code, and it is split by what the value is a
+property OF. The observation encoding -- which channel is an angle, the state
+layout, whether to normalise -- lives in the system's
+configs/collection/<system>.yaml, because those are facts about the system and
+restating them per training run lets two configs for one system disagree.
+action_repeat stays in sb3_config, being a control-cadence choice rather than a
+property of the dynamics. No task is special cased here.
 
     python -m safe_control_gym.experiments.train_sb3 \\
         --env_id cartpole_stabilization --algo sac --output_dir logs \\
@@ -47,12 +51,14 @@ import os
 import shlex
 import sys
 
+import numpy as np
 import yaml
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-from safe_control_gym.envs.env_wrappers.shaping import ActionRepeat, AngleObservation
+from safe_control_gym.envs.env_wrappers.shaping import (ActionRepeat, AngleObservation, NormalizeObservation,
+                                                        RotationMatrixObservation)
 from safe_control_gym.envs.env_wrappers.vec_compat import PicklableInfo
 from safe_control_gym.experiments.callbacks import SuccessRateCallback
 from safe_control_gym.utils.configuration import ConfigFactory
@@ -112,63 +118,135 @@ def apply_collection_bounds(env, env_id, bounds):
     one, which reads as a hard problem rather than a broken setup.
     '''
     apply_env_attributes(env, bounds.get('env_attributes', {}))
-    apply_state_space_bounds(env, env_id, bounds.get('state_space_bounds', {}))
+    apply_state_space_bounds(env, env_id, bounds.get('state_space_bounds', {}),
+                             bounds.get('state_layout'))
 
 
 def with_collection_init(task_config, bounds):
-    '''Overlay the collection start range onto a task_config.'''
-    randomization = bounds.get('init_state_randomization_info')
-    if not randomization:
-        return task_config
+    '''Overlay the system's policy-facing conventions onto a task_config.
+
+    The start range, and whether the action space is presented normalised, are
+    both properties of the system rather than of a training run -- so they live
+    in one file per system and are merged here instead of being restated in
+    every configs/sb3 entry.
+    '''
     merged = dict(task_config)
-    merged['randomized_init'] = True
-    merged['init_state_randomization_info'] = randomization
+    randomization = bounds.get('init_state_randomization_info')
+    if randomization:
+        merged['randomized_init'] = True
+        merged['init_state_randomization_info'] = randomization
+    if 'normalized_rl_action_space' in bounds:
+        merged['normalized_rl_action_space'] = bool(bounds['normalized_rl_action_space'])
     return merged
 
 
+def normalisation_bounds(env, angle_obs, rotation_obs, layout):
+    """State-space bounds, expanded to match the post-angle-encoding channels.
+
+    state_space is what the collection regime moves; observation_space keeps the
+    env's class defaults. Normalising against the latter divided quadrotor3d's
+    body rates by 8.727 while the regime ran them to +/-24.
+
+    AngleObservation turns one channel into two, so the bounds are walked in the
+    same order it walks the observation: the angle contributes [-1, 1] twice
+    (cos and sin), and the rate contributes its own scaled bound.
+    """
+    base = env.unwrapped
+    low = np.asarray(base.state_space.low, dtype=np.float64)
+    high = np.asarray(base.state_space.high, dtype=np.float64)
+
+    if rotation_obs:
+        # Three Euler channels become nine matrix entries, each already in
+        # [-1, 1], so they need no rescaling.
+        idx = [layout.index(n) for n in rotation_obs['angles']]
+        out_low, out_high = [], []
+        for i in range(len(low)):
+            if i == idx[0]:
+                out_low += [-1.0] * 9
+                out_high += [1.0] * 9
+            elif i in idx:
+                continue
+            else:
+                out_low.append(float(low[i]))
+                out_high.append(float(high[i]))
+        return np.array(out_low), np.array(out_high)
+
+    if not angle_obs:
+        return low, high
+
+    angle_index = layout.index(angle_obs['angle'])
+    rate_index = layout.index(angle_obs['rate'])
+    rate_max = float(abs(high[rate_index]))
+    out_low, out_high = [], []
+    for i in range(len(low)):
+        if i == angle_index:
+            out_low += [-1.0, -1.0]
+            out_high += [1.0, 1.0]
+        elif i == rate_index:
+            scale = max(1.0, float(abs(high[i])) / rate_max) if rate_max else 1.0
+            out_low.append(-scale)
+            out_high.append(scale)
+        else:
+            out_low.append(float(low[i]))
+            out_high.append(float(high[i]))
+    return np.array(out_low), np.array(out_high)
+
+
 def build_env(config):
-    '''Registered env plus whatever shaping the config asks for.'''
+    '''Registered env plus whatever shaping the system and config ask for.
+
+    Observation encoding comes from the SYSTEM's collection config, not from the
+    training config: which channel is an angle, and what the state layout is,
+    are facts about the system. Stating them per training run would let two
+    configs for one system disagree.
+
+    action_repeat stays a training choice -- it is a control-cadence convention,
+    not a property of the dynamics.
+    '''
     sb3_config = config.get('sb3_config', {})
     bounds = load_collection_bounds(sb3_config.get('collection_bounds'))
     task_config = with_collection_init(dict(config.task_config), bounds)
     env = make(config.task, **task_config)
     # Applied to the bare env before any wrapper, since the thresholds live on
-    # the env itself.
+    # the env itself, and before normalisation so the bounds it reads are the
+    # collection ones.
     apply_collection_bounds(env, config.task, bounds)
     apply_env_attributes(env, sb3_config.get('env_attributes', {}))
-    angle_obs = sb3_config.get('angle_obs', None)
-    if angle_obs is not None:
-        env = AngleObservation(env, angle_obs['angle_index'],
-                               angle_obs['rate_index'], angle_obs['rate_max'])
+
+    layout = bounds.get('state_layout')
+    angle_obs = bounds.get('angle_observation')
+    if angle_obs:
+        if not layout:
+            raise KeyError(f'{config.task}: angle_observation needs state_layout '
+                           f'to resolve channel names to indices.')
+        angle_index = layout.index(angle_obs['angle'])
+        rate_index = layout.index(angle_obs['rate'])
+        # rate_max from the env's own bound, so the scaled channel lands in
+        # [-1, 1] without a separately-maintained constant to drift.
+        rate_max = float(abs(env.observation_space.high[rate_index]))
+        env = AngleObservation(env, angle_index, rate_index, rate_max)
+
+    rotation_obs = bounds.get('rotation_observation')
+    if rotation_obs:
+        if not layout:
+            raise KeyError(f'{config.task}: rotation_observation needs state_layout.')
+        env = RotationMatrixObservation(env, [layout.index(n) for n in rotation_obs['angles']])
+
+    # After the angle encoding, so the (cos, sin) pair is already bounded to
+    # [-1, 1] and passes through untouched. Bounds are taken from state_space --
+    # the region the regime actually defines -- rather than observation_space,
+    # which keeps the env's class defaults and would divide by the wrong number.
+    if bounds.get('normalize_observation'):
+        low, high = normalisation_bounds(env, angle_obs, rotation_obs, layout)
+        env = NormalizeObservation(env, low=low, high=high)
+
     repeat = int(sb3_config.get('action_repeat', 1))
     if repeat > 1:
         env = ActionRepeat(env, repeat)
     return env
 
 
-# State vector order per SYSTEM, for addressing state_space bounds by name.
-# quadrotor.py documents these inline in _get_done; restated here because a
-# config that says `theta_dot` is reviewable and one that says `[5]` is not.
-#
-# Keyed by system, not by env id: the state vector is a property of the system,
-# and every task variant of it shares one. Keying by env id meant every new
-# task -- reach was the first -- silently lost its entry and raised.
-STATE_ORDER = {
-    'quadrotor2d': ['x', 'x_dot', 'z', 'z_dot', 'theta', 'theta_dot'],
-    'quadrotor3d': ['x', 'x_dot', 'y', 'y_dot', 'z', 'z_dot',
-                    'phi', 'theta', 'psi', 'p', 'q', 'r'],
-}
-
-
-def state_order(env_id):
-    '''The state vector layout for whichever system this env id names.'''
-    for system, order in STATE_ORDER.items():
-        if env_id.startswith(system):
-            return order
-    return None
-
-
-def apply_state_space_bounds(env, env_id, bounds):
+def apply_state_space_bounds(env, env_id, bounds, layout):
     '''Widen or narrow the quadrotors' termination box, as their collectors do.
 
     The two env families bound themselves differently. cartpole has dedicated
@@ -179,19 +257,24 @@ def apply_state_space_bounds(env, env_id, bounds):
     It matters most for quad3d, whose dataset samples z to 3.0 against a default
     limit of 2.0 and body rates to +/-24 against +/-8.727. Sampling that region
     without moving the bounds gives episodes that die on the first step.
+
+    Channels are addressed by name against the system's declared state_layout,
+    so a config saying `theta_dot` is reviewable where one saying `[5]` is not.
+    The layout lives in configs/collection/<system>.yaml because it is a
+    property of the system; this module used to keep its own copy, which meant
+    every new task variant silently lost its entry.
     '''
     if not bounds:
         return
-    order = state_order(env_id)
-    if order is None:
-        raise KeyError(f'No state order known for {env_id}; state_space_bounds '
-                       f'is only defined for systems {sorted(STATE_ORDER)}.')
+    if not layout:
+        raise KeyError(f'{env_id}: state_space_bounds needs state_layout to '
+                       f'resolve channel names to indices.')
     base = env.unwrapped
     for name, (low, high) in bounds.items():
-        if name not in order:
-            raise KeyError(f'{env_id} has no state dimension {name!r}; expected '
-                           f'one of {order}.')
-        index = order.index(name)
+        if name not in layout:
+            raise KeyError(f'{env_id} has no state channel {name!r}; expected '
+                           f'one of {layout}.')
+        index = layout.index(name)
         base.state_space.low[index] = float(low)
         base.state_space.high[index] = float(high)
 
@@ -220,6 +303,39 @@ def apply_env_attributes(env, attributes):
                 f'{type(base).__name__} has no attribute {name!r}; env_attributes '
                 f'may only override thresholds the env already defines.')
         setattr(base, name, float(value))
+    mirror_thresholds_into_state_space(env, attributes)
+
+
+# cartpole's threshold attributes, and the state channel each one bounds.
+# cartpole terminates on these scalars while the quadrotors terminate on
+# state_space, so applying a regime to cartpole left state_space stale.
+CARTPOLE_THRESHOLD_CHANNELS = {'x_threshold': 0, 'x_dot_threshold': 1,
+                               'theta_threshold_radians': 2, 'theta_dot_threshold': 3}
+
+
+def mirror_thresholds_into_state_space(env, attributes):
+    '''Keep state_space consistent with the threshold attributes.
+
+    cartpole's `_get_done` reads `self.x_threshold` and friends, never
+    state_space -- so setting a regime through env_attributes moved where
+    episodes die but left state_space at the class defaults. Anything reading
+    state_space then sees the wrong region, and NormalizeObservation is exactly
+    that: it divided x by 4.8 while the regime sampled to +/-6.0, emitting 1.25
+    where it promised 1.0.
+
+    Infinite thresholds are skipped. The regime sets theta_threshold_radians to
+    inf so the pole may rotate freely, and an infinite bound would make the
+    normalised channel identically zero.
+    '''
+    base = env.unwrapped
+    for name, index in CARTPOLE_THRESHOLD_CHANNELS.items():
+        if name not in (attributes or {}):
+            continue
+        bound = float(attributes[name])
+        if not np.isfinite(bound):
+            continue
+        base.state_space.low[index] = -bound
+        base.state_space.high[index] = bound
 
 
 def build_train_env(config, n_envs):

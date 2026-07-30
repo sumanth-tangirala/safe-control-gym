@@ -33,3 +33,41 @@ reference_dataset: 'deterministic/pendulum_lqr_50k'
 # this number is comparing two different tasks. eval_policy records both so the
 # mismatch is visible rather than assumed away.
 reference_task: reach
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# Declared here rather than in configs/sb3/ because which channel is an angle,
+# and what the state layout is, are facts about the system. Restating them per
+# training config invites two configs for one system to disagree.
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [theta, theta_dot]
+
+# Encode this angle as (cos, sin) and scale its rate. The cartpole's theta is
+# not wrapped -- measured over this region it reaches +/-4.4 during rollouts, so
+# theta and theta - 2*pi are the same physical state shown to the policy as
+# different observations, and it cannot generalise across revolutions.
+angle_observation:
+  angle: theta
+  rate: theta_dot
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env denormalises
+# to true units internally, so the dynamics are unchanged.
+#
+# Matters most for the quadrotors, whose raw action space is asymmetric and never
+# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
+# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
+# that box its natural output sits at the bottom of the thrust range and a zero
+# action means free fall rather than hover. SB3's check_env warns about exactly
+# this. Normalised, zero maps to mid-thrust, which is near hover.
+#
+# The collectors are unaffected: they build the base env ids and never read this
+# file.
+normalized_rl_action_space: true

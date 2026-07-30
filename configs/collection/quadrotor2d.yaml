@@ -34,6 +34,7 @@ state_space_bounds:
   x_dot: [-1.0, 1.0]
   z: [0.1, 1.5]
   z_dot: [-1.0, 1.0]
+  theta: [-1.5707963267948966, 1.5707963267948966]
   theta_dot: [-8.0, 8.0]
 
 # 39287/489789 of eval_states.txt labelled 1, produced by upstream's
@@ -48,3 +49,37 @@ reference_dataset: 'deterministic/quadrotor2D_rl'
 # this number is comparing two different tasks. eval_policy records both so the
 # mismatch is visible rather than assumed away.
 reference_task: reach
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# Declared here rather than in configs/sb3/ because which channel is an angle,
+# and what the state layout is, are facts about the system. Restating them per
+# training config invites two configs for one system to disagree.
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [x, x_dot, z, z_dot, theta, theta_dot]
+
+# No angle encoding: pitch here comes from an Euler convention bounded to
+# +/-pi/2, so it never wraps and (cos, sin) would buy nothing.
+angle_observation: null
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env denormalises
+# to true units internally, so the dynamics are unchanged.
+#
+# Matters most for the quadrotors, whose raw action space is asymmetric and never
+# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
+# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
+# that box its natural output sits at the bottom of the thrust range and a zero
+# action means free fall rather than hover. SB3's check_env warns about exactly
+# this. Normalised, zero maps to mid-thrust, which is near hover.
+#
+# The collectors are unaffected: they build the base env ids and never read this
+# file.
+normalized_rl_action_space: true
