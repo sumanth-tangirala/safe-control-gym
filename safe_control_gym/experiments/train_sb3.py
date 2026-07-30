@@ -50,8 +50,10 @@ import sys
 import yaml
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from safe_control_gym.envs.env_wrappers.shaping import ActionRepeat, AngleObservation
+from safe_control_gym.envs.env_wrappers.vec_compat import PicklableInfo
 from safe_control_gym.experiments.callbacks import SuccessRateCallback
 from safe_control_gym.utils.configuration import ConfigFactory
 from safe_control_gym.utils.registration import make
@@ -220,6 +222,47 @@ def apply_env_attributes(env, attributes):
         setattr(base, name, float(value))
 
 
+def build_train_env(config, n_envs):
+    '''The training env, vectorised when asked for.
+
+    Env stepping is the bottleneck on the quadrotors -- PyBullet at 240 Hz
+    against a small MLP -- so running several in parallel is where the wall
+    clock goes, not the GPU.
+
+    SubprocVecEnv, not DummyVecEnv, whenever n_envs > 1. DummyVecEnv steps every
+    env in one process, so the GIL serialises exactly the work being
+    parallelised. Subprocesses also isolate each PyBullet client, which matters
+    here: base_aviary's changeDynamics call targeted client 0 until it was given
+    its physicsClientId, and two quadrotor envs in one process silently
+    corrupted each other's dynamics (0.34 state divergence in five steps). That
+    is fixed, so DummyVecEnv would be correct now -- but one env per process
+    keeps it structurally impossible rather than relying on the fix holding.
+
+    Evaluation envs stay unvectorised. SuccessRateCallback reads
+    `env.unwrapped.state` to apply the goal test, which a VecEnv does not expose
+    the same way, and one env is fast enough for ten episodes.
+    '''
+    if n_envs <= 1:
+        return build_env(config)
+
+    def factory():
+        # PicklableInfo only on the vectorised path: info carries a CasADi
+        # symbolic model that cannot cross a process boundary, and without
+        # stripping it every worker dies on its first reset. Left off the
+        # single-env path so nothing changes there.
+        return PicklableInfo(build_env(config))
+
+    # start_method='fork', explicitly. SB3 defaults to forkserver (or spawn),
+    # both of which PICKLE the env constructors -- and this factory is a nested
+    # closure, which pickle cannot handle, so the workers died on startup with
+    # BrokenPipeError. fork inherits the closure instead of serialising it.
+    #
+    # Safe here because the parent has not connected to PyBullet when this runs:
+    # every env, training and evaluation alike, is constructed after this call,
+    # so no client handle is inherited across the fork.
+    return SubprocVecEnv([factory for _ in range(n_envs)], start_method='fork')
+
+
 def claim_run_dir(root, algo, env_id):
     '''<root>/<algo>/<env_id>_<n>, the lowest n not already taken.
 
@@ -313,7 +356,8 @@ def train():
     write_run_metadata(run_dir, config)
     print(f'device={config.device} run_dir={run_dir}')
 
-    env = build_env(config)
+    n_envs = int(sb3_config.get('n_envs', 1))
+    env = build_train_env(config, n_envs)
     # Two more envs, alive alongside the training env for the whole run: one for
     # SB3's reward-based EvalCallback, one for the success-rate callback. They
     # cannot share -- a callback stepping another's env mid-episode would
@@ -325,9 +369,14 @@ def train():
     success_env = build_env(config)
 
     run = wandb_run(config, run_dir)
+    # gradient_steps -1 means "one update per transition collected this
+    # rollout", so sample efficiency does not silently drop as n_envs rises:
+    # with the default of 1, eight parallel envs would collect eight
+    # transitions per update instead of one.
     model = algo('MlpPolicy', env, seed=config.seed, verbose=1,
                  device=config.device,
                  tensorboard_log=run_dir,
+                 gradient_steps=int(sb3_config.get('gradient_steps', -1 if n_envs > 1 else 1)),
                  policy_kwargs={'net_arch': list(sb3_config.get('net_arch', [256, 256]))})
     callbacks = [
         # Periodic checkpoints, not only best: the shipped strong/weak model pairs

@@ -52,16 +52,21 @@ from safe_control_gym.utils.registration import get_config, make
 # defined so the training-time callback cannot drift from the acceptance bar.
 __all__ = ['at_goal', 'baseline_id', 'episode_seeds', 'evaluate', 'goal_tolerance']
 
-# Systems whose LQR is not the generic one.
-BASELINE_OVERRIDES = {'inverted_pendulum': 'pendulum_lqr',
-                      'inverted_pendulum_stabilization': 'pendulum_lqr'}
+# Systems whose LQR is not the generic one, keyed by SYSTEM rather than by env
+# id. Keyed by id, adding the reach task silently dropped the pendulum back to
+# the generic `lqr` -- the smoke run scored inverted_pendulum_reach against the
+# wrong controller while inverted_pendulum_stabilization used the right one.
+BASELINE_OVERRIDES = {'inverted_pendulum': 'pendulum_lqr'}
 
 DEFAULT_MARGIN = 0.05
 
 
 def baseline_id(env_id):
-    '''Which LQR controller stabilises this system.'''
-    return BASELINE_OVERRIDES.get(env_id, 'lqr')
+    '''Which LQR controller stabilises this system, for any task variant.'''
+    for system, controller in BASELINE_OVERRIDES.items():
+        if env_id == system or env_id.startswith(system + '_'):
+            return controller
+    return 'lqr'
 
 
 def episode_seeds(seed, n_episodes):

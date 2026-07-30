@@ -205,7 +205,32 @@ class Quadrotor(BaseAviary):
         super().__init__(init_state=init_state, inertial_prop=inertial_prop, **kwargs)
 
         # Store initial state info.
-        self.INIT_STATE_RAND_INFO = deepcopy(self.BASE_INIT_STATE_RAND_INFO)
+        #
+        # Only fall back to the class defaults when the caller supplied nothing.
+        # This line used to assign unconditionally, immediately after
+        # super().__init__() had stored the caller's init_state_randomization_info
+        # (benchmark_env.py:161) -- so the quadrotors silently discarded every
+        # requested initial-state range and always sampled BASE_.
+        #
+        # cartpole and inverted_pendulum never had the bug: they declare
+        # INIT_STATE_RAND_INFO as a class attribute and leave the instance one
+        # alone. Verified by asking each env for x in +/-6 and theta in +/-pi:
+        # cartpole returned 5.972 and 3.130, the quadrotors returned their
+        # defaults of 0.5 and 0.3.
+        #
+        # Consequence worth recording: upstream's own
+        # examples/rl/config_overrides/quadrotor_*/*.yaml init ranges were
+        # never in effect either, so the shipped Safe Explorer PPO models were
+        # trained on the class defaults rather than the ranges their configs
+        # declare.
+        #
+        # Datasets are unaffected -- every quadrotor collector passes
+        # randomized_init=False and never sets this field, so the randomization
+        # info is unused on those paths.
+        if self.INIT_STATE_RAND_INFO is None:
+            self.INIT_STATE_RAND_INFO = deepcopy(self.BASE_INIT_STATE_RAND_INFO)
+        else:
+            self.INIT_STATE_RAND_INFO = deepcopy(self.INIT_STATE_RAND_INFO)
         self.INIT_STATE_LABELS = {
             QuadType.ONE_D: ['init_x', 'init_x_dot'],
             QuadType.TWO_D: ['init_x', 'init_x_dot', 'init_z', 'init_z_dot', 'init_theta', 'init_theta_dot'],

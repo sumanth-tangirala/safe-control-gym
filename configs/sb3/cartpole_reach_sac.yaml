@@ -30,4 +30,7 @@ sb3_config:
   save_freq: 30000
   eval_freq: 30000
   n_eval_episodes: 10
+  # SubprocVecEnv when > 1: env stepping is the bottleneck here, not the
+  # MLP. Evaluation envs stay unvectorised.
+  n_envs: 4
   collection_bounds: configs/collection/cartpole.yaml
