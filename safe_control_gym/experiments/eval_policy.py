@@ -241,7 +241,11 @@ def evaluate(run_dir, n_episodes, seed, margin, model_name=None, skip_baseline=F
     # policy passes, at 0.0 every useless one does. Say so rather than emitting
     # a PASS that means nothing -- this is the saturation the collection-box
     # eval regions exist to avoid, and it must be visible when it happens.
-    if baseline['success_rate'] in (0.0, 1.0):
+    # Saturated at either end, or so weak that the margin swallows it. The
+    # second case is not hypothetical: a 20-episode quad3d smoke run put LQR at
+    # 0.050 against a margin of 0.05, so a policy scoring exactly 0.000 cleared
+    # the bar and reported PASS. A bar a dead policy can clear ranks nothing.
+    if baseline['success_rate'] in (0.0, 1.0) or baseline['success_rate'] <= margin:
         verdict = 'NON_DISCRIMINATING'
     elif policy_success >= baseline['success_rate'] - margin:
         verdict = 'PASS'
@@ -292,8 +296,8 @@ def render(report):
         lines.append(f"eval region: {report['eval_bounds']}")
     lines.append(f"verdict: {report['verdict']}  (margin {report['margin']})")
     if report['verdict'] == 'NON_DISCRIMINATING':
-        lines.append('  baseline is saturated at 0 or 1 -- this comparison ranks nothing. '
-                     'Widen the evaluation region.')
+        lines.append('  the baseline is saturated, or weak enough that the margin swallows '
+                     'it -- a policy scoring 0.000 would clear this bar. Ranks nothing.')
     return '\n'.join(lines)
 
 
