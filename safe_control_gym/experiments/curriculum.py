@@ -97,7 +97,8 @@ class InitStateCurriculum(BaseCallback):
     '''
 
     def __init__(self, eval_env, env_setter, tolerance_setter, full_ranges, layout,
-                 start=0.1, step=0.15, threshold=0.5, n_episodes=10,
+                 start=0.1, step=0.15, threshold=0.5, retreat_threshold=0.1,
+                 n_episodes=10,
                  tolerance_start=None, tolerance_final=None,
                  eval_freq=10000, verbose=0):
         super().__init__(verbose)
@@ -106,8 +107,10 @@ class InitStateCurriculum(BaseCallback):
         self.full_ranges = full_ranges
         self.layout = layout
         self.fraction = float(start)
+        self.start_fraction = float(start)
         self.step_size = float(step)
         self.threshold = float(threshold)
+        self.retreat_threshold = float(retreat_threshold)
         self.n_episodes = int(n_episodes)
         self.eval_freq = int(eval_freq)
         self.goal_state = np.asarray(eval_env.unwrapped.X_GOAL, dtype=float)
@@ -157,6 +160,21 @@ class InitStateCurriculum(BaseCallback):
         self.logger.record('eval/curriculum_fraction', self.fraction)
         self.logger.record('eval/curriculum_tolerance', self.tolerance)
         self.logger.record('eval/curriculum_success_rate', rate)
+        # Back off when the policy can no longer handle where it is. A pure
+        # ratchet cannot undo a step it should not have taken: measured on the
+        # previous batch, cartpole_reach and quadrotor2d_reach each advanced
+        # ONCE to fraction 0.155, then stalled there for the rest of training and
+        # scored 0.000. This only fires when success has collapsed AND the
+        # fraction is above where it started, so a run that is working never
+        # touches it.
+        if rate < self.retreat_threshold and self.fraction > self.start_fraction:
+            self.fraction = max(self.start_fraction, self.fraction - self.step_size)
+            self._apply()
+            if self.verbose:
+                print(f'curriculum: success {rate:.2f} -> RETREAT to fraction '
+                      f'{self.fraction:.3f}, tolerance {self.tolerance:.4f}')
+            return True
+
         if rate >= self.threshold and not self._finished():
             # Tighten the tolerance first, then widen the initial states. Doing
             # it the other way round would leave a policy that only ever

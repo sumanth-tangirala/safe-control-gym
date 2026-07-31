@@ -564,6 +564,7 @@ def train():
             start=float(curriculum_cfg.get('start', 0.1)),
             step=float(curriculum_cfg.get('step', 0.15)),
             threshold=float(curriculum_cfg.get('threshold', 0.5)),
+            retreat_threshold=float(curriculum_cfg.get('retreat_threshold', 0.1)),
             n_episodes=int(curriculum_cfg.get('n_episodes', n_eval_episodes)),
             tolerance_start=curriculum_cfg.get('tolerance_start'),
             eval_freq=eval_freq, verbose=1))

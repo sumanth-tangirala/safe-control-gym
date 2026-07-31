@@ -51,5 +51,8 @@ sb3_config:
   eval_freq: 50000
   n_eval_episodes: 10
   n_envs: 4
-  collection_bounds: configs/collection/quadrotor2d.yaml
+  collection_bounds: configs/physical/quadrotor2d.yaml
+  # Scored against the collection regime too, for comparability with the
+  # shipped datasets. eval_policy --eval_bounds does that.
+  comparison_bounds: configs/collection/quadrotor2d.yaml
   gamma: 0.995

@@ -1,0 +1,123 @@
+# The PHYSICAL regime: terminate only on bounds with a physical origin.
+#
+# Every bound here traces to a URDF joint limit or to the workspace. Everything
+# dropped was invented. Measured over 200 LQR episodes, the invented bounds were
+# doing most of the killing -- 61% of cartpole crashes came from a theta_dot
+# limit on a joint the URDF declares unlimited, and 99% of quadrotor2d crashes
+# from translational velocity limits on a free body that has no such limit.
+#
+# This is the regime to TRAIN in. configs/collection/ stays as the datasets
+# define it, and eval_policy scores every run under both -- so a policy is
+# reported both on what it can actually do and on the number comparable to the
+# shipped datasets.
+#
+# Initial states and the observation encoding are inherited from the collection
+# config unchanged; only the termination box differs.
+
+# Same reasoning as quadrotor2d. Body rates p/q/r are NOT joint velocities --
+# a free body's rotation has no joint -- so they are dropped along with the
+# translational velocities. Only the room and the ground remain.
+
+init_state_randomization_info:
+  init_x:
+    distrib: uniform
+    low: -1.8
+    high: 1.8
+  init_x_dot:
+    distrib: uniform
+    low: -3.0
+    high: 3.0
+  init_y:
+    distrib: uniform
+    low: -1.8
+    high: 1.8
+  init_y_dot:
+    distrib: uniform
+    low: -3.0
+    high: 3.0
+  init_z:
+    distrib: uniform
+    low: 0.1
+    high: 3.0
+  init_z_dot:
+    distrib: uniform
+    low: -3.0
+    high: 3.0
+  init_phi:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_psi:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_p:
+    distrib: uniform
+    low: -13.856406460551
+    high: 13.856406460551
+  init_q:
+    distrib: uniform
+    low: -13.856406460551
+    high: 13.856406460551
+  init_r:
+    distrib: uniform
+    low: -13.856406460551
+    high: 13.856406460551
+state_layout:
+- x
+- x_dot
+- y
+- y_dot
+- z
+- z_dot
+- phi
+- theta
+- psi
+- p
+- q
+- r
+angle_observation: null
+rotation_observation:
+  angles:
+  - phi
+  - theta
+  - psi
+normalize_observation: true
+normalized_rl_action_space: true
+curriculum:
+  start: 0.0
+  step: 0.15
+  threshold: 0.5
+  tolerance_start: 0.5
+state_space_bounds:
+  x:
+  - -3.6
+  - 3.6
+  y:
+  - -3.6
+  - 3.6
+  z:
+  - 0.05
+  - 5.0
+  x_dot:
+  - -1000000.0
+  - 1000000.0
+  y_dot:
+  - -1000000.0
+  - 1000000.0
+  z_dot:
+  - -1000000.0
+  - 1000000.0
+  p:
+  - -1000000.0
+  - 1000000.0
+  q:
+  - -1000000.0
+  - 1000000.0
+  r:
+  - -1000000.0
+  - 1000000.0
