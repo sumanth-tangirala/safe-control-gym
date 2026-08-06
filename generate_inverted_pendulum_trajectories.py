@@ -462,19 +462,35 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
         'split': 'train',
         'controller': controller,
         'noise': noise,
+        'torque_noise': torque_noise,
+        'noise_mechanism': ('uniform on commanded torque, pre-saturation'
+                            if torque_noise is not None else
+                            ('state-additive preset' if noise else 'none')),
         'state_order': ['theta', 'theta_dot'],
         'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
         'horizon_steps': horizon,
         'u_sat': U_SAT,
+        'fraction_of_u_sat': (None if torque_noise is None else torque_noise / U_SAT),
         'theta_dot_max': THETA_DOT_MAX,
         'seed': seed,
         'sampling': {'type': 'uniform random over the full state space',
                      'theta_range': [-math.pi, math.pi],
                      'theta_dot_range': [-THETA_DOT_MAX, THETA_DOT_MAX]},
-        'label_semantics': ('1 = the trajectory was cut at (and includes) the first state '
-                            'inside the 0.075 goal ball; 0 = it ran the full horizon. Under '
-                            'noise a rollout can enter and drift back out, so cutting at '
-                            'entry keeps the label a function of the terminal state.'),
+        'label_semantics': (
+            f'1 = the trajectory was cut at (and includes) the first state with '
+            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]}; 0 = it ran the full '
+            'horizon. The rollout STOPS on entry, so a label-0 trajectory can never end '
+            'inside the box and the label is a function of the terminal state.'
+            if torque_noise is not None else
+            '1 = the trajectory was cut at (and includes) the first state '
+            'inside the 0.075 goal ball; 0 = it ran the full horizon. Under '
+            'noise a rollout can enter and drift back out, so cutting at '
+            'entry keeps the label a function of the terminal state.'),
+        'success_rule': ({'kind': ('per_channel_box_entry' if BOX_HOLD == 1
+                                   else 'per_channel_box_with_dwell'),
+                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD}
+                         if torque_noise is not None else
+                         {'kind': 'l2_ball', 'radius': 0.075}),
         'data_format': {
             'file': 'train.npz',
             'states_dtype': 'float32',

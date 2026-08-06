@@ -13,9 +13,11 @@ Formats are taken from the shipped `deterministic/pendulum/lqr`, byte for byte:
                                   save_trajectory uses; the shipped sets were
                                   written by the source repo, and matching them
                                   matters more here than matching ourselves.
-  roa_labels.txt                  `%.6f,%.6f,%.6f`  -- label as a float
+  trajectory_labels.txt           `sequence_<i>.txt,<0|1>` -- the direct label map
+                                  dataset_split_randomizer prefers. Its fallback,
+                                  roa_labels.txt, matches initial states by KD-tree;
+                                  we know the labels exactly, so we skip it.
   eval_states.txt                 `%.6f,%.6f,%.6f,%.6f,%d`  -- label as an int
-  success.txt                     `sequence_<i>.txt,<0|1>`
 
 Two files in the shipped layout are NOT produced, here or anywhere: `cal_set.txt`
 and `test_set.txt` have no producer in this repo or in the scripts under
@@ -63,8 +65,7 @@ def export_trajectories(train, out_dir, limit=None):
         evs.append(f'{s[0]:.6f},{s[1]:.6f},{t[0]:.6f},{t[1]:.6f},{lab}')
         succ.append(f'sequence_{i}.txt,{lab}')
 
-    for name, rows in [('roa_labels.txt', roa), ('eval_states.txt', evs),
-                       ('success.txt', succ)]:
+    for name, rows in [('trajectory_labels.txt', succ), ('eval_states.txt', evs)]:
         with open(os.path.join(out_dir, name), 'w') as f:
             f.write('\n'.join(rows) + '\n')
     return n
@@ -129,9 +130,9 @@ def build_description(train_desc, eval_desc, n_traj, out_dir):
                         'precision': '6 significant digits (%.6g)',
                         'state_order': ['theta', 'theta_dot']},
         'additional_files': {
-            'roa_labels.txt': {'format': 'theta,theta_dot,label',
-                               'label_meaning': '1 = success, 0 = failure',
-                               'total_entries': n_traj},
+            'trajectory_labels.txt': {'format': 'sequence_<i>.txt,label',
+                                      'label_meaning': '1 = success, 0 = failure',
+                                      'total_entries': n_traj},
             'eval_states.txt': {'format': 'theta,theta_dot,final_theta,final_theta_dot,label'},
             'success_probabilities.txt': (
                 {'format': 'theta,theta_dot,p_success',
