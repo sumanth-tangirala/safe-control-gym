@@ -720,8 +720,16 @@ def merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis, description=
     n_batches = expected
     if not np.all(trials == n_batches):
         raise ValueError('per-cell trials disagree with the batch count; a shard is partial')
+    # `converged` is the substantive claim -- did the estimate settle -- so it is
+    # decided by the ACHIEVED uncertainty, not by which loop stopped. A shard
+    # budget cannot fire the stopping rule, but it can still land under it, and a
+    # reader wants to know that rather than which code path ran.
+    se_tol = (description or {}).get('stopping_rule', {}).get('se_tol', 0.01)
+    settled = mean_standard_error(successes, trials) < se_tol
+    if description is not None:
+        description = {**description, 'stopped_by': 'batch_budget'}
     publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
-                 n_batches, description, converged=False)
+                 n_batches, description, converged=settled)
     return {'n_batches': n_batches, 'shards': len(paths), 'num_cells': len(grid),
             'success_rate': float((successes / np.maximum(trials, 1)).mean()),
             'mean_se': mean_standard_error(successes, trials)}
