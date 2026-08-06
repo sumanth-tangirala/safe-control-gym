@@ -624,6 +624,60 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
     return p_success
 
 
+def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
+                     ctrl_freq, pyb_freq, horizon, seed, resolution,
+                     se_tol, min_batches, max_batches, check_every):
+    '''The eval dataset's provenance block.
+
+    Shared by the collector and by --merge_eval_shards. Merging used to pass
+    description=None, so every merged dataset landed with no
+    eval_description.json beside it -- no tau, no success rule, no seed.
+    '''
+    return {
+        'dataset_name': 'Inverted Pendulum Success Probabilities (eval split)',
+        'split': 'eval',
+        'controller': controller,
+        'noise': noise,
+        'torque_noise': torque_noise,
+        'noise_mechanism': ('uniform on commanded torque, pre-saturation'
+                            if torque_noise is not None else
+                            ('state-additive preset' if noise else 'none')),
+        'num_cells': len(grid),
+        'state_order': ['theta', 'theta_dot'],
+        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        'horizon_steps': horizon,
+        'u_sat': U_SAT,
+        'theta_dot_max': THETA_DOT_MAX,
+        'seed': seed,
+        'grid': {'resolution': resolution,
+                 'shape': [len(theta_axis), len(theta_dot_axis)],
+                 'theta_range': [float(theta_axis[0]), float(theta_axis[-1])],
+                 'theta_dot_range': [float(theta_dot_axis[0]), float(theta_dot_axis[-1])],
+                 'note': 'half-open in both coordinates; theta is periodic, so -pi and '
+                         '+pi are the same state and only one is sampled'},
+        'label_semantics': (
+            'p_success is the fraction of rollouts from that cell that held '
+            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} for {BOX_HOLD} '
+            'consecutive control steps within horizon_steps'
+            if torque_noise is not None else
+            'p_success is the fraction of rollouts from that cell that ever '
+            'entered the 0.075 goal ball within horizon_steps'),
+        'success_rule': ({'kind': 'per_channel_box_with_dwell',
+                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD,
+                          'cut': 'trajectory cut at the state entering the held window'}
+                         if torque_noise is not None else
+                         {'kind': 'l2_ball', 'radius': 0.075, 'cut': 'first entry'}),
+        'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
+                          'se_tol': se_tol, 'min_batches': min_batches,
+                          'max_batches': max_batches, 'check_every': check_every},
+        'data_format': {'file': 'eval_success_prob.npz',
+                        'note': 'no trajectories are stored; one batch is one rollout from '
+                                'every grid cell, and the dataset is republished atomically '
+                                'after each batch',
+                        'mirror': 'success_probabilities.txt (theta,theta_dot,p_success)'},
+    }
+
+
 def shard_path(output_dir, batch_lo, batch_hi):
     return os.path.join(output_dir, f'eval_shard_{batch_lo:05d}_{batch_hi:05d}.npz')
 
@@ -715,49 +769,10 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     else:
         successes, trials, n_batches = load_eval_state(output_dir, len(grid))
 
-    description = {
-        'dataset_name': 'Inverted Pendulum Success Probabilities (eval split)',
-        'split': 'eval',
-        'controller': controller,
-        'noise': noise,
-        'torque_noise': torque_noise,
-        'noise_mechanism': ('uniform on commanded torque, pre-saturation'
-                            if torque_noise is not None else
-                            ('state-additive preset' if noise else 'none')),
-        'num_cells': len(grid),
-        'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
-        'horizon_steps': horizon,
-        'u_sat': U_SAT,
-        'theta_dot_max': THETA_DOT_MAX,
-        'seed': seed,
-        'grid': {'resolution': resolution,
-                 'shape': [len(theta_axis), len(theta_dot_axis)],
-                 'theta_range': [float(theta_axis[0]), float(theta_axis[-1])],
-                 'theta_dot_range': [float(theta_dot_axis[0]), float(theta_dot_axis[-1])],
-                 'note': 'half-open in both coordinates; theta is periodic, so -pi and '
-                         '+pi are the same state and only one is sampled'},
-        'label_semantics': (
-            'p_success is the fraction of rollouts from that cell that held '
-            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} for {BOX_HOLD} '
-            'consecutive control steps within horizon_steps'
-            if torque_noise is not None else
-            'p_success is the fraction of rollouts from that cell that ever '
-            'entered the 0.075 goal ball within horizon_steps'),
-        'success_rule': ({'kind': 'per_channel_box_with_dwell',
-                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD,
-                          'cut': 'trajectory cut at the state entering the held window'}
-                         if torque_noise is not None else
-                         {'kind': 'l2_ball', 'radius': 0.075, 'cut': 'first entry'}),
-        'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
-                          'se_tol': se_tol, 'min_batches': min_batches,
-                          'max_batches': max_batches, 'check_every': check_every},
-        'data_format': {'file': 'eval_success_prob.npz',
-                        'note': 'no trajectories are stored; one batch is one rollout from '
-                                'every grid cell, and the dataset is republished atomically '
-                                'after each batch',
-                        'mirror': 'success_probabilities.txt (theta,theta_dot,p_success)'},
-    }
+    description = eval_description(
+        controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
+        ctrl_freq, pyb_freq, horizon, seed, resolution, se_tol, min_batches,
+        max_batches, check_every)
 
     cells = list(enumerate(grid))
     workers = num_workers or get_available_cpus()
@@ -1059,7 +1074,13 @@ def main():
                                            args.resolution or GRID_RESOLUTION)
                 grid = sample_initial_states(0, False, args.seed, THETA_DOT_MAX,
                                              args.resolution or GRID_RESOLUTION)
-                stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis)
+                desc = eval_description(
+                    args.controller, noise, args.torque_noise, grid, theta_axis,
+                    theta_dot_axis, 100, 100, args.horizon or 1000, args.seed,
+                    args.resolution or GRID_RESOLUTION, args.se_tol,
+                    args.min_batches, args.max_batches, args.check_every)
+                stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis,
+                                          desc)
                 print(f"\n{'=' * 70}")
                 print(f"Merged:       {stats['shards']} shards, {stats['n_batches']} batches")
                 print(f"Grid cells:   {stats['num_cells']}")
