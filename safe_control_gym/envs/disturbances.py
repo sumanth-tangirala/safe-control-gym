@@ -30,9 +30,15 @@ class Disturbance:
         '''Default is identity.'''
         return target
 
-    def seed(self, env):
-        '''Reset seed from env.'''
-        self.np_random = env.np_random
+    def seed(self, env, stream=None):
+        '''Bind the RNG this disturbance draws from.
+
+        `stream` is a child Generator supplied by DisturbanceList. Falling back
+        to `env.np_random` keeps the old behaviour for anything constructing a
+        Disturbance directly, but the list path always passes a child -- see
+        the note there for why sharing the env's generator is wrong.
+        '''
+        self.np_random = env.np_random if stream is None else stream
 
 
 class DisturbanceList:
@@ -62,9 +68,31 @@ class DisturbanceList:
         return disturbed
 
     def seed(self, env):
-        '''Reset seed from env.'''
-        for disturb in self.disturbances:
-            disturb.seed(env)
+        '''Give each disturbance its OWN child stream, not the env's generator.
+
+        Sharing `env.np_random` makes every other draw on that generator --
+        initial state randomisation, inertial property randomisation -- depend
+        on whether noise happens to be enabled and how many samples it consumed
+        this step. Two runs with the same seed then differ in their *starting
+        conditions* purely because one had a disturbance configured, and a
+        resumed run does not draw what an uninterrupted one would. That breaks
+        resident invariant 3, which is what makes a killed collection safe to
+        restart.
+
+        Children are spawned in list order from the env's seed sequence, so the
+        stream a given disturbance gets is still a pure function of the env seed
+        -- reproducible, but no longer entangled with anything else.
+        '''
+        try:
+            seed_seq = env.np_random.bit_generator.seed_seq
+            children = seed_seq.spawn(len(self.disturbances))
+        except AttributeError:
+            # Older bit generators expose no seed sequence. Derive a stable
+            # fallback from one draw rather than silently sharing the stream.
+            root = int(env.np_random.integers(0, 2 ** 32 - 1))
+            children = np.random.SeedSequence(root).spawn(len(self.disturbances))
+        for disturb, child in zip(self.disturbances, children):
+            disturb.seed(env, np.random.default_rng(child))
 
 
 class ImpulseDisturbance(Disturbance):

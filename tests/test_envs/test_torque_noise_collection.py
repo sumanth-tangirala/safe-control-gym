@@ -167,3 +167,40 @@ def test_output_dir_family_is_separate_from_the_preset_levels():
     # The preset path is untouched.
     assert gen.default_output_dir('lqr', 'control_proportional_med').endswith(
         os.path.join('noisy', 'pendulum', 'lqr', 'med'))
+
+
+def test_each_disturbance_gets_its_own_rng_stream():
+    """Disturbances must not draw from env.np_random directly.
+
+    Sharing it makes every other draw on that generator -- initial-state
+    randomisation, inertial-property randomisation -- depend on whether noise
+    happens to be configured and how many samples it consumed, so two runs with
+    the same seed differ in their STARTING conditions. That breaks the purity
+    rollout_seed exists to guarantee.
+
+    Note this changes the noise stream: datasets collected before this fix do
+    not replay against it. The shipped tau_* datasets record the producing
+    commit in dataset_description.json['provenance'] for exactly that reason.
+    """
+    env, _ = _env_and_ctrl(0.15)
+    try:
+        env.reset(seed=4242)
+        d = env.disturbances['action'].disturbances[0]
+        assert d.np_random is not env.np_random, 'disturbance shares the env generator'
+        assert d.np_random.bit_generator.seed_seq.spawn_key != (), 'not a spawned child'
+    finally:
+        env.close()
+
+
+def test_disturbance_stream_is_a_pure_function_of_the_env_seed():
+    """Same seed -> same noise, so a resumed run draws what an uninterrupted one would."""
+    draws = []
+    for _ in range(2):
+        env, _ = _env_and_ctrl(0.15)
+        try:
+            env.reset(seed=99)
+            d = env.disturbances['action'].disturbances[0]
+            draws.append(d.np_random.uniform(-1, 1, size=4))
+        finally:
+            env.close()
+    assert np.array_equal(draws[0], draws[1])
