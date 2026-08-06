@@ -22,6 +22,34 @@ $DATA_ROOT/noisy/pendulum/<controller>/<level>/
 variants `v1..v4`, strengths `strong`/`weak`. `<level>` is the noise preset's
 trailing level (`control_proportional_med` → `med`).
 
+**What the noisy pendulum success rates do and do not mean.** These datasets use
+`pendulum_noise.py`'s state-additive families, which write `eps` into
+`(theta, theta_dot)` directly. Measured 2026-08-05 over the whole state space at
+161x161, LQR: success *rises* with noise (0.386 deterministic → 0.431 at
+`velocity_proportional_high`), where a torque disturbance of comparable strength
+*lowers* it (→ 0.256). One draw moves theta by ~0.083 against a goal radius of
+0.075, so the noise can place the state in the goal set instead of the controller
+driving it there.
+
+Consequences for anyone reading these numbers:
+
+- A rising success rate at a higher noise level is **not** evidence the controller
+  is more robust. Part of the rate is the noise hitting the target.
+- It cannot be fixed by re-scoring. Re-running with a per-channel box and a
+  10-step dwell requirement still gives 0.426 vs 0.386, because
+  `velocity_proportional`'s sigma scales with `|theta_dot|` and collapses to 0.008
+  at the goal — the noise carries the state in, then switches off. The inflation
+  is in the trajectories, so only re-collection changes it.
+- They remain usable as conditional distributions to learn from; the caveat is on
+  interpretation, not on validity as training data.
+- **They are not comparable to the cartpole noisy datasets.** Different mechanism
+  (state write vs force), different units (rad and rad/s vs Newtons), different
+  sampling rate (per integrator substep vs per control step, a ~7x difference in
+  per-control-step sigma). A `med` in one says nothing about a `med` in the other.
+
+See `.claude/docs/architecture.md` for the mechanism and the three candidate
+fixes.
+
 The older systems predate that scheme and take an explicit `--output_dir`:
 cartpole requires one; quadrotor-2D RL defaults to `$DATA_ROOT/quadrotor2D_rl`,
 quadrotor-3D LQR to `$DATA_ROOT/quadrotor3D_lqr`.
@@ -98,9 +126,11 @@ measurements: `plans/invariant-terminal-sets-recollection.md`.
 
 Fixed horizons live in `DEFAULT_HORIZON = {'lqr': 600, 'rl': 1100}`.
 
-**Noisy collection (entry-cut).** Under noise the state never settles, and at
-`high`/`xhigh` the stationary noise floor exceeds the 0.075 goal radius — so no
-invariant success set exists and the invariant scheme does not apply. Success =
+**Noisy collection (entry-cut).** Under the state-additive presets the state
+never settles, and at `high`/`xhigh` the stationary noise floor exceeds the 0.075
+goal radius — so no invariant success set exists for *those* and the invariant
+scheme does not apply. That is a fact about the mechanism: under torque noise the
+loop is confined (see `glossary.md`, noise floor). Success =
 the rollout *ever entered* the 0.075 L2 ball; a stored trajectory is cut at (and
 includes) that entry state. Non-successes run the full 1000-step horizon and are
 labelled 0. Rationale: `docs/superpowers/specs/2026-07-25-noisy-pendulum-collection-design.md`.
@@ -224,3 +254,59 @@ intends to fix teaches people to ignore the suite.
 ---
 
 Related: [architecture.md](architecture.md) for the library the generators call into, [workflows.md](workflows.md) for launching a run, [compute.md](compute.md) for where to launch it, [glossary.md](glossary.md) for every term used above.
+
+
+## Torque-noise pendulum datasets (`stochastic/`)
+
+```
+DATA_ROOT/stochastic/pendulum/noisy_torque/lqr/tau_{0.00,0.10,0.15,0.30,0.50}/
+```
+
+Collected 2026-08-06 at commit `2e0b9ddc`; each records that commit and its
+environment in `dataset_description.json['provenance']`. A **third** noise family
+alongside `deterministic/` and `noisy/`, and deliberately not a level inside
+`noisy/` — the mechanisms share no units and are not comparable.
+
+| tau | % of `u_sat` | train p | eval p | K | mean SE |
+| --- | --- | --- | --- | --- | --- |
+| 0.00 | 0% | 0.3863 | 0.3878 | 1 | exact |
+| 0.10 | 15.7% | 0.3522 | 0.3529 | 100 | 0.0075 |
+| 0.15 | 23.5% | 0.3368 | 0.3372 | 100 | 0.0077 |
+| 0.30 | 47.1% | 0.2992 | 0.2997 | 100 | 0.0080 |
+| 0.50 | 78.5% | 0.2585 | 0.2593 | 100 | 0.0087 |
+
+**Mechanism.** `disturbances: {'action': [uniform(-tau, tau)]}` — added to the
+commanded torque in `_preprocess_control`, i.e. *before* the `u_sat` clip, so a
+saturated actuator cannot be pushed further. This is the physically admissible
+channel, and unlike the state-additive presets it cannot raise the success rate:
+measured across all 49,770 cells and all four noisy levels, the largest gain over
+the noiseless field is **+0.000**, and 3,047,000 rollouts from failing cells
+produced no success at all.
+
+**Success rule.** First state with `|theta| < 0.05` AND `|theta_dot| < 0.05`; the
+rollout stops there. No dwell — see `glossary.md`, recurrence vs invariance. The
+consequence is that `terminal state in the box` and `label 1` are the same
+statement in both directions, which the earlier 10-step dwell broke (9,863 of
+100,000 trajectories at `tau = 0.5` ended inside the box carrying label 0).
+
+**What these numbers are.** Backward-reachable-tube probabilities — "reached the
+box within 10 s" — not stability and not an asymptotic ROA. Two caveats travel
+with them: the `0.05` velocity tolerance was inherited from the angle tolerance
+rather than derived, and at `tau = 0.30/0.50` the settled state satisfies it only
+62.6%/39.5% of the time, so those two levels partly measure the tolerance.
+
+**Layout** differs from every older dataset because the consuming loader has a
+separate npz path (`pool_format: npz`): a flat `train.npz` plus
+`train_test_splits/shuffled_indices_0.txt` holding **integer row ids**, not
+`sequence_<i>.txt` filenames, and a 3-column `eval_states.txt`
+(`theta, theta_dot, p_success`) rather than start/end/label. No `trajectories/`
+directory is written. `dataset_description.json` is required — `PendulumSystem`
+raises `FileNotFoundError` without its `achieved_bounds`.
+
+Train starts are 100k uniform-random rolled once each; eval is the full
+49,770-cell grid rolled 100 times per cell. The two are disjoint by construction,
+so there is no start-state leakage.
+
+Produced by `prepare_stochastic_layout.py` from the collector's npz output.
+Audited 2026-08-06: 120 checks across the five levels, including 15 rollouts per
+level replayed bit-for-bit from their recorded seeds.

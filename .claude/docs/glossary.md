@@ -29,15 +29,84 @@ drift back out, which would otherwise break the "label is a function of the
 terminal state" property.
 
 **Noise floor.** The stationary distance from upright that a noisy closed loop
-settles into. At `high`/`xhigh` it exceeds the 0.075 goal radius (p50 distance
-0.086 / 0.139), which is why the invariant-set scheme does not apply to noisy
-datasets — no invariant success set exists there.
+settles into. Under the state-additive presets it exceeds the 0.075 goal radius
+at `high`/`xhigh` (p50 distance 0.086 / 0.139), which is why the invariant-set
+scheme does not apply to *those* datasets.
+
+That is a property of the mechanism, not of noise as such. Under **torque**
+noise the closed loop stays confined: 24 runs x 5000 settled steps per level,
+zero escapes at every level, with a settled region measured at
+`|theta| <= 0.0385*tau`, `|theta_dot| <= 0.4031*tau` — linear in `tau` to within
+1.3%, and elongated roughly **10:1 along theta_dot** because a torque perturbs
+the acceleration row and reaches the angle only by integration. So an invariant
+success set does exist there; it is simply not a ball or a square box. The
+worst-case robust invariant ellipsoid is far looser than the observed region
+(`|theta_dot| <= 3.11` vs 0.20 at `tau = 0.5`, ~15x), which is the usual gap
+between an adversarial bound and unbiased noise.
 
 **Noise preset.** A named entry in `NOISE_PRESETS`
 (`safe_control_gym/envs/gym_control/pendulum_noise.py`), mirroring the source
 repo's Hydra config names: `<family>_<level>`, e.g. `truncated_gaussian_act_med`,
-`control_proportional_high`. Levels weakest to strongest: `low`, `med`, `high`,
-`xhigh`, `xxhigh`, `ultra`, `max`.
+`control_proportional_high`. Levels are *intended* to run `low`, `med`, `high`,
+`xhigh`, `xxhigh`, `ultra`, `max` — but in two families `max` is WEAKER than
+`ultra` (`gaussian_act`: 2.0 vs 3.0; `truncated_gaussian_act`: 1.0 vs 2.0). The
+collector names its output directory from the suffix, so those two datasets are
+mis-ordered on disk. Pendulum-only; the other systems use `disturbances`.
+
+**State-additive vs force noise.** Two mechanisms that are NOT interchangeable.
+Force noise (`disturbances`, any mode) perturbs a generalised force, so it enters
+the acceleration rows and position follows by integration. State-additive noise
+(`pendulum_noise.py`'s dynamics families) writes the state directly, including
+position, which no physical disturbance can do. Measured on the pendulum at
+matched sigma, the two move the region of attraction in OPPOSITE directions —
+0.386 -> 0.256 for torque, 0.386 -> 0.431 for state-additive, because the latter
+can place the state in the goal set. See `architecture.md`.
+
+**Reach probability vs region of attraction.** Under constant-magnitude additive
+noise the origin is not an equilibrium of the closed loop, so the asymptotic ROA
+is empty for every threshold and `p(success)` must be a *finite-horizon* quantity.
+What the noisy datasets measure is a reach(-avoid) probability over a fixed
+horizon, not a region of attraction. The distinction is load-bearing whenever the
+number is reported as a control result.
+
+**Reach / reach-avoid / reach-avoid-stay.** Three named points in the
+Manna-Pnueli temporal hierarchy, which is the actual classification:
+safety (`[]p`), **guarantee** (`<>p`), obligation (boolean combinations of the
+two), recurrence (`[]<>p`), **persistence** (`<>[]p`), reactivity. Reach =
+guarantee; reach-avoid = obligation; reach-avoid-stay = persistence plus a
+safety conjunct. The pendulum has no unsafe set — theta wraps, theta_dot clips —
+so its datasets are pure **guarantee**. The cartpole has real kill thresholds
+(`x_threshold`, `x_dot_threshold`), so its datasets are **obligation**. The two
+are therefore not the same kind of measurement, and their success rates are not
+interchangeable. See `queue.md` for the papers.
+
+**Recurrence vs invariance.** `[]<>S` (visits S infinitely often) is strictly
+weaker than `<>[]S` (enters S and stays). Under persistent noise a closed loop
+can be recurrent in a set without being invariant in it — measured on the
+pendulum at `tau = 0.5`: one trajectory entered the 0.05 box 217 separate times
+for 365 of its 1000 steps and never held it for 10 consecutive steps. Scoring
+that as failure measures the box, not the controller. This is why the torque
+datasets score **first entry with no dwell**.
+
+**Matched / unmatched uncertainty.** A perturbation is *matched* if it lies in
+`range(B)` — the same direction the controller commands — and unmatched
+otherwise. Load-bearing for ROA estimation: a controller partially rejects
+matched noise through its own input channel, so an ROA measured under it is
+biased toward the nominal, noise-free ROA. Cartpole's `action` mode is matched;
+its `dynamics` mode is not.
+
+**Internal vs external uncertainty.** Internal: the plant is not what was
+modelled (parametric mismatch, unmodelled structure such as friction) —
+`randomized_inertial_prop`. External: the plant is right and something pushes it
+— the `dynamics` disturbance mode. "Unmodelled dynamics" in the robust-control
+sense is internal; strictly it means omitted *structure*, so randomising three
+inertial parameters is the weaker cousin, parametric uncertainty.
+
+**Stochastic ROA.** Under a stochastic plant the ROA stops being a set and
+becomes a field `p(success | x0, H)`, thresholded at some `alpha`. Both `alpha`
+and `H` are choices, not properties of the system, and must be reported. A
+set-valued answer requires *bounded* noise: with unbounded support no bounded set
+is invariant with probability 1.
 
 **Split.** `train` (random starts, full trajectories stored) or `eval` (fixed
 grid, only a per-cell success probability stored). Independent processes.
