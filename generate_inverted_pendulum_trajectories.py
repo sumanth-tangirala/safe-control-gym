@@ -633,19 +633,24 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
                         'converged': bool(converged),
                         'mean_se': mean_standard_error(successes, trials),
                         'success_rate': float(p_success.mean())}, indent=2)))
+    # State dimension is read from the grid, not assumed: the cartpole collector
+    # shares this writer and its state is 4-D. For a 2-D grid the output is
+    # byte-identical to the previous pendulum-only form.
     staged.append(stage_text(
         os.path.join(output_dir, 'success_probabilities.txt'),
-        ''.join(f'{t:.6f},{d:.6f},{p:.6f}\n' for (t, d), p in zip(grid, p_success))))
-    staged.append(stage_npz(
-        os.path.join(output_dir, 'eval_success_prob.npz'),
-        starts=grid,
-        successes=successes.astype(np.int32),
-        trials=trials.astype(np.int32),
-        p_success=p_success,
-        grid_theta=theta_axis,
-        grid_theta_dot=theta_dot_axis,
-        grid_shape=np.array([len(theta_axis), len(theta_dot_axis)], dtype=np.int64),
-        n_batches=np.int64(n_batches)))
+        ''.join(','.join(f'{v:.6f}' for v in row) + f',{p:.6f}\n'
+                for row, p in zip(np.atleast_2d(grid), p_success))))
+    arrays = dict(starts=grid,
+                  successes=successes.astype(np.int32),
+                  trials=trials.astype(np.int32),
+                  p_success=p_success,
+                  n_batches=np.int64(n_batches))
+    # The per-axis arrays only exist for a system whose grid was built from axes.
+    if len(theta_axis) and len(theta_dot_axis):
+        arrays.update(grid_theta=theta_axis, grid_theta_dot=theta_dot_axis,
+                      grid_shape=np.array([len(theta_axis), len(theta_dot_axis)],
+                                          dtype=np.int64))
+    staged.append(stage_npz(os.path.join(output_dir, 'eval_success_prob.npz'), **arrays))
     commit_staged(staged)
     return p_success
 
