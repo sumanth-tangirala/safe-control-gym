@@ -568,6 +568,19 @@ def load_eval_state(output_dir, n_cells):
     return np.zeros(n_cells, np.int64), np.zeros(n_cells, np.int64), 0
 
 
+def _load_shard_state(path, n_cells, batch_lo):
+    """Resume a shard from itself. Mirrors load_eval_state for the whole dataset."""
+    if os.path.exists(path):
+        try:
+            with np.load(path, allow_pickle=False) as d:
+                if len(d['successes']) == n_cells and int(d['batch_lo']) == batch_lo:
+                    return (d['successes'].astype(np.int64),
+                            d['trials'].astype(np.int64), int(d['batch_hi']))
+        except (OSError, ValueError, KeyError):
+            pass  # truncated or foreign file: start this shard over
+    return np.zeros(n_cells, np.int64), np.zeros(n_cells, np.int64), batch_lo
+
+
 def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
                  n_batches, description=None, converged=False):
     '''Atomically publish the complete eval dataset.
@@ -611,15 +624,73 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
     return p_success
 
 
+def shard_path(output_dir, batch_lo, batch_hi):
+    return os.path.join(output_dir, f'eval_shard_{batch_lo:05d}_{batch_hi:05d}.npz')
+
+
+def merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis, description=None):
+    """Sum the per-batch shards into the canonical whole-grid dataset.
+
+    Sharding is sound because eval batches are INDEPENDENT: batch b's outcome
+    does not depend on batch b-1, and rollout_seed(base, EVAL_SPLIT_ID, cell,
+    batch) is a pure function of its coordinates. So the same rollouts happen
+    whichever node runs them, and successes/trials are counters that add. The
+    merged result is bit-identical to the sequential run -- there is a test.
+
+    Refuses to merge a batch range that is not exactly tiled: an overlap would
+    double-count and a gap would silently under-report `trials`, and both look
+    like a perfectly ordinary dataset afterwards.
+    """
+    paths = sorted(f for f in os.listdir(output_dir)
+                   if f.startswith('eval_shard_') and f.endswith('.npz'))
+    if not paths:
+        raise FileNotFoundError(f'no eval_shard_*.npz in {output_dir}')
+    successes = np.zeros(len(grid), np.int64)
+    trials = np.zeros(len(grid), np.int64)
+    covered = []
+    for name in paths:
+        with np.load(os.path.join(output_dir, name), allow_pickle=False) as d:
+            lo, hi = int(d['batch_lo']), int(d['batch_hi'])
+            if len(d['successes']) != len(grid):
+                raise ValueError(f'{name}: grid size {len(d["successes"])} != {len(grid)}')
+            successes += d['successes'].astype(np.int64)
+            trials += d['trials'].astype(np.int64)
+            covered.append((lo, hi))
+    covered.sort()
+    expected = 0
+    for lo, hi in covered:
+        if lo != expected:
+            raise ValueError(f'batch coverage is not contiguous: expected batch {expected}, '
+                             f'shard starts at {lo}. Ranges: {covered}')
+        expected = hi
+    n_batches = expected
+    if not np.all(trials == n_batches):
+        raise ValueError('per-cell trials disagree with the batch count; a shard is partial')
+    publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
+                 n_batches, description, converged=False)
+    return {'n_batches': n_batches, 'shards': len(paths), 'num_cells': len(grid),
+            'success_rate': float((successes / np.maximum(trials, 1)).mean()),
+            'mean_se': mean_standard_error(successes, trials)}
+
+
 def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
                  torque_noise=None,
                  resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
                  max_batches=500, check_every=10, parallel=False,
-                 num_workers=None, chunk_size=512, verbose=False):
+                 num_workers=None, chunk_size=512, verbose=False,
+                 batch_offset=None, batch_count=None):
     '''Collect the eval split: batches over the grid until the estimate settles.
 
     One batch is one rollout from every grid state. Only per-cell success
     counts are kept, and the complete dataset is republished after every batch.
+
+    ``batch_offset``/``batch_count``: run only batches
+    ``[offset, offset + count)`` and write them to their own shard file, for
+    fanning one grid across many nodes. The stopping rule does not apply --
+    a shard runs its assigned batches and stops -- so the caller picks the
+    batch budget up front and `merge_eval_shards` combines them. The default
+    (both None) is unchanged: one process, whole-grid atomic publication
+    after every batch, stopping when the estimate settles.
     '''
     if controller not in VALID_CONTROLLERS:
         raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
@@ -634,7 +705,15 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     theta_axis = grid_axis(-math.pi, math.pi, resolution)
     theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
     grid = sample_initial_states(0, False, seed, THETA_DOT_MAX, resolution)
-    successes, trials, n_batches = load_eval_state(output_dir, len(grid))
+    sharded = batch_offset is not None
+    if sharded:
+        if batch_count is None or batch_count < 1:
+            raise ValueError('batch_offset requires a positive batch_count')
+        batch_lo, batch_hi = int(batch_offset), int(batch_offset) + int(batch_count)
+        spath = shard_path(output_dir, batch_lo, batch_hi)
+        successes, trials, n_batches = _load_shard_state(spath, len(grid), batch_lo)
+    else:
+        successes, trials, n_batches = load_eval_state(output_dir, len(grid))
 
     description = {
         'dataset_name': 'Inverted Pendulum Success Probabilities (eval split)',
@@ -695,9 +774,12 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     # iterations, and re-forking the workers each time would repay the
     # per-process casadi warmup every batch.
     pool = Pool(processes=workers) if parallel else None
+    stop_at = batch_hi if sharded else max_batches
     try:
-        while n_batches < max_batches:
+        while n_batches < stop_at:
             args = [(c, controller, env_config, seed, n_batches) for c in chunks]
+            # n_batches is the GLOBAL batch index in both modes, so a cell's
+            # noise draw does not depend on which shard ran it.
             outcomes = np.zeros(len(grid), dtype=np.int64)
             results = pool.imap_unordered(_eval_worker, args) if pool else map(_eval_worker, args)
             for indices, values in results:
@@ -706,6 +788,18 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
             successes += outcomes
             trials += 1
             n_batches += 1
+
+            if sharded:
+                # The shard is its own checkpoint, atomically replaced each
+                # batch, so a killed shard resumes where it stopped.
+                atomic_savez(spath,
+                             successes=successes.astype(np.int32),
+                             trials=trials.astype(np.int32),
+                             batch_lo=np.int64(batch_lo),
+                             batch_hi=np.int64(n_batches))
+                if verbose:
+                    print(f'[eval shard {batch_lo}-{batch_hi}] batch {n_batches}', flush=True)
+                continue
 
             standard_error = mean_standard_error(successes, trials)
             due_for_check = n_batches >= min_batches and n_batches % check_every == 0
@@ -723,6 +817,11 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
             pool.close()
             pool.join()
 
+    if sharded:
+        return {'controller': controller, 'n_batches': n_batches,
+                'num_cells': len(grid), 'converged': False, 'shard': [batch_lo, batch_hi],
+                'mean_se': mean_standard_error(successes, trials),
+                'success_rate': float((successes / np.maximum(trials, 1)).mean())}
     return {'controller': controller, 'n_batches': n_batches,
             'num_cells': len(grid), 'converged': converged,
             'mean_se': mean_standard_error(successes, trials),
@@ -905,6 +1004,15 @@ def main():
                              '--invariant_terminal_sets: 600 for lqr, 1100 for RL)')
     parser.add_argument('--noise', type=str, default=None, choices=sorted(NOISE_PRESETS),
                         help='Noise preset (default: none/deterministic). See envs/gym_control/pendulum_noise.py')
+    parser.add_argument('--batch_offset', type=int, default=None,
+                        help='--split eval: run only batches [OFFSET, OFFSET+--batch_count) '
+                             'into their own shard file, to fan one grid across many nodes. '
+                             'The stopping rule does not apply to a shard.')
+    parser.add_argument('--batch_count', type=int, default=None,
+                        help='--split eval: number of batches this shard runs.')
+    parser.add_argument('--merge_eval_shards', action='store_true',
+                        help='--split eval: combine eval_shard_*.npz in --output_dir into the '
+                             'canonical dataset and exit. Refuses a range with gaps or overlaps.')
     parser.add_argument('--torque_noise', type=float, default=None,
                         help='Uniform noise on the commanded torque, U(-TAU, TAU) per control '
                              'step, applied before the u_sat clip. The physically admissible '
@@ -945,6 +1053,21 @@ def main():
             print(f"Successful:   {stats['success_count']} ({stats['success_rate'] * 100:.2f}%)")
             print(f"Mean length:  {stats['mean_length']:.1f} states")
         else:
+            if args.merge_eval_shards:
+                theta_axis = grid_axis(-math.pi, math.pi, args.resolution or GRID_RESOLUTION)
+                theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX,
+                                           args.resolution or GRID_RESOLUTION)
+                grid = sample_initial_states(0, False, args.seed, THETA_DOT_MAX,
+                                             args.resolution or GRID_RESOLUTION)
+                stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis)
+                print(f"\n{'=' * 70}")
+                print(f"Merged:       {stats['shards']} shards, {stats['n_batches']} batches")
+                print(f"Grid cells:   {stats['num_cells']}")
+                print(f"Mean SE:      {stats['mean_se']:.5f}")
+                print(f"Mean p:       {stats['success_rate']:.4f}")
+                print(f'Output:       {output_dir}')
+                print(f"{'=' * 70}")
+                return
             stats = collect_eval(args.controller, output_dir, seed=args.seed,
                                  horizon=args.horizon or 1000, noise=noise,
                                  torque_noise=args.torque_noise,
@@ -952,7 +1075,8 @@ def main():
                                  se_tol=args.se_tol, min_batches=args.min_batches,
                                  max_batches=args.max_batches, check_every=args.check_every,
                                  parallel=args.parallel, num_workers=args.num_workers,
-                                 verbose=True)
+                                 verbose=True, batch_offset=args.batch_offset,
+                                 batch_count=args.batch_count)
             print(f"\n{'=' * 70}")
             print(f"Split:        eval ({stats['controller']}, {_noise_desc(noise, args.torque_noise)})")
             print(f"Grid cells:   {stats['num_cells']}")

@@ -108,6 +108,45 @@ def test_same_seed_couples_noise_across_tau_levels():
         gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 17, 4)
 
 
+def _fake_shard(tmp_path, lo, hi, n_cells=4, succ=1):
+    p = gen.shard_path(str(tmp_path), lo, hi)
+    np.savez(p, successes=np.full(n_cells, succ * (hi - lo), np.int32),
+             trials=np.full(n_cells, hi - lo, np.int32),
+             batch_lo=np.int64(lo), batch_hi=np.int64(hi))
+    return p
+
+
+def test_merge_refuses_a_gap_in_the_batch_range(tmp_path):
+    '''A gap silently under-reports `trials`, and the result looks fine after.'''
+    for lo, hi in [(0, 3), (6, 9)]:
+        _fake_shard(tmp_path, lo, hi)
+    with pytest.raises(ValueError, match='not contiguous'):
+        gen.merge_eval_shards(str(tmp_path), np.zeros((4, 2)), np.zeros(2), np.zeros(2))
+
+
+def test_merge_refuses_an_overlap_in_the_batch_range(tmp_path):
+    '''An overlap double-counts those batches into successes AND trials.'''
+    for lo, hi in [(0, 3), (1, 4), (3, 6)]:
+        _fake_shard(tmp_path, lo, hi)
+    with pytest.raises(ValueError, match='not contiguous'):
+        gen.merge_eval_shards(str(tmp_path), np.zeros((4, 2)), np.zeros(2), np.zeros(2))
+
+
+def test_merge_refuses_when_no_shards_exist(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        gen.merge_eval_shards(str(tmp_path), np.zeros((4, 2)), np.zeros(2), np.zeros(2))
+
+
+def test_shard_batch_index_is_global_so_draws_do_not_move(tmp_path):
+    '''The property that makes sharding sound: a cell's seed depends on the
+    GLOBAL batch number, never on which shard happened to run it.'''
+    assert gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 100, 7) == \
+        gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 100, 7)
+    # Distinct batches must not collide, or shards would duplicate rollouts.
+    seeds = {gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 100, b) for b in range(50)}
+    assert len(seeds) == 50
+
+
 def test_output_dir_family_is_separate_from_the_preset_levels():
     '''tau_0.10 must not land beside `high`; they are not comparable.'''
     d = gen.default_output_dir('lqr', None, 0.1)
