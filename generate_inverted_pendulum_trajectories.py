@@ -71,6 +71,12 @@ GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datase
 DEFAULT_NUM_TRAJS = 300000
 DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
 NOISE_LEVELS = ('low', 'med', 'high', 'xhigh', 'xxhigh', 'ultra', 'max')
+# Torque-noise success rule: per-channel box held for BOX_HOLD control steps.
+# The 0.05 tolerances are the cartpole's own angular tolerances, so the two
+# systems' angular criteria agree. Replaces the L2 ball, which adds radians to
+# rad/s with equal weight. See the 2026-08-06 spec.
+BOX_TOL = np.array([0.05, 0.05])
+BOX_HOLD = 10
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
@@ -97,8 +103,19 @@ def noise_level(noise):
     return tail if tail in NOISE_LEVELS else noise
 
 
-def default_output_dir(controller, noise):
-    '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.'''
+def default_output_dir(controller, noise, torque_noise=None):
+    '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.
+
+    Torque-noise datasets get their own family rather than a new level under
+    ``noisy/``. They share no vocabulary with the preset levels and are not
+    comparable to them -- different mechanism, different units -- so filing
+    ``tau_0.10`` beside ``high`` would invite exactly the wrong comparison.
+    ``tau = 0.0`` still lands in the torque family, so all levels of a sweep come
+    from one pipeline.
+    '''
+    if torque_noise is not None:
+        return os.path.join(DATA_ROOT, 'noisy_torque', 'pendulum', controller,
+                            f'tau_{torque_noise:.2f}')
     if noise is None:
         return os.path.join(DATA_ROOT, 'deterministic', 'pendulum', controller)
     return os.path.join(DATA_ROOT, 'noisy', 'pendulum', controller, noise_level(noise))
@@ -167,6 +184,17 @@ def make_env_func(env_config):
     kwargs = {}
     if env_config.get('invariant'):
         kwargs['goal_threshold'] = 0.0
+    tau = env_config.get('torque_noise')
+    if tau is not None:
+        # Uniform noise on the commanded torque. Applied in _preprocess_control,
+        # i.e. before the u_sat clip, so a saturated actuator cannot be pushed
+        # further -- physically right, and it biases p slightly up relative to a
+        # disturbance acting on the shaft.
+        kwargs['disturbances'] = {'action': [{'disturbance_func': 'uniform',
+                                              'low': -tau, 'high': tau}]}
+        # The box+dwell rule owns termination; the env's own L2 test must not
+        # fire first, or it would cut trajectories on the criterion we replaced.
+        kwargs['goal_threshold'] = 0.0
     return partial(make, 'inverted_pendulum',
                    ctrl_freq=env_config['ctrl_freq'],
                    pyb_freq=env_config['pyb_freq'],
@@ -187,7 +215,8 @@ def make_controller(controller, env_func):
     return ctrl
 
 
-def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None):
+def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None,
+                   box_rule=False):
     '''Roll out one trajectory from ``init_state``.
 
     Default: terminate at (and include) the first state within the goal
@@ -196,6 +225,15 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None)
     ``invariant=True``: no early termination; roll exactly ``max_steps`` steps
     and return ``(trajectory, None, False)`` -- the success label is decided
     afterwards from the terminal state.
+
+    ``box_rule=True``: success is ``|theta| < 0.05 and |theta_dot| < 0.05`` held
+    for ``BOX_HOLD`` consecutive control steps, and the trajectory is cut at the
+    state that *entered* the successful window -- not at the end of it. The label
+    has to stay a function of the terminal state, which is the whole reason the
+    entry-cut exists; cutting at entry keeps the stored terminal state inside the
+    box while the dwell confirms the controller held it rather than passed
+    through. Requires ``goal_threshold=0`` on the env so its L2 test cannot fire
+    first (``make_env_func`` sets this).
 
     ``seed`` reseeds the env's RNG, which is what the noise model draws from,
     making a noisy rollout exactly reproducible. ``None`` leaves the RNG alone
@@ -211,13 +249,23 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None)
     trajectory = [[normalize_angle(env.state[0]), float(env.state[1])]]
     success = None if invariant else False
     timeout = False
+    run = 0  # consecutive steps inside the box, for box_rule
     for _ in range(max_steps):
         obs_in = ctrl.obs_normalizer(obs) if hasattr(ctrl, 'obs_normalizer') else obs
         action = ctrl.select_action(obs_in, info)
         obs, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         trajectory.append([normalize_angle(env.state[0]), float(env.state[1])])
-        if not invariant and done:
+        if box_rule:
+            run = run + 1 if np.all(np.abs(env.state) < BOX_TOL) else 0
+            if run >= BOX_HOLD:
+                # Cut back to the state that entered the window.
+                del trajectory[len(trajectory) - run + 1:]
+                success = True
+                break
+            if done:
+                break
+        elif not invariant and done:
             success = bool(info.get('goal_reached', False))
             break
     else:
@@ -242,9 +290,11 @@ def _process_batch(args_tuple):
     if invariant:
         P, center, c = load_invariant_set()
     records = []
+    box_rule = env_config.get('torque_noise') is not None
     for idx, init_state in batch:
         trajectory, success, timeout = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], invariant=invariant)
+            env, ctrl, init_state, env_config['max_steps'], invariant=invariant,
+            box_rule=box_rule)
         terminal_v_over_c = None
         if invariant:
             dev = np.array(trajectory[-1]) - center
@@ -330,10 +380,12 @@ def _train_worker(args_tuple):
     ctrl = make_controller(controller, env_func)
     env = env_func()
     indices, states, lengths, labels, seeds = [], [], [], [], []
+    box_rule = env_config.get('torque_noise') is not None
     for idx, init_state in batch:
         seed = rollout_seed(base_seed, TRAIN_SPLIT_ID, idx)
         trajectory, success, _ = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+            env, ctrl, init_state, env_config['max_steps'], seed=seed,
+            box_rule=box_rule)
         states.append(np.asarray(trajectory, dtype=np.float32))
         indices.append(idx)
         lengths.append(len(trajectory))
@@ -353,7 +405,7 @@ def _train_worker(args_tuple):
 
 def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                   horizon=1000, noise=None, parallel=False, num_workers=None,
-                  batch_size=256, verbose=False):
+                  batch_size=256, verbose=False, torque_noise=None):
     '''Collect the training split: ``num_trajs`` rollouts from random starts.
 
     Each trajectory is cut at (and includes) the first state inside the goal
@@ -367,12 +419,14 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
     ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
-                  'max_steps': horizon, 'noise': noise, 'invariant': False}
+                  'max_steps': horizon, 'noise': noise, 'invariant': False,
+                  'torque_noise': torque_noise}
 
     shards_dir = os.path.join(output_dir, '_shards')
     os.makedirs(shards_dir, exist_ok=True)
     fingerprint = json.dumps({'controller': controller, 'num_trajs': num_trajs,
                               'seed': seed, 'horizon': horizon, 'noise': noise,
+                              'torque_noise': torque_noise,
                               'batch_size': batch_size}, sort_keys=True)
 
     init_states = sample_initial_states(num_trajs, True, seed, THETA_DOT_MAX, GRID_RESOLUTION)
@@ -467,10 +521,12 @@ def _eval_worker(args_tuple):
     ctrl = make_controller(controller, env_func)
     env = env_func()
     indices, outcomes = [], []
+    box_rule = env_config.get('torque_noise') is not None
     for idx, init_state in chunk:
         seed = rollout_seed(base_seed, EVAL_SPLIT_ID, idx, batch_no)
         _, success, _ = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+            env, ctrl, init_state, env_config['max_steps'], seed=seed,
+            box_rule=box_rule)
         indices.append(idx)
         outcomes.append(int(bool(success)))
     env.close()
@@ -556,6 +612,7 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
 
 
 def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
+                 torque_noise=None,
                  resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
                  max_batches=500, check_every=10, parallel=False,
                  num_workers=None, chunk_size=512, verbose=False):
@@ -571,7 +628,8 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
-                  'max_steps': horizon, 'noise': noise, 'invariant': False}
+                  'max_steps': horizon, 'noise': noise, 'invariant': False,
+                  'torque_noise': torque_noise}
 
     theta_axis = grid_axis(-math.pi, math.pi, resolution)
     theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
@@ -583,6 +641,10 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
         'split': 'eval',
         'controller': controller,
         'noise': noise,
+        'torque_noise': torque_noise,
+        'noise_mechanism': ('uniform on commanded torque, pre-saturation'
+                            if torque_noise is not None else
+                            ('state-additive preset' if noise else 'none')),
         'num_cells': len(grid),
         'state_order': ['theta', 'theta_dot'],
         'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
@@ -596,8 +658,18 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
                  'theta_dot_range': [float(theta_dot_axis[0]), float(theta_dot_axis[-1])],
                  'note': 'half-open in both coordinates; theta is periodic, so -pi and '
                          '+pi are the same state and only one is sampled'},
-        'label_semantics': ('p_success is the fraction of rollouts from that cell that ever '
-                            'entered the 0.075 goal ball within horizon_steps'),
+        'label_semantics': (
+            'p_success is the fraction of rollouts from that cell that held '
+            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} for {BOX_HOLD} '
+            'consecutive control steps within horizon_steps'
+            if torque_noise is not None else
+            'p_success is the fraction of rollouts from that cell that ever '
+            'entered the 0.075 goal ball within horizon_steps'),
+        'success_rule': ({'kind': 'per_channel_box_with_dwell',
+                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD,
+                          'cut': 'trajectory cut at the state entering the held window'}
+                         if torque_noise is not None else
+                         {'kind': 'l2_ball', 'radius': 0.075, 'cut': 'first entry'}),
         'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
                           'se_tol': se_tol, 'min_batches': min_batches,
                           'max_batches': max_batches, 'check_every': check_every},
@@ -668,7 +740,8 @@ def _load_cache(output_dir):
 def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42,
              parallel=False, num_workers=None, horizon=None, resolution=0.1,
              theta_dot_max=THETA_DOT_MAX, skip_save=False, overwrite=False,
-             batch_size=256, noise=None, invariant=False, verbose=False):
+             batch_size=256, noise=None, invariant=False, verbose=False,
+             torque_noise=None):
     '''Generate a dataset and return aggregate statistics.
 
     Resumable: trajectories whose ``sequence_<idx>.txt`` already exists (and whose
@@ -689,7 +762,8 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     episode_len_sec = math.ceil(horizon / ctrl_freq) + 1
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': episode_len_sec, 'max_steps': horizon,
-                  'noise': noise, 'invariant': invariant}
+                  'noise': noise, 'invariant': invariant,
+                  'torque_noise': torque_noise}
 
     init_states = sample_initial_states(num_trajs, random_init, seed, theta_dot_max, resolution)
     n = len(init_states)
@@ -792,6 +866,13 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     return stats
 
 
+def _noise_desc(noise, torque_noise):
+    '''One-line mechanism description for the run banner.'''
+    if torque_noise is not None:
+        return f'torque tau={torque_noise:g} ({100 * torque_noise / U_SAT:.1f}% of u_sat)'
+    return f'noise={noise}'
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate inverted-pendulum trajectory dataset')
     parser.add_argument('--controller', required=True, choices=VALID_CONTROLLERS,
@@ -824,6 +905,13 @@ def main():
                              '--invariant_terminal_sets: 600 for lqr, 1100 for RL)')
     parser.add_argument('--noise', type=str, default=None, choices=sorted(NOISE_PRESETS),
                         help='Noise preset (default: none/deterministic). See envs/gym_control/pendulum_noise.py')
+    parser.add_argument('--torque_noise', type=float, default=None,
+                        help='Uniform noise on the commanded torque, U(-TAU, TAU) per control '
+                             'step, applied before the u_sat clip. The physically admissible '
+                             'channel: it enters the acceleration row only. Switches the success '
+                             f'rule to |theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} held '
+                             f'for {BOX_HOLD} steps, and writes to the noisy_torque/ family. '
+                             'Mutually exclusive with --noise.')
     parser.add_argument('--invariant_terminal_sets', action='store_true',
                         help='Disable goal termination: run every trajectory for a fixed horizon '
                              'and label by terminal-state membership in the invariant ellipsoid '
@@ -834,30 +922,39 @@ def main():
     args = parser.parse_args()
 
     noise = None if args.noise in (None, 'none') else args.noise
+    if noise is not None and args.torque_noise is not None:
+        # Rejecting the combination beats defining a precedence nobody remembers.
+        parser.error('--noise and --torque_noise are different mechanisms and cannot be '
+                     'combined; pick one.')
+    if args.torque_noise is not None and args.torque_noise < 0:
+        parser.error('--torque_noise must be non-negative (it is a half-width).')
 
     if args.split is not None:
-        output_dir = args.output_dir or default_output_dir(args.controller, noise)
+        output_dir = args.output_dir or default_output_dir(
+            args.controller, noise, args.torque_noise)
         if args.split == 'train':
             stats = collect_train(args.controller, output_dir,
                                   num_trajs=args.num_trajs or DEFAULT_NUM_TRAJS,
                                   seed=args.seed, horizon=args.horizon or 1000,
                                   noise=noise, parallel=args.parallel,
-                                  num_workers=args.num_workers, verbose=True)
+                                  num_workers=args.num_workers, verbose=True,
+                                  torque_noise=args.torque_noise)
             print(f"\n{'=' * 70}")
-            print(f"Split:        train ({stats['controller']}, noise={noise})")
+            print(f"Split:        train ({stats['controller']}, {_noise_desc(noise, args.torque_noise)})")
             print(f"Trajectories: {stats['num_trajectories']}")
             print(f"Successful:   {stats['success_count']} ({stats['success_rate'] * 100:.2f}%)")
             print(f"Mean length:  {stats['mean_length']:.1f} states")
         else:
             stats = collect_eval(args.controller, output_dir, seed=args.seed,
                                  horizon=args.horizon or 1000, noise=noise,
+                                 torque_noise=args.torque_noise,
                                  resolution=args.resolution or GRID_RESOLUTION,
                                  se_tol=args.se_tol, min_batches=args.min_batches,
                                  max_batches=args.max_batches, check_every=args.check_every,
                                  parallel=args.parallel, num_workers=args.num_workers,
                                  verbose=True)
             print(f"\n{'=' * 70}")
-            print(f"Split:        eval ({stats['controller']}, noise={noise})")
+            print(f"Split:        eval ({stats['controller']}, {_noise_desc(noise, args.torque_noise)})")
             print(f"Grid cells:   {stats['num_cells']}")
             print(f"Batches:      {stats['n_batches']} "
                   f"({'converged' if stats['converged'] else 'STOPPED AT CAP'})")
@@ -866,6 +963,10 @@ def main():
         print(f'Output:       {output_dir}')
         print(f"{'=' * 70}")
         return
+
+    if args.torque_noise is not None:
+        parser.error('--torque_noise requires --split train or --split eval; the legacy '
+                     'single-pass path does not carry it.')
 
     suffix = f'_{args.noise}' if noise else ''
     suffix += '_invariant' if args.invariant_terminal_sets else ''

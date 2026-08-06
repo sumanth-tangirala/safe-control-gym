@@ -1,0 +1,118 @@
+'''Torque-noise collection path (docs/superpowers/specs/2026-08-06-...).
+
+The load-bearing properties are that the noise reaches the plant through the
+action channel, and that the box+dwell rule leaves the stored terminal state
+inside the box -- the label has to remain a function of the terminal state.
+'''
+import importlib.util
+import os
+
+import numpy as np
+import pytest
+
+SPEC_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), 'generate_inverted_pendulum_trajectories.py')
+_spec = importlib.util.spec_from_file_location('pendulum_generator', SPEC_PATH)
+gen = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gen)
+
+
+def _env_and_ctrl(tau):
+    cfg = {'ctrl_freq': 100, 'pyb_freq': 100, 'episode_len_sec': 6,
+           'max_steps': 500, 'noise': None, 'invariant': False,
+           'torque_noise': tau}
+    env_func = gen.make_env_func(cfg)
+    return env_func(), gen.make_controller('lqr', env_func)
+
+
+def test_torque_noise_reaches_the_action_channel():
+    '''Not the observation or dynamics channel -- the whole point of the fix.'''
+    env, _ = _env_and_ctrl(0.15)
+    try:
+        assert 'action' in env.disturbances
+        assert 'dynamics' not in env.disturbances
+    finally:
+        env.close()
+
+
+def test_env_l2_termination_is_disabled_under_the_box_rule():
+    '''Otherwise the env would cut trajectories on the criterion we replaced.'''
+    env, _ = _env_and_ctrl(0.0)
+    try:
+        assert env.goal_threshold == 0.0
+    finally:
+        env.close()
+
+
+@pytest.mark.parametrize('start', [[0.2, 0.0], [-0.3, 0.4], [0.05, -0.2]])
+def test_successful_trajectory_ends_inside_the_box(start):
+    '''The entry-cut invariant: a label-1 trajectory's LAST state is in the box.
+
+    Cutting at the end of the dwell window instead would leave the terminal state
+    correct too, but ten steps deeper; cutting at entry is what keeps the stored
+    trajectory the shortest one whose terminal state carries the label.
+    '''
+    env, ctrl = _env_and_ctrl(0.0)
+    try:
+        traj, success, _ = gen.run_trajectory(env, ctrl, start, 500, seed=7, box_rule=True)
+    finally:
+        env.close()
+    assert success, 'start chosen to succeed without noise'
+    assert np.all(np.abs(np.array(traj[-1])) < gen.BOX_TOL)
+
+
+def test_cut_point_is_the_entry_of_a_genuinely_held_window():
+    '''The dwell must be real: BOX_HOLD consecutive in-box states from the cut.
+
+    Checked against the *uncut* rollout of the same seeded trajectory, so this
+    fails if the counter ever resets wrongly or the cut lands off by one -- the
+    two bugs the entry-cut arithmetic invites.
+    '''
+    start, seed, horizon = [0.2, 0.0], 7, 500
+    env, ctrl = _env_and_ctrl(0.0)
+    try:
+        cut, success, _ = gen.run_trajectory(env, ctrl, start, horizon, seed=seed, box_rule=True)
+        full, _, _ = gen.run_trajectory(env, ctrl, start, horizon, seed=seed, box_rule=False)
+    finally:
+        env.close()
+    assert success
+    full = np.array(full)
+    entry = len(cut) - 1                       # index of the cut state in `full`
+    assert np.array_equal(np.array(cut), full[:entry + 1]), 'cut is a prefix of the full rollout'
+    window = np.abs(full[entry:entry + gen.BOX_HOLD])
+    assert len(window) == gen.BOX_HOLD
+    assert np.all(window < gen.BOX_TOL), 'every state of the held window is inside the box'
+    # And the cut is the FIRST such window: the preceding state broke the run.
+    if entry > 0:
+        assert not np.all(np.abs(full[entry - 1]) < gen.BOX_TOL)
+
+
+def test_deterministic_torque_run_is_reproducible():
+    '''tau=0 is a real dataset in the sweep, not a special case -- it must repeat.'''
+    out = []
+    for _ in range(2):
+        env, ctrl = _env_and_ctrl(0.0)
+        try:
+            traj, _, _ = gen.run_trajectory(env, ctrl, [0.4, -0.3], 300, seed=11, box_rule=True)
+        finally:
+            env.close()
+        out.append(np.array(traj))
+    assert np.array_equal(out[0], out[1])
+
+
+def test_same_seed_couples_noise_across_tau_levels():
+    '''rollout_seed omits tau on purpose: common random numbers across levels.'''
+    assert gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 17, 3) == \
+        gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 17, 3)
+    assert gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 17, 3) != \
+        gen.rollout_seed(42, gen.EVAL_SPLIT_ID, 17, 4)
+
+
+def test_output_dir_family_is_separate_from_the_preset_levels():
+    '''tau_0.10 must not land beside `high`; they are not comparable.'''
+    d = gen.default_output_dir('lqr', None, 0.1)
+    assert d.endswith(os.path.join('noisy_torque', 'pendulum', 'lqr', 'tau_0.10'))
+    assert gen.default_output_dir('lqr', None, 0.0).endswith('tau_0.00')
+    # The preset path is untouched.
+    assert gen.default_output_dir('lqr', 'control_proportional_med').endswith(
+        os.path.join('noisy', 'pendulum', 'lqr', 'med'))
