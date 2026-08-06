@@ -12,7 +12,7 @@ trajectories) and an `eval` split (grid, per-cell `p(success | start)`).
 
 `--noise` selects from `NOISE_PRESETS` in `pendulum_noise.py`, whose dynamics
 families write the drawn value straight into `(theta, theta_dot)`. Measured over
-the full state space at 161x161 on 2026-08-05, LQR, box+dwell criterion:
+the full state space at 161x161 on 2026-08-05, LQR, under the box+dwell criterion in force at the time:
 
 | mechanism | mean p |
 | --- | --- |
@@ -59,31 +59,43 @@ parameterisation (`sigma_step = sqrt(q/dt)`) is deferred, not rejected.
 
 ## Success rule
 
-Per-channel box, no dwell-free L2 ball:
+Per-channel box, no dwell:
 
 ```
-|theta| < 0.05  and  |theta_dot| < 0.05,  held for 10 consecutive control steps
+|theta| < 0.05  and  |theta_dot| < 0.05
 ```
 
-Replaces the shipped `||[theta, theta_dot]||_2 < 0.075`, which adds radians to
-rad/s with equal weight. The 0.05 tolerances are the cartpole's own angular
-tolerances, so the two systems' angular criteria now agree.
+The rollout STOPS at the first state satisfying it, and that state is the last
+one stored. Replaces the shipped `||[theta, theta_dot]||_2 < 0.075`, which adds
+radians to rad/s with equal weight. The 0.05 tolerances are the cartpole's own
+angular tolerances, so the two systems' angular criteria agree.
 
-**Trajectories are cut at the entry state of the window that achieved the dwell**,
-not at the end of the window. The label must remain a function of the terminal
-state — that is the whole reason the entry-cut exists — and cutting at entry keeps
-the stored terminal state inside the box while the dwell serves as confirmation
-that the controller held it rather than passed through.
+**Revised 2026-08-06 [user].** The first version required the box to be held for
+10 consecutive steps, carried over from the cartpole's `success_hold_steps`. The
+dwell was insurance against the state-additive teleport, where a single draw can
+place the state inside the goal set; a torque disturbance cannot do that, so the
+dwell bought nothing here -- and it cost the invariant the entry-cut exists to
+protect. Under the dwell, a rollout that visited the box without holding it ran
+on to the horizon and could be stored ending INSIDE the box with label 0:
 
-Known edge case, accepted: a *failing* rollout can be inside the box at the
-horizon without ever having held it, giving a terminal state in the box with
-label 0. It requires entering the box within the last 10 steps of a 1000-step
-horizon and is left unhandled rather than papered over.
+| tau | trajectories ending in the box, labelled 0 | share of the split |
+| --- | --- | --- |
+| 0.00, 0.10, 0.15 | 0 | 0% |
+| 0.30 | 927 | 0.93% |
+| 0.50 | 9,863 | 9.86% |
 
-This makes these datasets **not comparable** to any existing pendulum dataset,
-all of which use the L2 ball. That is a deliberate trade: comparability with the
-cartpole and a criterion that means what it says, against comparability with
-shipped data collected under a mechanism we now know is wrong anyway.
+At tau=0.50 the plant cannot deliver 10 quiet steps at all: a measured failure
+sat inside the box for 365 of its 1000 steps across 217 separate visits, longest
+run 7. Worse, the SUCCESSES were equally indistinguishable from stored data --
+the entry-cut truncates at the window's first state, so the 10 steps justifying
+the label are not in the file (measured longest in-box run in a stored success:
+5). Two rows ending 0.000076 apart carried opposite labels with no stored
+evidence separating them.
+
+Stopping at first entry makes the two statements equivalent in both directions:
+a success ends in the box by construction, and a failure can never end there,
+because reaching the box would have terminated it. There is a test for exactly
+this.
 
 ## Layout
 
@@ -118,7 +130,7 @@ sampling luck. This is common random numbers and it is intentional; do not add
 3. `make_env_func` sets `goal_threshold=0.0` whenever the box rule is active, so
    the env's own L2 termination cannot fire first; `run_trajectory` owns the
    criterion.
-4. `run_trajectory` gains the box+dwell test and the entry-cut truncation.
+4. `run_trajectory` gains the box test and stops at the first state inside it.
 5. `default_output_dir` learns the `noisy_torque` family.
 6. `label_semantics` and a new `success_rule` block in both description JSONs.
 

@@ -1,8 +1,9 @@
 '''Torque-noise collection path (docs/superpowers/specs/2026-08-06-...).
 
 The load-bearing properties are that the noise reaches the plant through the
-action channel, and that the box+dwell rule leaves the stored terminal state
-inside the box -- the label has to remain a function of the terminal state.
+action channel, and that a rollout stops at the first state inside the box --
+so `terminal state in the box` and `label 1` are the same statement, in both
+directions.
 '''
 import importlib.util
 import os
@@ -46,12 +47,7 @@ def test_env_l2_termination_is_disabled_under_the_box_rule():
 
 @pytest.mark.parametrize('start', [[0.2, 0.0], [-0.3, 0.4], [0.05, -0.2]])
 def test_successful_trajectory_ends_inside_the_box(start):
-    '''The entry-cut invariant: a label-1 trajectory's LAST state is in the box.
-
-    Cutting at the end of the dwell window instead would leave the terminal state
-    correct too, but ten steps deeper; cutting at entry is what keeps the stored
-    trajectory the shortest one whose terminal state carries the label.
-    '''
+    '''The entry-cut invariant: a label-1 trajectory's LAST state is in the box.'''
     env, ctrl = _env_and_ctrl(0.0)
     try:
         traj, success, _ = gen.run_trajectory(env, ctrl, start, 500, seed=7, box_rule=True)
@@ -61,13 +57,12 @@ def test_successful_trajectory_ends_inside_the_box(start):
     assert np.all(np.abs(np.array(traj[-1])) < gen.BOX_TOL)
 
 
-def test_cut_point_is_the_entry_of_a_genuinely_held_window():
-    '''The dwell must be real: BOX_HOLD consecutive in-box states from the cut.
+def test_rollout_stops_at_first_entry_and_stores_that_state():
+    """No dwell: the rollout ends at the first in-box state, which is stored last.
 
-    Checked against the *uncut* rollout of the same seeded trajectory, so this
-    fails if the counter ever resets wrongly or the cut lands off by one -- the
-    two bugs the entry-cut arithmetic invites.
-    '''
+    Checked against the uncut rollout of the same seeded trajectory, so it fails
+    if the cut lands off by one -- the bug the entry-cut arithmetic invites.
+    """
     start, seed, horizon = [0.2, 0.0], 7, 500
     env, ctrl = _env_and_ctrl(0.0)
     try:
@@ -77,14 +72,31 @@ def test_cut_point_is_the_entry_of_a_genuinely_held_window():
         env.close()
     assert success
     full = np.array(full)
-    entry = len(cut) - 1                       # index of the cut state in `full`
+    entry = len(cut) - 1
     assert np.array_equal(np.array(cut), full[:entry + 1]), 'cut is a prefix of the full rollout'
-    window = np.abs(full[entry:entry + gen.BOX_HOLD])
-    assert len(window) == gen.BOX_HOLD
-    assert np.all(window < gen.BOX_TOL), 'every state of the held window is inside the box'
-    # And the cut is the FIRST such window: the preceding state broke the run.
-    if entry > 0:
-        assert not np.all(np.abs(full[entry - 1]) < gen.BOX_TOL)
+    assert np.all(np.abs(full[entry]) < gen.BOX_TOL), 'the stored last state is inside the box'
+    # And it is the FIRST such state: nothing earlier qualified.
+    earlier = np.all(np.abs(full[:entry]) < gen.BOX_TOL, axis=1)
+    assert not earlier.any(), 'an earlier state was already inside the box'
+
+
+def test_failure_can_never_end_inside_the_box():
+    """The invariant the no-dwell rule buys: label is a function of the terminal state.
+
+    Under the previous 10-step dwell this was false -- a rollout could visit the
+    box without holding it and be stored ending inside it with label 0 (9,863 of
+    100,000 trajectories at tau=0.50).
+    """
+    env, ctrl = _env_and_ctrl(0.30)
+    try:
+        for k in range(40):
+            traj, success, _ = gen.run_trajectory(env, ctrl, [2.6, 5.4], 300,
+                                                  seed=900 + k, box_rule=True)
+            inbox = bool(np.all(np.abs(np.array(traj[-1])) < gen.BOX_TOL))
+            assert inbox == success, (
+                f'seed {900 + k}: terminal in box {inbox} but label {success}')
+    finally:
+        env.close()
 
 
 def test_deterministic_torque_run_is_reproducible():

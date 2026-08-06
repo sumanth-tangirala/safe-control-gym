@@ -71,12 +71,21 @@ GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datase
 DEFAULT_NUM_TRAJS = 300000
 DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
 NOISE_LEVELS = ('low', 'med', 'high', 'xhigh', 'xxhigh', 'ultra', 'max')
-# Torque-noise success rule: per-channel box held for BOX_HOLD control steps.
-# The 0.05 tolerances are the cartpole's own angular tolerances, so the two
-# systems' angular criteria agree. Replaces the L2 ball, which adds radians to
-# rad/s with equal weight. See the 2026-08-06 spec.
+# Torque-noise success rule: the FIRST state with every channel inside the box,
+# with the trajectory cut there. The 0.05 tolerances replace the shipped L2 ball,
+# which adds radians to rad/s with equal weight.
+#
+# BOX_HOLD = 1 means no dwell [user, 2026-08-06]. A dwell was insurance against
+# the state-additive teleport, where one noise draw could place the state in the
+# goal set; a torque disturbance cannot do that, so it bought nothing here and
+# cost the invariant the entry-cut exists to protect. With a dwell, a rollout
+# that visited the box without holding it ran on to the horizon and could be
+# stored ending INSIDE the box with label 0 -- measured at tau=0.50, 9,863 of
+# 100,000 trajectories, so the same terminal state carried both labels. Stopping
+# at first entry makes `terminal state in the box` and `label 1` the same
+# statement again.
 BOX_TOL = np.array([0.05, 0.05])
-BOX_HOLD = 10
+BOX_HOLD = 1
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
@@ -226,14 +235,14 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None,
     and return ``(trajectory, None, False)`` -- the success label is decided
     afterwards from the terminal state.
 
-    ``box_rule=True``: success is ``|theta| < 0.05 and |theta_dot| < 0.05`` held
-    for ``BOX_HOLD`` consecutive control steps, and the trajectory is cut at the
-    state that *entered* the successful window -- not at the end of it. The label
-    has to stay a function of the terminal state, which is the whole reason the
-    entry-cut exists; cutting at entry keeps the stored terminal state inside the
-    box while the dwell confirms the controller held it rather than passed
-    through. Requires ``goal_threshold=0`` on the env so its L2 test cannot fire
-    first (``make_env_func`` sets this).
+    ``box_rule=True``: success is ``|theta| < 0.05 and |theta_dot| < 0.05``, and
+    the rollout STOPS at the first state satisfying it, which is also the last
+    state stored. With ``BOX_HOLD = 1`` (no dwell) this makes the two statements
+    `terminal state is in the box` and `label is 1` equivalent in both
+    directions: a success ends there by construction, and a failure can never end
+    there because reaching the box would have terminated it. Requires
+    ``goal_threshold=0`` on the env so its L2 test cannot fire first
+    (``make_env_func`` sets this).
 
     ``seed`` reseeds the env's RNG, which is what the noise model draws from,
     making a noisy rollout exactly reproducible. ``None`` leaves the RNG alone
@@ -259,7 +268,8 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None,
         if box_rule:
             run = run + 1 if np.all(np.abs(env.state) < BOX_TOL) else 0
             if run >= BOX_HOLD:
-                # Cut back to the state that entered the window.
+                # Cut back to the state that entered the window. At BOX_HOLD = 1
+                # that state is the one just appended and the slice is empty.
                 del trajectory[len(trajectory) - run + 1:]
                 success = True
                 break
@@ -662,9 +672,10 @@ def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_do
             if torque_noise is not None else
             'p_success is the fraction of rollouts from that cell that ever '
             'entered the 0.075 goal ball within horizon_steps'),
-        'success_rule': ({'kind': 'per_channel_box_with_dwell',
+        'success_rule': ({'kind': ('per_channel_box_entry' if BOX_HOLD == 1
+                                   else 'per_channel_box_with_dwell'),
                           'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD,
-                          'cut': 'trajectory cut at the state entering the held window'}
+                          'cut': 'rollout stops at, and stores, the first state inside the box'}
                          if torque_noise is not None else
                          {'kind': 'l2_ball', 'radius': 0.075, 'cut': 'first entry'}),
         'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
