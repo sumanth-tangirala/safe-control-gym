@@ -82,8 +82,28 @@ def random_states(n, seed):
                      rng.uniform(-SAMPLE['theta_dot'], SAMPLE['theta_dot'], n)], 1)
 
 
+def _scratch_dir():
+    '''Node-local directory for the env's per-reset URDF write.
+
+    cartpole.py:357-365 writes a URDF, loads it into PyBullet and deletes it on
+    EVERY reset, into `output_dir`, which defaults to os.getcwd(). On a cluster
+    the cwd is shared NFS, so every rollout does three network filesystem
+    operations. Measured: ~4 min/batch when this lands on local disk against
+    60-180 min when it lands on NFS -- a 15-45x collapse. TMPDIR is set per-job
+    by SLURM on the compute node.
+    '''
+    # /tmp first, NOT $TMPDIR: TMPDIR is set to shared storage on some hosts
+    # here, which is exactly what we are avoiding. SLURM_TMPDIR, where set, is
+    # node-local by definition. The file is a few KB and transient.
+    base = os.environ.get('SLURM_TMPDIR') or '/tmp'
+    d = os.path.join(base, f'scg-{os.getpid()}')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def build(sigma, horizon):
     kw = dict(task='stabilization', ctrl_freq=100, pyb_freq=5000, gui=False,
+              output_dir=_scratch_dir(),
               randomized_init=False, randomized_inertial_prop=False,
               action_scale=FORCE, episode_len_sec=math.ceil(horizon / 100) + 1,
               terminate_on_goal=False, x_dot_limit=INF, theta_dot_limit=INF,
