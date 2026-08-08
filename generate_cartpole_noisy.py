@@ -66,8 +66,19 @@ def grid_states(resolution):
     regime's cut rather than the shipped one -- a start beyond the avoid set is
     not a question worth asking.
     '''
-    axes = [np.arange(-SAMPLE[k], SAMPLE[k] + resolution, resolution) for k in
-            ['x', 'x_dot', 'theta', 'theta_dot']]
+    # theta is PERIODIC, so its axis must be half-open: arange(-pi, pi + res)
+    # overshoots past +pi and the excess wraps back into the near-inverted
+    # region, which then gets counted twice. Measured at resolution 0.5 that
+    # dragged the grid mean from 0.284 to 0.265 while every per-cell value stayed
+    # correct. The other three channels are genuine bounds, not angles, so their
+    # endpoint is kept. Same lesson as grid_axis in the pendulum collector.
+    axes = []
+    for k in ['x', 'x_dot', 'theta', 'theta_dot']:
+        if k == 'theta':
+            n = int(math.ceil(2 * SAMPLE[k] / resolution))
+            axes.append(-SAMPLE[k] + resolution * np.arange(n))
+        else:
+            axes.append(np.arange(-SAMPLE[k], SAMPLE[k] + resolution, resolution))
     g = np.stack(np.meshgrid(*axes, indexing='ij'), -1).reshape(-1, 4)
     keep = ((np.abs(g[:, 0]) < CUT['x']) & (np.abs(g[:, 1]) < CUT['x_dot'])
             & (np.abs(g[:, 3]) < CUT['theta_dot']))
