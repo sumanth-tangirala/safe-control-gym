@@ -45,7 +45,12 @@ import numpy as np
 
 SHUFFLE_SEED = 0
 N_CAL = 10_000            # matches the consumer's N_CAL_STARTS
-FMT_3COL = '%.6f,%.6f,%.4f'
+
+# eval_states.txt is <state...>,p_success -- one column per state channel, then
+# the probability. The consumer reads the dimension from the column count, so
+# this works for the pendulum's 2-D state and the cartpole's 4-D one alike.
+STATE_NAMES = {2: ['theta', 'theta_dot'],
+               4: ['x', 'x_dot', 'theta', 'theta_dot']}
 
 
 def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
@@ -71,9 +76,11 @@ def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
     rows = rows[order]
     if n_cal >= len(rows):
         raise ValueError(f'n_cal {n_cal} >= {len(rows)} eval cells')
-    np.savetxt(os.path.join(level_dir, 'eval_states.txt'), rows, fmt=FMT_3COL)
-    np.savetxt(os.path.join(level_dir, 'cal_set.txt'), rows[:n_cal], fmt=FMT_3COL)
-    np.savetxt(os.path.join(level_dir, 'test_set.txt'), rows[n_cal:], fmt=FMT_3COL)
+    dim = rows.shape[1] - 1
+    fmt = ','.join(['%.6f'] * dim + ['%.4f'])
+    np.savetxt(os.path.join(level_dir, 'eval_states.txt'), rows, fmt=fmt)
+    np.savetxt(os.path.join(level_dir, 'cal_set.txt'), rows[:n_cal], fmt=fmt)
+    np.savetxt(os.path.join(level_dir, 'test_set.txt'), rows[n_cal:], fmt=fmt)
 
     # --- dataset_description.json: REQUIRED by the consumer -------------------
     # PendulumSystem.__init__ reads achieved_bounds from a file with exactly this
@@ -81,24 +88,27 @@ def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
     # these limits, so they must be the bounds the DATA actually reaches, not the
     # sampling box. Measured over every stored state, not the start states.
     st = train['states']
-    achieved = {
-        'theta': {'min': float(st[:, 0].min()), 'max': float(st[:, 0].max()), 'unit': 'rad'},
-        'theta_dot': {'min': float(st[:, 1].min()), 'max': float(st[:, 1].max()),
-                      'unit': 'rad/s'},
-    }
+    dim = st.shape[1]
+    names = STATE_NAMES[dim]
+    units = {'x': 'm', 'x_dot': 'm/s', 'theta': 'rad', 'theta_dot': 'rad/s'}
+    achieved = {n: {'min': float(st[:, i].min()), 'max': float(st[:, i].max()),
+                    'unit': units[n]} for i, n in enumerate(names)}
     train_desc_path = os.path.join(level_dir, 'train_description.json')
     train_desc = json.load(open(train_desc_path)) if os.path.exists(train_desc_path) else {}
     dataset_desc = {
         'dataset_name': train_desc.get('dataset_name', os.path.basename(level_dir)),
         'achieved_bounds': achieved,
-        'state_space': {'state_order': ['theta', 'theta_dot'],
-                        'total_dimensions': 2},
-        'manifold_structure': {'type': 'Product', 'notation': 'S^1 x R'},
+        'state_space': {'state_order': names, 'total_dimensions': dim},
+        'manifold_structure': ({'type': 'Product', 'notation': 'S^1 x R'} if dim == 2 else
+                               {'type': 'Product', 'notation': 'R x S^1 x R^2'}),
         'collection': train_desc,
         'note': ('achieved_bounds are the min/max over every stored state in '
-                 'train.npz, which is what the consumer normalises by. theta is '
-                 'wrapped to [-pi, pi] by the env, so its range is the wrap range '
-                 'rather than an achieved extreme.'),
+                 'train.npz, which is what the consumer normalises by. For the '
+                 'pendulum theta is wrapped to [-pi, pi] by the env, so its range '
+                 'is the wrap range rather than an achieved extreme; the cartpole '
+                 'does not wrap theta, and its velocity extremes exceed the '
+                 'sampling bounds because termination is tested at control-step '
+                 'boundaries.'),
     }
     json.dump(dataset_desc, open(os.path.join(level_dir, 'dataset_description.json'), 'w'),
               indent=2, default=str)
@@ -152,19 +162,21 @@ def verify(level_dir, n_cal=N_CAL):
     dd = json.load(open(dd_path))
     b = dd['achieved_bounds']
     st = train['states']
-    assert abs(b['theta_dot']['max'] - float(st[:, 1].max())) < 1e-6, 'bounds stale'
-    assert abs(b['theta']['min'] - float(st[:, 0].min())) < 1e-6, 'bounds stale'
+    for i, n in enumerate(STATE_NAMES[st.shape[1]]):
+        assert abs(b[n]['max'] - float(st[:, i].max())) < 1e-6, f'{n} bound stale'
+        assert abs(b[n]['min'] - float(st[:, i].min())) < 1e-6, f'{n} bound stale'
 
     es = np.loadtxt(os.path.join(level_dir, 'eval_states.txt'), delimiter=',')
     cal = np.loadtxt(os.path.join(level_dir, 'cal_set.txt'), delimiter=',')
     tst = np.loadtxt(os.path.join(level_dir, 'test_set.txt'), delimiter=',')
-    assert es.shape[1] == 3, 'eval_states must be 3-column for the stochastic reader'
+    assert es.shape[1] == train['states'].shape[1] + 1, 'eval_states column count'
     assert len(es) == len(ev['p_success']), 'eval_states lost cells'
     assert np.array_equal(np.vstack([cal, tst]), es), 'cal + test != eval_states'
     assert len(cal) == n_cal
     # p_success survived the round trip through 4 decimals
-    assert abs(es[:, 2].mean() - float(ev['p_success'].mean())) < 5e-5, 'p_success drifted'
-    return float(es[:, 2].mean()), len(idx), len(es)
+    # p is the LAST column, not column 2 -- that index was the pendulum's 2-D layout.
+    assert abs(es[:, -1].mean() - float(ev['p_success'].mean())) < 5e-5, 'p_success drifted'
+    return float(es[:, -1].mean()), len(idx), len(es)
 
 
 if __name__ == '__main__':
