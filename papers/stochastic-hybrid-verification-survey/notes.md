@@ -7,6 +7,7 @@ tags: ["survey", "stochastic", "verification"]
 verdict:
 read: false
 projects: "safe-control-gym"
+slug: "stochastic-hybrid-verification-survey"
 ---
 
 Orientation survey. Read this first if the others feel like they start mid-argument.

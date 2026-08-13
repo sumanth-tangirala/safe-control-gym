@@ -6,6 +6,7 @@ tags: ["invariant-sets", "ultimate-bounds", "stochastic"]
 verdict:
 read: false
 projects: "safe-control-gym"
+slug: "probabilistic-ultimate-bounds"
 ---
 
 How to COMPUTE the set I only sampled. My ultimate bound is 24 trajectories that did not leave a box; this is the machinery that turns that into a certificate. Directly extends compute_invariant_sets.py to the noisy case.

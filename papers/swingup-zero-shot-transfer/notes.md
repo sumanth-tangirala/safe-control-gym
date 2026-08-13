@@ -6,4 +6,5 @@ tags: ["controller-switching", "two-phase", "cartpole"]
 verdict:
 read: false
 projects: "safe-control-gym"
+slug: "swingup-zero-shot-transfer"
 ---

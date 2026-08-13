@@ -7,6 +7,7 @@ tags: ["reach-avoid-stay", "stochastic", "synthesis"]
 verdict:
 read: false
 projects: "safe-control-gym"
+slug: "probabilistic-reach-avoid-stay-stochastic"
 ---
 
 The stochastic version of the above -- the right frame if we ever want the stay-property back for a noisy plant instead of a hitting probability.
