@@ -1,9 +1,11 @@
 ---
+uid: "8k1f3ypw"
 title: "Continuous-time probabilistic ultimate bounds and invariant sets: Computation and assignment"
 url: "https://www.sciencedirect.com/science/article/abs/pii/S0005109816301662"
 tags: ["invariant-sets", "ultimate-bounds", "stochastic"]
 verdict:
 read: false
+projects: "safe-control-gym"
 ---
 
 How to COMPUTE the set I only sampled. My ultimate bound is 24 trajectories that did not leave a box; this is the machinery that turns that into a certificate. Directly extends compute_invariant_sets.py to the noisy case.
