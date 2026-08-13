@@ -93,6 +93,30 @@ INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 DEFAULT_HORIZON = {'lqr': 600, 'rl': 1100}
 
 
+def validate_timing(ctrl_freq, pyb_freq):
+    '''Validate and normalize the control/integration frequencies.'''
+    ctrl_freq, pyb_freq = int(ctrl_freq), int(pyb_freq)
+    if ctrl_freq <= 0 or pyb_freq <= 0:
+        raise ValueError('ctrl_freq and pyb_freq must be positive integers')
+    if pyb_freq % ctrl_freq != 0:
+        raise ValueError('pyb_freq must be an integer multiple of ctrl_freq')
+    return ctrl_freq, pyb_freq
+
+
+def timing_description(ctrl_freq, pyb_freq):
+    '''Self-describing timing metadata shared by every collection path.'''
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
+    return {
+        'ctrl_freq': ctrl_freq,
+        'pyb_freq': pyb_freq,
+        # Keep ``dt`` as the numerical integration step for compatibility.
+        'dt': 1.0 / pyb_freq,
+        'control_dt': 1.0 / ctrl_freq,
+        'integration_dt': 1.0 / pyb_freq,
+        'substeps_per_control': pyb_freq // ctrl_freq,
+    }
+
+
 def load_invariant_set(path=INVARIANT_SET_PATH):
     '''Load the success ellipsoid (P, center, c) from its artifact.'''
     data = np.load(path)
@@ -415,7 +439,8 @@ def _train_worker(args_tuple):
 
 def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                   horizon=1000, noise=None, parallel=False, num_workers=None,
-                  batch_size=256, verbose=False, torque_noise=None):
+                  batch_size=256, verbose=False, torque_noise=None,
+                  ctrl_freq=100, pyb_freq=100):
     '''Collect the training split: ``num_trajs`` rollouts from random starts.
 
     Each trajectory is cut at (and includes) the first state inside the goal
@@ -426,7 +451,7 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
         raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
     os.makedirs(output_dir, exist_ok=True)
 
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
                   'max_steps': horizon, 'noise': noise, 'invariant': False,
@@ -437,6 +462,7 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
     fingerprint = json.dumps({'controller': controller, 'num_trajs': num_trajs,
                               'seed': seed, 'horizon': horizon, 'noise': noise,
                               'torque_noise': torque_noise,
+                              'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                               'batch_size': batch_size}, sort_keys=True)
 
     init_states = sample_initial_states(num_trajs, True, seed, THETA_DOT_MAX, GRID_RESOLUTION)
@@ -467,7 +493,7 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                             if torque_noise is not None else
                             ('state-additive preset' if noise else 'none')),
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'horizon_steps': horizon,
         'u_sat': U_SAT,
         'fraction_of_u_sat': (None if torque_noise is None else torque_noise / U_SAT),
@@ -675,7 +701,7 @@ def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_do
                             ('state-additive preset' if noise else 'none')),
         'num_cells': len(grid),
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'horizon_steps': horizon,
         'u_sat': U_SAT,
         'theta_dot_max': THETA_DOT_MAX,
@@ -772,7 +798,8 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
                  resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
                  max_batches=500, check_every=10, parallel=False,
                  num_workers=None, chunk_size=512, verbose=False,
-                 batch_offset=None, batch_count=None):
+                 batch_offset=None, batch_count=None,
+                 ctrl_freq=100, pyb_freq=100):
     '''Collect the eval split: batches over the grid until the estimate settles.
 
     One batch is one rollout from every grid state. Only per-cell success
@@ -790,7 +817,7 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
         raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
     os.makedirs(output_dir, exist_ok=True)
 
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
                   'max_steps': horizon, 'noise': noise, 'invariant': False,
@@ -895,7 +922,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
              parallel=False, num_workers=None, horizon=None, resolution=0.1,
              theta_dot_max=THETA_DOT_MAX, skip_save=False, overwrite=False,
              batch_size=256, noise=None, invariant=False, verbose=False,
-             torque_noise=None):
+             torque_noise=None, ctrl_freq=100, pyb_freq=100):
     '''Generate a dataset and return aggregate statistics.
 
     Resumable: trajectories whose ``sequence_<idx>.txt`` already exists (and whose
@@ -907,7 +934,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     trajectories_dir = os.path.join(output_dir, 'trajectories')
     os.makedirs(trajectories_dir if not skip_save else output_dir, exist_ok=True)
 
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
     if horizon is None:
         # Default (first-entry termination): 10 s horizon as before. Invariant
         # mode: fixed horizon = old max success length + settle buffer.
@@ -976,7 +1003,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     description = {
         **stats,
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'episode_len_sec': episode_len_sec, 'horizon_steps': horizon,
         'u_sat': U_SAT,
         'theta_dot_max': theta_dot_max,
@@ -1045,6 +1072,11 @@ def main():
     parser.add_argument('--resolution', type=float, default=None,
                         help=f'Grid resolution (default: {GRID_RESOLUTION} with --split eval, '
                              'else 0.1)')
+    parser.add_argument('--ctrl_freq', type=int, default=100,
+                        help='Control/update frequency in Hz (default: 100).')
+    parser.add_argument('--pyb_freq', type=int, default=100,
+                        help='Explicit-Euler integration frequency in Hz; must be an integer '
+                             'multiple of --ctrl_freq (default: 100).')
     parser.add_argument('--se_tol', type=float, default=0.01,
                         help='--split eval: stop once the mean per-cell uncertainty is below this')
     parser.add_argument('--min_batches', type=int, default=10, help='--split eval: floor on batches')
@@ -1091,6 +1123,10 @@ def main():
                      'combined; pick one.')
     if args.torque_noise is not None and args.torque_noise < 0:
         parser.error('--torque_noise must be non-negative (it is a half-width).')
+    try:
+        validate_timing(args.ctrl_freq, args.pyb_freq)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.split is not None:
         output_dir = args.output_dir or default_output_dir(
@@ -1101,7 +1137,8 @@ def main():
                                   seed=args.seed, horizon=args.horizon or 1000,
                                   noise=noise, parallel=args.parallel,
                                   num_workers=args.num_workers, verbose=True,
-                                  torque_noise=args.torque_noise)
+                                  torque_noise=args.torque_noise,
+                                  ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
             print(f"\n{'=' * 70}")
             print(f"Split:        train ({stats['controller']}, {_noise_desc(noise, args.torque_noise)})")
             print(f"Trajectories: {stats['num_trajectories']}")
@@ -1116,7 +1153,8 @@ def main():
                                              args.resolution or GRID_RESOLUTION)
                 desc = eval_description(
                     args.controller, noise, args.torque_noise, grid, theta_axis,
-                    theta_dot_axis, 100, 100, args.horizon or 1000, args.seed,
+                    theta_dot_axis, args.ctrl_freq, args.pyb_freq,
+                    args.horizon or 1000, args.seed,
                     args.resolution or GRID_RESOLUTION, args.se_tol,
                     args.min_batches, args.max_batches, args.check_every)
                 stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis,
@@ -1137,7 +1175,8 @@ def main():
                                  max_batches=args.max_batches, check_every=args.check_every,
                                  parallel=args.parallel, num_workers=args.num_workers,
                                  verbose=True, batch_offset=args.batch_offset,
-                                 batch_count=args.batch_count)
+                                 batch_count=args.batch_count,
+                                 ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
             print(f"\n{'=' * 70}")
             print(f"Split:        eval ({stats['controller']}, {_noise_desc(noise, args.torque_noise)})")
             print(f"Grid cells:   {stats['num_cells']}")
@@ -1163,7 +1202,8 @@ def main():
                      num_workers=args.num_workers, horizon=args.horizon,
                      resolution=args.resolution or 0.1, skip_save=args.skip_save,
                      overwrite=args.overwrite, noise=noise,
-                     invariant=args.invariant_terminal_sets, verbose=True)
+                     invariant=args.invariant_terminal_sets, verbose=True,
+                     ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
 
     print(f"\n{'=' * 70}")
     print(f"Controller:   {stats['controller']}")

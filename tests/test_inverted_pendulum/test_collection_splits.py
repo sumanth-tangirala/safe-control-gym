@@ -316,6 +316,39 @@ def test_train_split_writes_a_description(tmp_path):
     assert description['data_format']['states_dtype'] == 'float32'
 
 
+def test_split_collectors_record_independent_control_and_integration_rates(tmp_path):
+    '''Legacy-matched collection is 100 Hz control with three 300 Hz substeps.'''
+    from generate_inverted_pendulum_trajectories import collect_eval, collect_train
+
+    train_out = str(tmp_path / 'train')
+    collect_train('lqr', train_out, num_trajs=3, seed=0, horizon=10,
+                  torque_noise=0.0, ctrl_freq=100, pyb_freq=300,
+                  parallel=False)
+    train_desc = json.load(open(os.path.join(train_out, 'train_description.json')))
+
+    eval_out = str(tmp_path / 'eval')
+    collect_eval('lqr', eval_out, seed=0, horizon=10, torque_noise=0.0,
+                 resolution=COARSE_RESOLUTION, min_batches=1, max_batches=1,
+                 check_every=1, ctrl_freq=100, pyb_freq=300, parallel=False)
+    eval_desc = json.load(open(os.path.join(eval_out, 'eval_description.json')))
+
+    for description in (train_desc, eval_desc):
+        assert description['ctrl_freq'] == 100
+        assert description['pyb_freq'] == 300
+        assert description['control_dt'] == pytest.approx(0.01)
+        assert description['integration_dt'] == pytest.approx(1 / 300)
+        assert description['dt'] == pytest.approx(1 / 300)
+        assert description['substeps_per_control'] == 3
+
+
+def test_timing_requires_an_integer_number_of_substeps():
+    from generate_inverted_pendulum_trajectories import validate_timing
+
+    assert validate_timing(100, 300) == (100, 300)
+    with pytest.raises(ValueError, match='integer multiple'):
+        validate_timing(100, 250)
+
+
 def test_default_output_dir_follows_the_on_disk_layout():
     from generate_inverted_pendulum_trajectories import default_output_dir
     assert default_output_dir('lqr', 'control_proportional_med').endswith(
