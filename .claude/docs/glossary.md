@@ -162,9 +162,11 @@ For theta this is correct rather than merely convenient: theta is periodic, so
 column. The earlier `arange(lo, hi + resolution, resolution)` overshot the
 domain and silently duplicated cells.
 
-**Horizon.** Rollout length in steps at 100 Hz (`dt = 0.01`). 1000 for the
-pendulum, cartpole and quad3d stochastic families; **1200 for quad2d**, inherited
-from its deterministic set rather than chosen. `DEFAULT_HORIZON = {'lqr': 600,
+**Horizon.** Rollout length in steps at 100 Hz (`dt = 0.01`). It differs per
+family and is not a shared constant: **800** for the published pendulum tree
+(the superseded `lqr_legacy_20260806/` used 1000), **1000** for cartpole and
+quad3d, **1200** for quad2d, inherited from its deterministic set rather than
+chosen. `DEFAULT_HORIZON = {'lqr': 600,
 'rl': 1100}` for the invariant scheme, set to the old maximum success length plus
 a settle buffer. The horizon is a load-bearing parameter of the label, not a
 safety margin — see bounded-time reach probability — and levels calibrated at one

@@ -259,7 +259,7 @@ Related: [architecture.md](architecture.md) for the library the generators call 
 ## Torque-noise pendulum datasets (`stochastic/`)
 
 ```
-DATA_ROOT/stochastic/pendulum/noisy_torque/lqr/tau_{0.00,0.10,0.15,0.30,0.50}/
+DATA_ROOT/stochastic/pendulum/noisy_torque/lqr/tau_{0.00,0.10,0.15,0.30,0.50,1.00,2.00,5.00}/
 ```
 
 Collected 2026-08-06 at commit `2e0b9ddc`; each records that commit and its
@@ -267,13 +267,28 @@ environment in `dataset_description.json['provenance']`. A **third** noise famil
 alongside `deterministic/` and `noisy/`, and deliberately not a level inside
 `noisy/` — the mechanisms share no units and are not comparable.
 
-| tau | % of `u_sat` | train p | eval p | K | mean SE |
+| tau | % of `u_sat` | train p | eval p | K | mean length |
 | --- | --- | --- | --- | --- | --- |
-| 0.00 | 0% | 0.3863 | 0.3878 | 1 | exact |
-| 0.10 | 15.7% | 0.3522 | 0.3529 | 100 | 0.0075 |
-| 0.15 | 23.5% | 0.3368 | 0.3372 | 100 | 0.0077 |
-| 0.30 | 47.1% | 0.2992 | 0.2997 | 100 | 0.0080 |
-| 0.50 | 78.5% | 0.2585 | 0.2593 | 100 | 0.0087 |
+| 0.00 | 0% | 0.3845 | 0.3860 | 1 | 555.3 |
+| 0.10 | 15.7% | 0.3509 | 0.3513 | 100 | 571.1 |
+| 0.15 | 23.5% | 0.3356 | 0.3358 | 100 | 578.5 |
+| 0.30 | 47.1% | 0.2987 | 0.2991 | 100 | 597.8 |
+| 0.50 | 78.5% | 0.2579 | 0.2587 | 100 | 623.6 |
+| 1.00 | 156.9% | 0.1683 | 0.1694 | 100 | 684.4 |
+| 2.00 | 313.9% | 0.0595 | 0.0597 | 100 | 760.1 |
+| 5.00 | 784.7% | 0.0146 | 0.0150 | 100 | 790.2 |
+
+The last three were collected 2026-08-13 and published 2026-08-15; they had sat
+in Amarel scratch, complete and reduced, waiting on the publication step the
+collection script deliberately leaves separate. They take the sweep well past
+saturation — `tau = 5.0` is 785% of `u_sat`, and at that level the mean
+trajectory length is 790.2 against an 800-step horizon, i.e. almost nothing
+reaches the goal and almost everything runs the full horizon.
+
+**The published `lqr/` tree is a re-collection at horizon 800**, not the
+2026-08-06 run this section originally described. `lqr_legacy_20260806/` holds
+that earlier one at horizon 1000 (`tau = 0.30`: 0.29916 there against 0.29869
+here). Numbers quoted from the legacy tree will not match the published one.
 
 **Mechanism.** `disturbances: {'action': [uniform(-tau, tau)]}` — added to the
 commanded torque in `_preprocess_control`, i.e. *before* the `u_sat` clip, so a
@@ -290,7 +305,7 @@ statement in both directions, which the earlier 10-step dwell broke (9,863 of
 100,000 trajectories at `tau = 0.5` ended inside the box carrying label 0).
 
 **What these numbers are.** Backward-reachable-tube probabilities — "reached the
-box within 10 s" — not stability and not an asymptotic ROA. Two caveats travel
+box within 8 s" (800 steps at 100 Hz) — not stability and not an asymptotic ROA. Two caveats travel
 with them: the `0.05` velocity tolerance was inherited from the angle tolerance
 rather than derived, and at `tau = 0.30/0.50` the settled state satisfies it only
 62.6%/39.5% of the time, so those two levels partly measure the tolerance.
