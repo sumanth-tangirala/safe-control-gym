@@ -310,3 +310,124 @@ so there is no start-state leakage.
 Produced by `prepare_stochastic_layout.py` from the collector's npz output.
 Audited 2026-08-06: 120 checks across the five levels, including 15 rollouts per
 level replayed bit-for-bit from their recorded seeds.
+
+## Unmatched-force datasets: quad3d, quad2d, and the cartpole re-collection
+
+```
+DATA_ROOT/stochastic/quadrotor3D/noisy_dynamics/lqr/f_{0.000,0.032,0.048,0.060,0.072}/
+DATA_ROOT/stochastic/quadrotor2D/noisy_dynamics/rl/ f_{0.000,0.070,0.100,0.150,0.200}/
+DATA_ROOT/stochastic/cartpole/noisy_torque/lqr/     sigma_{0,6,8,11,18}/
+```
+
+Collected 2026-08-14/15. Two mechanisms across the three:
+
+| | mechanism | matched? | units |
+| --- | --- | --- | --- |
+| quad3d, quad2d | `disturbances: {'dynamics': uniform}` | **no** | N (world force) |
+| cartpole | `disturbances: {'action': uniform}` | yes | N (cart force) |
+
+The quadrotor sets are the first use of the `dynamics` mode anywhere in this
+repo. It is a world-frame force applied at the COM every PyBullet substep, so it
+produces **no torque** and reaches attitude only through the controller's
+reaction:
+
+```
+xdot = f(x, u) + B_d w,   B_d nonzero only in the linear-acceleration rows, 1/m
+```
+
+`range(B_d)` is not contained in `range(G(x))` — the vehicle has no way to
+produce a lateral force except by tilting first — which is what makes it
+unmatched, and is the substantive difference from the pendulum and cartpole
+families. Note the cartpole path says `noisy_torque` but the mechanism is
+`action`: the noise is on the commanded cart **force**, `f(x, sat(u + w))`. The
+directory name is a misnomer chosen at placement time; the description JSON is
+authoritative.
+
+**Eval starts are the deterministic set's own states**, read from its
+`eval_states.txt`, so row *i* indexes the same physical state in both datasets.
+Train uses random starts within the same sampling bounds. The `f = 0` / `sigma =
+0` level exists in every family and is the baseline the noisy levels are compared
+against — the shipped deterministic set is *not*, because it was produced by
+different code.
+
+| | level-0 vs shipped labels | eval states | train | K |
+| --- | --- | --- | --- | --- |
+| cartpole | **1.0000** | 116,242 | 116,242 random | 100 |
+| quad2d | 0.9949 | 489,789 | 500,000 random | 50 |
+| quad3d | 0.9702 | 1,000,000 | 800,000 sampler | 100 |
+
+quad3d's 3% gap is chaos amplification over ~500-step tumbling trajectories, not
+a config error: the residual splits into one boundary tie at 0.0499 against a
+0.05 threshold and six genuine divergences out of 400. It cannot be closed from
+this repo — the collector that produced the shipped set is not here in runnable
+form (its `env_func` omits `task_info`, which the 3D branch indexes, so it raises
+`IndexError` on construction).
+
+### The cartpole re-collection, and why the old one is superseded
+
+`stochastic/cartpole/noisy_action/lqr/sigma_{015.0..040.0}` is left in place but
+should not be used. Six defects, measured against `deterministic/cartpole_pybullet`:
+
+| | old | correct |
+| --- | --- | --- |
+| control bound | 100 N | **2000 N** (`action_scale`) |
+| success | uniform 0.1 per-channel box | **L2 ball, radius 0.05** |
+| termination `x_dot`/`theta_dot` | 20.0 | 5.0 |
+| eval states | 131,859, aligned with nothing | the 116,242 deterministic states |
+| baseline level | absent | `sigma = 0` present |
+| state order | env order, reordered post-hoc | file order written directly |
+
+The control bound is the consequential one: 20x too little authority, and it also
+breaks the noise scale, since `sigma = 20` is 20% of a 100 N bound but 1% of a
+2000 N one.
+
+### The deterministic cartpole description states its own success rule wrongly
+
+`generation_parameters.termination_conditions.success` claims per-channel
+tolerances (`x < 0.01`, others `< 0.05`) held for **10 consecutive steps**. That
+was never implemented. Every shipped success ends with `||state||` in
+`[0.0497, 0.0500]` and **not one** satisfies `|x| < 0.01` — the signature of first
+entry into an L2 ball of radius 0.05 with no dwell.
+
+**Labels cannot detect this.** A gate scored **300/300 against the wrong rule**,
+because converging and diverging trajectories are separated by a wide gap and many
+rules partition them identically — the same insensitivity that makes quad3d's
+labels invariant across four orders of magnitude of tolerance. Only the stored
+**final states** discriminate: under the real rule they match at median 4.97e-07,
+the 6-decimal storage floor. When validating a reproduction, compare final states, not
+labels.
+
+`cost='quadratic'` is required for all four systems or `goal_reached` never
+reaches `info`; the env still terminates in the right place, so trajectories look
+perfect while every label reads 0.
+
+### Noise levels are coupled to the success rule and the horizon
+
+They do not transfer when either changes. Measured on quad3d: retention at
+`f = 0.14` is **0.618** under a 0.1 per-channel box and **0.015** under the 0.05
+L2 ball — the settled noise cloud fits inside the box but not the ball. Levels
+calibrated under one rule were ~3x too aggressive under the other.
+
+`p_success` is a **bounded-time** reach probability at each system's horizon
+(1000 steps for cartpole and quad3d, 1200 for quad2d, inherited from its
+deterministic set). Under noise the controllers largely still reach the goal, just
+later: given quad3d's own 100,000-step allowance, success at `f = 0.072` is ~0.24
+against ~0.25 at `f = 0`, while at H=1000 it reads 0.058. About 15% of `f = 0.072`
+rollouts would succeed with unlimited time. The per-level `hit_horizon` count is
+recorded in each description rather than left implicit.
+
+### Rate injection has two directions, and they are not interchangeable
+
+quad3d only. PyBullet's `resetBaseVelocity` takes a **world** angular velocity,
+but the env stores `Rbo @ ang_v`, a **body** rate. So:
+
+- **sampler starts** must be passed body-as-world, repeating the original
+  collector's conflation — that is how the shipped data was generated. Converting
+  instead drops label agreement 393/400 -> 367/400.
+- **states read back from a file** were written as body rates and need
+  `world = R @ body`. Skipping it drops 148/150 -> 138/150 and inflates
+  final-state error 29x.
+
+Both are correct; they differ because one is a sampler output and the other an env
+output. quad2d has no such asymmetry — for `TWO_D` the env stores `ang_v[1]`
+directly in the world frame.

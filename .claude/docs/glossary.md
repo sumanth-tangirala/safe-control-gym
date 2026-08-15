@@ -22,11 +22,42 @@ radius-R Euclidean ball transiently excurses to `gain x R` before converging
 in R). This is why no Euclidean ball is invariant and why the ellipsoid scheme
 exists.
 
-**Entry-cut.** The noisy-collection success rule: a rollout succeeds if it *ever*
-entered the 0.075 L2 goal ball, and the stored trajectory is truncated at (and
-includes) that entry state. Used because under noise a rollout can enter and
-drift back out, which would otherwise break the "label is a function of the
-terminal state" property.
+**Entry-cut.** The noisy-collection success rule, now used by every stochastic
+family: a rollout succeeds if it *ever* entered the goal set, and the stored
+trajectory is truncated at (and includes) that entry state. Used because under
+noise a rollout can enter and drift back out, which would otherwise break the
+"label is a function of the terminal state" property. The goal set differs per
+system — pendulum a per-channel box at 0.05, cartpole an L2 ball at 0.05, quad2d
+an L2 ball at 0.2, quad3d an L2 ball at 0.05 — so a success rate in one says
+nothing about a success rate in another. The signature of an entry-cut set in
+shipped data is that successes end pressed against the threshold from below
+(cartpole 0.0497-0.0500, quad2d 0.1972-0.1998, quad3d 0.0494-0.0498); a dwell
+requirement would leave them well inside instead.
+
+**Labels cannot validate a success rule.** Converging and diverging trajectories
+are separated by a wide gap — measured on quad3d, the converging set tops out at
+3.14e-4 and the non-converging set bottoms out at 1.537 — so many different rules
+partition the same states identically. A cartpole gate scored 300/300 against a
+rule that was wrong in two ways (per-channel tolerances instead of an L2 ball, and
+a 10-step dwell that was never implemented). Only the stored **final states**
+discriminate, because they reveal *where* the rollout was cut. Compare final
+states, not labels, when validating a reproduction.
+
+**Bounded-time reach probability.** What `p_success` actually measures: reached
+the goal set *within the horizon*, not reached it at all. Load-bearing because
+under persistent noise the controllers largely still converge, just later — given
+quad3d's own 100,000-step allowance, success at `f = 0.072` is ~0.24 against ~0.25
+at `f = 0`, while at H=1000 it reads 0.058. Roughly 15% of those rollouts would
+succeed with unlimited time. Not comparable to an asymptotic reach probability,
+and not transferable across horizons.
+
+**Interior fraction.** The share of eval states with `0 < p_success < 1` — the
+ones carrying information the deterministic labels do not already contain.
+Depends on K as well as on the state: with small K, a state whose true `p` is 0.97
+reads as a flat 1.0. Measured at f=0.032 on quad3d, K=100 resolves 18.3% as
+interior where K=10 predicted 6.0%; at f=0.048, where probabilities sit further
+from the boundaries, the two agree (25.1% vs 24.5%). So extra trials buy
+resolution specifically at low noise levels.
 
 **Noise floor.** The stationary distance from upright that a noisy closed loop
 settles into. Under the state-additive presets it exceeds the 0.075 goal radius
@@ -131,9 +162,13 @@ For theta this is correct rather than merely convenient: theta is periodic, so
 column. The earlier `arange(lo, hi + resolution, resolution)` overshot the
 domain and silently duplicated cells.
 
-**Horizon.** Rollout length in steps at 100 Hz (`dt = 0.01`). 1000 for the noisy
-scheme; `DEFAULT_HORIZON = {'lqr': 600, 'rl': 1100}` for the invariant scheme,
-set to the old maximum success length plus a settle buffer.
+**Horizon.** Rollout length in steps at 100 Hz (`dt = 0.01`). 1000 for the
+pendulum, cartpole and quad3d stochastic families; **1200 for quad2d**, inherited
+from its deterministic set rather than chosen. `DEFAULT_HORIZON = {'lqr': 600,
+'rl': 1100}` for the invariant scheme, set to the old maximum success length plus
+a settle buffer. The horizon is a load-bearing parameter of the label, not a
+safety margin — see bounded-time reach probability — and levels calibrated at one
+horizon do not transfer to another.
 
 **`U_SAT`.** Pendulum control saturation, `0.6371781908344007`. Not a round
 number because it is inherited from the source repo's model.

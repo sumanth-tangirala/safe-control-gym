@@ -1,7 +1,51 @@
 # Log
 
 Append-only, newest first. One entry per ingest, per filed query answer, per
-lint pass. Keep the `## [2026-08-06] ingest | torque-noise pendulum datasets; specification classes
+lint pass. Keep the `## [2026-08-15] ingest | unmatched-force quadrotor datasets; cartpole re-collection
+
+Three stochastic families collected 2026-08-14/15 and placed at
+`DATA_ROOT/stochastic/{quadrotor3D/noisy_dynamics/lqr, quadrotor2D/noisy_dynamics/rl,
+cartpole/noisy_torque/lqr}`. Five levels each including a same-code baseline.
+First use anywhere in this repo of the `dynamics` disturbance mode — an unmatched
+world-frame force at the COM, as against the matched `action`/torque channel the
+pendulum and cartpole families use.
+
+Level-0 reproduction of the corresponding deterministic sets: cartpole **1.0000**
+over all 116,242 eval states, quad2d 0.9949, quad3d 0.9702. quad3d's gap is chaos
+amplification over ~500-step tumbling trajectories and cannot be closed here — the
+collector that produced the shipped set is not in this repo in runnable form.
+
+The cartpole re-collection corrects six defects in
+`stochastic/cartpole/noisy_action/lqr/`, which is left in place but superseded.
+The consequential one is a control bound of 100 N where the deterministic set uses
+2000 N — 20x too little authority, which also breaks the noise scale.
+
+Changed in the wiki:
+
+- `datasets.md` — new section for the three families, the two mechanisms and
+  `B_d`; the cartpole defect table; that the deterministic cartpole description
+  states its own success rule wrongly and that labels cannot detect it; that noise
+  levels are coupled to the success rule and horizon; the two rate-injection
+  directions for quad3d.
+- `glossary.md` — **entry-cut** generalised from the pendulum's 0.075 ball to the
+  four goal sets now in use, with the shipped-data signature that identifies one;
+  **horizon** corrected, quad2d is 1200 not 1000; new terms *labels cannot
+  validate a success rule*, *bounded-time reach probability*, *interior fraction*.
+- `compute.md` — three ways a scheduler reports success and produces nothing, and
+  the expected-vs-actual shard check that is the only thing catching them.
+- `architecture.md` — the `dynamics` mode as actually used: per-substep
+  re-application, no torque at the COM, and the two unregistered disturbance
+  classes.
+- `INDEX.md` — four page summaries extended.
+
+Measurements worth carrying: retention at quad3d `f = 0.14` is 0.618 under a 0.1
+per-channel box and 0.015 under the 0.05 L2 ball, which is why levels do not
+transfer across rules. Every shipped cartpole success ends with `||state||` in
+[0.0497, 0.0500] and none satisfies `|x| < 0.01`, which is how the description's
+claimed rule was falsified. A cartpole gate scored 300/300 against that wrong
+rule; the final-state comparison under the real rule matches at median 4.97e-07.
+
+## [2026-08-06] ingest | torque-noise pendulum datasets; specification classes
 
 Five pendulum datasets under a NEW noise mechanism, placed at
 `DATA_ROOT/stochastic/pendulum/noisy_torque/lqr/tau_{0.00,0.10,0.15,0.30,0.50}`.

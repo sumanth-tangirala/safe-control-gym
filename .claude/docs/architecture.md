@@ -155,7 +155,9 @@ Adding an environment or controller means three edits, not one:
 Then a test under `tests/`. `tests/test_inverted_pendulum/test_registration.py`
 is the pattern for asserting a component is reachable through `make`.
 
-## Pendulum noise
+## Noise: two unrelated mechanisms
+
+### Pendulum noise (`pendulum_noise.py`)
 
 `envs/gym_control/pendulum_noise.py` ports the external pendulum repo's noise
 families and names them the same way (`truncated_gaussian_act_med`,
@@ -163,11 +165,120 @@ families and names them the same way (`truncated_gaussian_act_med`,
 `(NoiseModel subclass, params)`; `build_noise_model` also accepts a
 `{'type': ..., **params}` dict, a `NoiseModel` instance, or `None`.
 
-Levels, weakest to strongest: `low`, `med`, `high`, `xhigh`, `xxhigh`, `ultra`,
-`max`. Select noise the safe-control-gym way — an `--overrides` file under
-`examples/inverted_pendulum/config_overrides/noise/` — not by constructing a
-model inline.
+Levels run `low`, `med`, `high`, `xhigh`, `xxhigh`, `ultra`, `max` — but the
+ordering is WRONG in two families: `gaussian_act_ultra` is var 3.0 against
+`_max`'s 2.0, and `truncated_gaussian_act_ultra` is 2.0 against `_max`'s 1.0.
+`max` is the *weaker* of the pair in both. Since the collector derives the output
+directory from the suffix (`noise_level()`), a shipped dataset labelled `max` is
+mis-ordered relative to `ultra`. Select noise the safe-control-gym way — an
+`--overrides` file under `examples/inverted_pendulum/config_overrides/noise/` —
+not by constructing a model inline.
+
+**Its dynamics families measure the noise, not the controller.** They add `eps`
+to the state *after* integration (`inverted_pendulum.py:173-177`), same sigma on
+theta (rad) and thetadot (rad/s), independent draws, redrawn every substep. A
+force cannot do this: a generalised force enters the acceleration row only, so a
+physical disturbance moves theta at second order in `dt` while moving thetadot at
+first order. Measured on a 161x161 grid over the whole state space, LQR, matched
+sigma:
+
+    deterministic                       mean p 0.386
+    velocity_proportional_high          mean p 0.431   <- success RISES
+    gaussian_act_high (torque)          mean p 0.256   <- success falls
+    uniform torque, same sigma          mean p 0.247
+
+Success *rises* under the state-additive families because one draw moves theta by
+~0.083 against a goal radius of 0.075 — the noise can place the state in the goal
+set rather than driving it there. Per-step theta movement, measured from recorded
+trajectories: controller alone 0.041, torque noise 0.041 (unchanged), state
+noise 0.559.
+
+This is the MECHANISM, not the success rule. Re-running with a per-channel box
+and a 10-step dwell requirement still gives 0.426 against 0.386, because
+`velocity_proportional`'s sigma scales with `|thetadot|` and collapses to 0.008
+at the goal — the noise carries the state there, then switches itself off. So the
+shipped noisy pendulum datasets CANNOT be repaired by relabelling stored
+trajectories; the inflation is in the trajectories.
+
+Fixes, cheapest first: apply the noise on `disturbances['action']` (a torque);
+or keep the state write but only on `thetadot`, which is exactly an impulsive
+torque and is what `legged_gym` does ("emulates an impulse by setting a
+randomized base velocity"); or derive the full covariance from a torque spectral
+density, which gives `sigma_theta/sigma_thetadot = dt/sqrt(3)` and correlation
+0.87 rather than equal independent draws (Van Loan discretisation; Sarkka &
+Solin, *Applied SDEs*, Ex. 6.3).
+
+### The `disturbances` mechanism (upstream, every env)
+
+`envs/disturbances.py` is the other one, and the only one the cartpole and
+quadrotors have. `DISTURBANCE_TYPES` is `impulse`, `step`, `uniform`,
+`white_noise`, `periodic` — `brownian` and `state_dependent` are stubs, absent
+from the registry. **`periodic` does not do what its name says**: it redraws the
+phase on every `apply()` call (`disturbances.py`), so the `t` dependence is
+swamped and it yields i.i.d. arcsine-distributed noise in `[-scale, scale]` with
+`frequency` having no effect. A genuine periodic disturbance would draw the phase
+once in `reset()`. Consequence: the library currently offers NO temporally
+correlated disturbance — `periodic` would have been it. Each env declares `DISTURBANCE_MODES`; cartpole's is
+`{'observation': dim 4, 'action': dim 1, 'dynamics': dim 2}`.
+
+The three modes are different physics, not three intensities. The split matters
+because a physical disturbance on a mechanical system is a generalised force, and
+generalised forces enter the acceleration rows only — the kinematic row `qdot = v`
+is a definition, not a law to perturb. Noise on a *position* is sensor noise, and
+belongs on `observation`, which perturbs the measurement and leaves the true state
+alone. No major simulator exposes a per-step state-write channel: MuJoCo documents
+`ctrl`, `qfrc_applied` and `xfrc_applied`; Isaac Lab randomises observations,
+actions, sim params and actor params; Gymnasium touches the RNG only in `reset()`.
+
+- **`action`** — added to the physical command before the `physical_action_bounds`
+  clip (`cartpole.py:543`). Units are Newtons, since it runs after
+  `denormalize_action`. **Matched**: lies in `range(B)`.
+- **`dynamics`** — `p.applyExternalForce` on the *pole* link at its COM, world
+  frame, `[Fx, 0, Fz]` (`cartpole.py:592-610`). Drawn once per control step and
+  held across substeps. Uncapped — bypasses the action clip. **Unmatched**.
+- **`observation`** — post-hoc on the returned obs only. Yields a POMDP; the
+  dynamics stay deterministic.
+
+`adversary_disturbance` reuses the `dynamics`/`action` channels for a learned
+RARL adversary; it needs `env.set_adversary_control` each step and is not a
+passive noise source.
+
+Nothing under `configs/` enables any of this — every env is deterministic today.
+
+**Cartpole's chosen axis** is `dynamics` masked to `Fx` with `uniform`: unmatched,
+so the ROA estimate is not optimistic, and bounded, so the ROA can be set-valued.
+See `docs/superpowers/specs/2026-07-31-cartpole-stochastic-dynamics-design.md`
+for the derivation and the four rejected alternatives. Two traps recorded there:
+`Disturbance.seed` binds `env.np_random` itself rather than a child stream, which
+breaks the pure-function-of-`rollout_seed` invariant; and one Newton at the pole
+COM is `M/m = 10` times the angular effect of one Newton at the cart, with
+opposite sign, so magnitudes do not transfer between modes or between systems.
 
 ---
 
 Related: [datasets.md](datasets.md) for what the root scripts actually collect, [conventions.md](conventions.md) for the scope rule this page states, [glossary.md](glossary.md) for the terms.
+
+## The `dynamics` disturbance mode, as actually used
+
+Documented previously as one of cartpole's three modes but unused anywhere. The
+2026-08-14/15 quadrotor collections are the first use, and two properties matter.
+
+`DISTURBANCE_MODES['dynamics']['dim']` is `int(QuadType)` — 2 for quad2d, 3 for
+quad3d — and the force enters `_advance_simulation` as `applyExternalForce` at
+the COM link in `WORLD_FRAME`, **inside** the substep loop. Re-applying every
+substep is required, not incidental: PyBullet clears external forces after each
+`stepSimulation`, so applying once per control step would act for 1 substep of 50
+and silently under-apply the disturbance 50x.
+
+Applied at the COM, the force produces no moment, so the disturbance input matrix
+has nonzero entries only in the linear-acceleration rows. That is what makes it
+unmatched: `range(B_d)` is not contained in `range(G(x))`, since the vehicle can
+only produce lateral force by tilting first. Contrast the `action` mode, which
+perturbs rotor thrusts and therefore lands in the same channel the controller
+commands.
+
+`BrownianNoise` and `StateDependentDisturbance` exist as classes but are **not**
+registered in `DISTURBANCE_TYPES`, so the five reachable types are `impulse`,
+`step`, `uniform`, `white_noise`, `periodic`. A velocity-dependent (drag-like)
+disturbance is therefore not expressible through this path without registering
+one.

@@ -56,3 +56,54 @@ same way; size its wall-clock request accordingly.
 ---
 
 Related: [workflows.md](workflows.md) for the commands, [architecture.md](architecture.md) for the two RL stacks this measures, [datasets.md](datasets.md) for the sizes those commands write, `CLAUDE.local.md` for which machine (uncommitted, may not exist here).
+
+## The cartpole writes a URDF on every reset
+
+`cartpole.py::reset` writes a per-process URDF into `output_dir` each time it is
+called, so a collection performs one small file write per rollout. On shared NFS
+that dominated everything else — measured 15-45x slower than the same job with
+`output_dir` on node-local disk (60-180 min per batch against 4.5 min). Set it to
+`$SLURM_TMPDIR` or `/tmp`, and note that `$TMPDIR` on some hosts points back at
+NFS, so it is not a safe default. The directory must exist: `reset` raises
+`FileNotFoundError` from `ElementTree.write` rather than creating it.
+
+Applies to cartpole only; the quadrotors load a static URDF from the package.
+
+## Three ways a scheduler reports success and produces nothing
+
+Measured during the 2026-08-14/15 collections. All three look identical to job
+state: `COMPLETED`, exit code 0, or a state that dependencies treat as fine. None
+is detectable from `sacct` alone.
+
+**Nodes that cannot write.** A subset of the CPU partition ran tasks to
+completion and wrote **no output file and no data shard** — 14 of 200 in one
+array, with perfect correlation to node name prefix (163/163 shards from one
+prefix, 0/14 from the other). `/home` and the compute-node mount were the same
+filesystem with identical contents and there were no partial `.tmp` files, so it
+was not a path or partial-write problem. Consequences: `--requeue` never fires,
+because nothing failed; and `afterok` dependencies are *satisfied* by the empty
+tasks, so the next stage launches on incomplete input. Mitigation is
+`--exclude=<those nodes>`, applied to pending arrays with
+`scontrol update jobid=<id> ExcNodeList=...` before they start.
+
+**Preemption without requeue.** Arrays submitted without `--requeue` lose
+preempted tasks silently — the shard is simply absent and the state is
+`PREEMPTED`, which is easy to omit from a failure filter. Six tasks were lost this
+way, two of them at 4h17m of a ~6h run. Always set `--requeue`, and include
+`PREEMPT` and `CANCELLED` in any watchdog pattern.
+
+**Stdout that never lands.** A 57-minute job exited `COMPLETED` having produced
+no output file at all, losing results that existed only as printed text. Anything
+that is a deliverable must be written by the job itself — npz, not stdout.
+
+**The check that catches all three** is comparing *expected shards against shards
+on disk*, not job states. The operational signal is a queue count that falls while
+the shard count does not. Every collector here writes one file per shard and skips
+a shard whose file already exists, which makes recovery a matter of resubmitting
+the same array — finished work is never redone.
+
+Two scheduler limits worth knowing before sizing an array: a per-user cap on
+*submitted* jobs (500 here) that rejects the submission outright rather than
+queueing it, and a CPU cap that is the real concurrency limit. Sizing a wave to
+land exactly on the CPU cap is worthwhile; a deferred submitter job is the way to
+chain past the submit cap when one collection must follow another.
