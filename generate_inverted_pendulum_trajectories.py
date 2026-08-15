@@ -146,16 +146,19 @@ def uses_box_rule(torque_noise, signal_noise=None):
     return torque_noise is not None or signal_noise is not None
 
 
-def noise_mechanism_desc(noise, torque_noise, signal_noise=None):
+def noise_mechanism_desc(noise, torque_noise, signal_noise=None, external_noise=False):
     '''The ``noise_mechanism`` field shared by every description block.'''
     if torque_noise is not None:
         return 'uniform on commanded torque, pre-saturation'
     if signal_noise is not None:
-        return 'gaussian on commanded torque, pre-saturation, sigma = alpha + beta*|u|'
+        return ('gaussian external shaft torque, POST-saturation, '
+                'sigma = alpha + beta*|u|'
+                if external_noise else
+                'gaussian on commanded torque, pre-saturation, sigma = alpha + beta*|u|')
     return 'state-additive preset' if noise else 'none'
 
 
-def signal_noise_desc(signal_noise):
+def signal_noise_desc(signal_noise, external_noise=False):
     '''The ``signal_noise`` field: null, or the constants plus both sigma ends.'''
     if signal_noise is None:
         return None
@@ -165,10 +168,22 @@ def signal_noise_desc(signal_noise):
             'scale_is': 'standard deviation, not variance',
             'sigma_at_zero_command': alpha,
             'sigma_at_u_sat': alpha + beta * U_SAT,
-            'clip': 'u + w is clipped at +/- u_sat; w itself is unbounded'}
+            'placement': 'sat(u) + w' if external_noise else 'sat(u + w)',
+            'physical_claim': (
+                'external torque on the shaft -- wind, contact, friction. Matched '
+                '(it enters through B) but NOT bounded by the actuator, because it '
+                'does not come from the actuator. The applied torque can exceed '
+                'u_sat.'
+                if external_noise else
+                'noise inside the actuator -- command, current or quantisation '
+                'noise. The motor cannot be driven past u_sat by it.'),
+            'clip': ('u is clipped at +/- u_sat and w is added AFTER, unclipped'
+                     if external_noise else
+                     'u + w is clipped at +/- u_sat; w itself is unbounded')}
 
 
-def default_output_dir(controller, noise, torque_noise=None, signal_noise=None):
+def default_output_dir(controller, noise, torque_noise=None, signal_noise=None,
+                       external_noise=False):
     '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.
 
     Torque-noise datasets get their own family rather than a new level under
@@ -185,7 +200,10 @@ def default_output_dir(controller, noise, torque_noise=None, signal_noise=None):
     '''
     if signal_noise is not None:
         alpha, beta = signal_noise
-        return os.path.join(DATA_ROOT, 'signal_dependent', 'pendulum', controller,
+        # A different place for w relative to the saturation is a different
+        # mechanism, not a level, so it gets its own family directory.
+        family = 'external_torque' if external_noise else 'signal_dependent'
+        return os.path.join(DATA_ROOT, family, 'pendulum', controller,
                             f'beta_{beta:.3f}')
     if torque_noise is not None:
         return os.path.join(DATA_ROOT, 'noisy_torque', 'pendulum', controller,
@@ -274,6 +292,10 @@ def make_env_func(env_config):
         kwargs['disturbances'] = {'action': [{'disturbance_func': 'signal_dependent',
                                               'alpha': float(alpha),
                                               'beta': float(beta)}]}
+        if env_config.get('external_noise'):
+            # sat(u) + w rather than sat(u + w): the disturbance is a torque on
+            # the shaft, not part of the actuator, so u_sat does not bound it.
+            kwargs['external_action_disturbance'] = True
     if tau is not None or sig is not None:
         # The box rule owns termination; the env's own L2 test must not fire
         # first, or it would cut trajectories on the criterion we replaced.
@@ -492,7 +514,8 @@ def _train_worker(args_tuple):
 def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                   horizon=1000, noise=None, parallel=False, num_workers=None,
                   batch_size=256, verbose=False, torque_noise=None,
-                  signal_noise=None, ctrl_freq=100, pyb_freq=100):
+                  signal_noise=None, external_noise=False,
+                  ctrl_freq=100, pyb_freq=100):
     '''Collect the training split: ``num_trajs`` rollouts from random starts.
 
     Each trajectory is cut at (and includes) the first state inside the goal
@@ -507,7 +530,8 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
                   'max_steps': horizon, 'noise': noise, 'invariant': False,
-                  'torque_noise': torque_noise, 'signal_noise': signal_noise}
+                  'torque_noise': torque_noise, 'signal_noise': signal_noise,
+                  'external_noise': external_noise}
 
     shards_dir = os.path.join(output_dir, '_shards')
     os.makedirs(shards_dir, exist_ok=True)
@@ -515,6 +539,7 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                               'seed': seed, 'horizon': horizon, 'noise': noise,
                               'torque_noise': torque_noise,
                               'signal_noise': signal_noise,
+                              'external_noise': external_noise,
                               'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                               'batch_size': batch_size}, sort_keys=True)
 
@@ -543,8 +568,9 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
         'controller': controller,
         'noise': noise,
         'torque_noise': torque_noise,
-        'signal_noise': signal_noise_desc(signal_noise),
-        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise),
+        'signal_noise': signal_noise_desc(signal_noise, external_noise),
+        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise,
+                                                external_noise),
         'state_order': ['theta', 'theta_dot'],
         **timing_description(ctrl_freq, pyb_freq),
         'horizon_steps': horizon,
@@ -738,7 +764,7 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
 def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
                      ctrl_freq, pyb_freq, horizon, seed, resolution,
                      se_tol, min_batches, max_batches, check_every,
-                     signal_noise=None):
+                     signal_noise=None, external_noise=False):
     '''The eval dataset's provenance block.
 
     Shared by the collector and by --merge_eval_shards. Merging used to pass
@@ -752,8 +778,9 @@ def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_do
         'controller': controller,
         'noise': noise,
         'torque_noise': torque_noise,
-        'signal_noise': signal_noise_desc(signal_noise),
-        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise),
+        'signal_noise': signal_noise_desc(signal_noise, external_noise),
+        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise,
+                                                external_noise),
         'num_cells': len(grid),
         'state_order': ['theta', 'theta_dot'],
         **timing_description(ctrl_freq, pyb_freq),
@@ -849,7 +876,7 @@ def merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis, description=
 
 
 def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
-                 torque_noise=None, signal_noise=None,
+                 torque_noise=None, signal_noise=None, external_noise=False,
                  resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
                  max_batches=500, check_every=10, parallel=False,
                  num_workers=None, chunk_size=512, verbose=False,
@@ -876,7 +903,8 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
                   'max_steps': horizon, 'noise': noise, 'invariant': False,
-                  'torque_noise': torque_noise, 'signal_noise': signal_noise}
+                  'torque_noise': torque_noise, 'signal_noise': signal_noise,
+                  'external_noise': external_noise}
 
     theta_axis = grid_axis(-math.pi, math.pi, resolution)
     theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
@@ -894,7 +922,8 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     description = eval_description(
         controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
         ctrl_freq, pyb_freq, horizon, seed, resolution, se_tol, min_batches,
-        max_batches, check_every, signal_noise=signal_noise)
+        max_batches, check_every, signal_noise=signal_noise,
+        external_noise=external_noise)
 
     cells = list(enumerate(grid))
     workers = num_workers or get_available_cpus()
@@ -1181,6 +1210,16 @@ def main():
                              f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]}, as '
                              '--torque_noise does. Mutually exclusive with both --noise '
                              'and --torque_noise.')
+    parser.add_argument('--external_noise', action='store_true',
+                        help='Place w OUTSIDE the actuator saturation: sat(u) + w '
+                             'rather than sat(u + w). Models an external torque on '
+                             'the shaft -- wind, contact, friction -- which is matched '
+                             'but not bounded by the actuator, so the applied torque '
+                             'can exceed u_sat. This is a different physical claim, '
+                             'not a magnitude, and it writes to the external_torque/ '
+                             'family. Levels do NOT transfer from the pre-saturation '
+                             'family: the same w is far more potent outside the clip. '
+                             'Requires --noise_alpha/--noise_beta.')
     parser.add_argument('--invariant_terminal_sets', action='store_true',
                         help='Disable goal termination: run every trajectory for a fixed horizon '
                              'and label by terminal-state membership in the invariant ellipsoid '
@@ -1210,6 +1249,9 @@ def main():
     if signal_noise is not None and (args.noise_alpha < 0 or args.noise_beta < 0):
         parser.error('--noise_alpha and --noise_beta must be non-negative; together '
                      'they are a standard deviation.')
+    if args.external_noise and signal_noise is None:
+        parser.error('--external_noise says where w is applied, so it needs a w: '
+                     'pass --noise_alpha and --noise_beta.')
     try:
         validate_timing(args.ctrl_freq, args.pyb_freq)
     except ValueError as exc:
@@ -1217,7 +1259,8 @@ def main():
 
     if args.split is not None:
         output_dir = args.output_dir or default_output_dir(
-            args.controller, noise, args.torque_noise, signal_noise)
+            args.controller, noise, args.torque_noise, signal_noise,
+            args.external_noise)
         if args.split == 'train':
             stats = collect_train(args.controller, output_dir,
                                   num_trajs=args.num_trajs or DEFAULT_NUM_TRAJS,
@@ -1226,6 +1269,7 @@ def main():
                                   num_workers=args.num_workers, verbose=True,
                                   torque_noise=args.torque_noise,
                                   signal_noise=signal_noise,
+                                  external_noise=args.external_noise,
                                   ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
             print(f"\n{'=' * 70}")
             print(f"Split:        train ({stats['controller']}, "
@@ -1246,7 +1290,7 @@ def main():
                     args.horizon or 1000, args.seed,
                     args.resolution or GRID_RESOLUTION, args.se_tol,
                     args.min_batches, args.max_batches, args.check_every,
-                    signal_noise=signal_noise)
+                    signal_noise=signal_noise, external_noise=args.external_noise)
                 stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis,
                                           desc)
                 print(f"\n{'=' * 70}")
@@ -1261,6 +1305,7 @@ def main():
                                  horizon=args.horizon or 1000, noise=noise,
                                  torque_noise=args.torque_noise,
                                  signal_noise=signal_noise,
+                                 external_noise=args.external_noise,
                                  resolution=args.resolution or GRID_RESOLUTION,
                                  se_tol=args.se_tol, min_batches=args.min_batches,
                                  max_batches=args.max_batches, check_every=args.check_every,

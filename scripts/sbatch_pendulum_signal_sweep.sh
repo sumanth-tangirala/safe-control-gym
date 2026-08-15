@@ -29,15 +29,21 @@ PY=${PYTHON:-/home/dm1487/envs/scg/bin/python}
 ROOT=${SIG_SWEEP_ROOT:-/scratch/dm1487/pendulum_signal_sweep_20260815}
 N_CELLS=${N_CELLS:-2000}
 K=${K:-20}
-BETAS=(0.04 0.1 0.2 0.4 0.8 1.6 3.2 6.4)
+# Two level sets, because the placement of w changes its potency by an
+# order of magnitude: the same beta is far stronger outside the clip.
+if [ "${SIG_EXTERNAL:-0}" = "1" ]; then
+    BETAS=(0.01 0.02 0.04 0.08 0.16 0.32 0.64 1.6)
+else
+    BETAS=(0.04 0.1 0.2 0.4 0.8 1.6 3.2 6.4)
+fi
 
 mkdir -p "$ROOT"
 BETA=${BETAS[$SLURM_ARRAY_TASK_ID]}
 NCPU=$($PY -c 'import os; print(len(os.sched_getaffinity(0)))')
 
-echo "task=$SLURM_ARRAY_TASK_ID beta=$BETA cells=$N_CELLS K=$K cores=$NCPU host=$(hostname) start=$(date -Is)"
+echo "task=$SLURM_ARRAY_TASK_ID beta=$BETA external=${SIG_EXTERNAL:-0} cells=$N_CELLS K=$K cores=$NCPU host=$(hostname) start=$(date -Is)"
 
-SIG_SWEEP_OUT="$ROOT/beta_${BETA}.npz" \
+SIG_SWEEP_OUT="$ROOT/beta_${BETA}.npz" SIG_EXTERNAL="${SIG_EXTERNAL:-0}" \
     $PY pend_sig_sweep.py "$N_CELLS" "$K" "$BETA"
 
 echo "task=$SLURM_ARRAY_TASK_ID beta=$BETA done=$(date -Is)"
