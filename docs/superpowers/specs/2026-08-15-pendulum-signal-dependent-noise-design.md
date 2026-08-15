@@ -121,11 +121,17 @@ under common random numbers, and the same npz + `eval_states.txt` layout.
 ## Verification
 
 1. **Baseline gate.** `alpha = beta = 0` must reproduce the deterministic labels
-   on the eval grid. This is the same-code baseline every family here carries;
-   the shipped `tau_0.00` is not it, because it was collected at a different
-   horizon (1000, in `lqr_legacy_20260806/`).
+   on the eval grid. The published `stochastic/pendulum/noisy_torque/lqr/tau_0.00`
+   IS that baseline: horizon 800, `ctrl_freq` 100, `pyb_freq` 300, seed 42,
+   mean p 0.3860. (An earlier draft of this spec said otherwise, confusing it
+   with the superseded `lqr_legacy_20260806/` tree at horizon 1000.)
+   **Result: passed** — 49,770 of 49,770 cells agree, p = 0.3860 either way.
 2. **Sigma check.** Draw `w` at fixed `u` and confirm the empirical std matches
    `alpha + beta*|u|` — cheap, and it catches a std/variance mix-up directly.
+   **Result: passed** — within 0.2% at `u` in {0, 0.1, 0.3, u_sat}, from the
+   class directly and through the env's action channel, with the applied torque
+   never leaving ±`u_sat` (49.7% of draws clipped at `u = u_sat`, which is the
+   design: `u + w` is clipped, `w` is not).
 3. **Floor check.** Measure the settled region at the largest `beta` and confirm
    it stays inside the 0.05 box, i.e. that the family really has no noise floor.
 4. **Comparison.** Report this family against `noisy_torque` at matched average
