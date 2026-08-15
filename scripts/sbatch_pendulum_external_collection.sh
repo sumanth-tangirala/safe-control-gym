@@ -6,7 +6,7 @@
 #SBATCH --exclusive
 #SBATCH --cpus-per-task=64
 #SBATCH --time=04:00:00
-#SBATCH --array=0-104
+#SBATCH --array=0-83
 #SBATCH --output=/home/dm1487/scg-repo/logs/pend_extc_%A_%a.out
 
 # Collect the EXTERNAL-torque pendulum family: sat(u) + w, alpha = 0.008, beta
@@ -20,6 +20,14 @@
 #   sigma/u_sat  2.3%   3.3%   5.3%   9.3%  17.3%  33.3%  65.3% 161.3%
 #   mean p      .3860  .3860  .3860  .3861  .3864  .3878  .3962  .6502
 #   gain rate    0.42%  0.57%  0.92%  1.66%  3.08%  6.44% 17.27% 61.40%
+#
+# Collected levels are {0.16, 0.64, 1.0, 1.4} [user, 2026-08-15], deliberately
+# weighted toward the high end where the interesting structure is: 1.0 and 1.4
+# were not sweep points, and sit at sigma = 101% and 141% of u_sat -- past the
+# crossover where the disturbance matches the motor's own authority. Gains there
+# are large and the interior fraction is wide, but the pendulum is substantially
+# driven by the disturbance rather than by the controller, and the descriptions
+# say so.
 #
 # Unlike every family collected before it, this one GAINS cells: start states the
 # deterministic controller fails from that noise rescues. Gains and losses nearly
@@ -37,7 +45,7 @@
 # cell-for-cell: horizon 800, ctrl_freq 100, pyb_freq 300, seed 42, resolution
 # 0.04, 100k train trajectories, K = 100 eval trials.
 #
-# 5 levels x (1 train + 20 eval shards) = 105 tasks.
+# 4 levels x (1 train + 20 eval shards) = 84 tasks.
 
 set -euo pipefail
 
@@ -55,8 +63,8 @@ ROOT=${PEND_EXT_ROOT:-/scratch/dm1487/pendulum_external_20260815/lqr}
 ALPHA=${ALPHA:-0.008}
 NCPU=$($PY -c 'import os; print(len(os.sched_getaffinity(0)))')
 
-BETAS=(0.08 0.16 0.32 0.64 1.60)
-NAMES=(0.080 0.160 0.320 0.640 1.600)
+BETAS=(0.16 0.64 1.00 1.40)
+NAMES=(0.160 0.640 1.000 1.400)
 NLEVEL=${#BETAS[@]}
 SHARDS=20
 BATCHES_PER_SHARD=5
@@ -125,8 +133,8 @@ import sys
 import numpy as np
 
 root = sys.argv[1]
-expected = {'beta_0.080': 0.08, 'beta_0.160': 0.16, 'beta_0.320': 0.32,
-            'beta_0.640': 0.64, 'beta_1.600': 1.6}
+expected = {'beta_0.160': 0.16, 'beta_0.640': 0.64,
+            'beta_1.000': 1.0, 'beta_1.400': 1.4}
 assert set(os.listdir(root)) == set(expected), sorted(os.listdir(root))
 for name, beta in sorted(expected.items()):
     out = os.path.join(root, name)
