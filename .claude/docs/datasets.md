@@ -385,9 +385,23 @@ claim that matchedness biases an ROA toward the nominal.
 
 | alpha | beta | train p | eval p | interior | rescued | broken |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.050 | 0.16 | 0.3862 | 0.3869 | 11.2% | 2,200 | 1,909 |
-| 0.008 | 0.64 | 0.3957 | 0.3961 | 40.8% | 8,596 | 4,541 |
-| 0.100 | 0.64 | 0.4060 | 0.4067 | 64.6% | 14,430 | 5,346 |
+| 0.050 | 0.16 | 0.3862 | 0.3869 | 11.2% | 3,027 | 2,548 |
+| 0.008 | 0.64 | 0.3957 | 0.3961 | 40.8% | 14,441 | 5,849 |
+| 0.100 | 0.64 | 0.4060 | 0.4067 | 64.6% | 25,191 | 6,955 |
+
+`rescued` = deterministic label 0 and `p > 0`; `broken` = label 1 and `p < 1`.
+Both counts are K-dependent — more trials find more cells that are not perfectly
+deterministic — so they must be quoted at the K they were measured at. The K = 20
+sweep gives 2,200 / 8,596 / 14,430 rescued for these same settings, and an
+earlier version of this table mixed those into rows whose other columns were
+K = 100.
+
+**Both classes are boundary cells, not a moved boundary.** Rescued cells sit at
+mean `p` 0.09-0.15 and **not one of them exceeds 0.9** — a rescued state now
+succeeds sometimes, never reliably. Broken cells sit at mean `p` ~0.83 and none
+fall below 0.1. So the effect is the deterministic boundary being *blurred* in
+both directions, not displaced. At `alpha = 0.1, beta = 0.64` that blur covers
+32,146 of 49,770 cells; only 12,254 remain a hard 1 and 5,370 a hard 0.
 
 **This is the first family here whose ROA is not a subset of the deterministic
 one.** It gains cells — start states the noise-free controller fails from that
