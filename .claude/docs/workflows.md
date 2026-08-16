@@ -245,7 +245,31 @@ python generate_inverted_pendulum_trajectories.py \
 # invariant-terminal-set scheme (off by default)
 python generate_inverted_pendulum_trajectories.py \
     --controller lqr --invariant_terminal_sets
+
+# the three stochastic pendulum families, each a different MECHANISM
+--torque_noise TAU                        # uniform, pre-saturation
+--noise_alpha A --noise_beta B            # gaussian sigma = A + B|u|, pre-saturation
+--noise_alpha A --noise_beta B --external_noise   # ... POST-saturation
 ```
+
+The three are mutually exclusive and each writes to its own family directory
+(`noisy_torque/`, `signal_dependent/`, `external_torque/`). `--external_noise`
+needs an alpha/beta; `--noise_alpha` and `--noise_beta` must be given together,
+since defaulting the missing one to zero would silently collect a level nobody
+asked for and the directory name would not say so.
+
+Verification for the signal-dependent path, both cheap and both worth running
+after any change to `disturbances.py` or `_preprocess_control`:
+
+```bash
+python pend_sig_validate.py sigma      # empirical std == alpha + beta|u|
+python pend_sig_validate.py gate       # alpha = beta = 0 reproduces tau_0.00
+python pend_sig_sweep.py 2000 20       # level sweep; SIG_EXTERNAL=1 for sat(u)+w
+```
+
+Amarel batch scripts for the whole pipeline live in `scripts/`:
+`sbatch_pendulum_{signal_sweep,signal_collection,alpha_sweep,external_sweep,external_collection,external_ab}.sh`,
+each taking `MODE=collect` then `MODE=finalize`.
 
 Flags worth knowing before launching:
 

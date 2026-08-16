@@ -212,8 +212,8 @@ Solin, *Applied SDEs*, Ex. 6.3).
 
 `envs/disturbances.py` is the other one, and the only one the cartpole and
 quadrotors have. `DISTURBANCE_TYPES` is `impulse`, `step`, `uniform`,
-`white_noise`, `periodic` — `brownian` and `state_dependent` are stubs, absent
-from the registry. **`periodic` does not do what its name says**: it redraws the
+`white_noise`, `periodic`, `signal_dependent` — `brownian` and `state_dependent`
+are stubs, absent from the registry. **`periodic` does not do what its name says**: it redraws the
 phase on every `apply()` call (`disturbances.py`), so the `t` dependence is
 swamped and it yields i.i.d. arcsine-distributed noise in `[-scale, scale]` with
 `frequency` having no effect. A genuine periodic disturbance would draw the phase
@@ -278,7 +278,45 @@ perturbs rotor thrusts and therefore lands in the same channel the controller
 commands.
 
 `BrownianNoise` and `StateDependentDisturbance` exist as classes but are **not**
-registered in `DISTURBANCE_TYPES`, so the five reachable types are `impulse`,
-`step`, `uniform`, `white_noise`, `periodic`. A velocity-dependent (drag-like)
-disturbance is therefore not expressible through this path without registering
-one.
+registered in `DISTURBANCE_TYPES`, so the six reachable types are `impulse`,
+`step`, `uniform`, `white_noise`, `periodic`, `signal_dependent`. A
+velocity-dependent (drag-like) disturbance is therefore not expressible through
+this path without registering one.
+
+`SignalDependentNoise` is the fork's addition (2026-08-15): Gaussian noise whose
+scale is a function of the signal it perturbs,
+
+```
+w ~ Normal(0, alpha + beta * |target|)
+```
+
+`WhiteNoise` cannot express this — its `std` is fixed at construction, so it
+necessarily has the same sigma at the goal as far from it. The two constants are
+separate mechanisms rather than one magnitude: `alpha` is the floor surviving as
+the command goes to zero, `beta` the effort-proportional term that bites only
+during the transient. The sum is a **standard deviation, not a variance**; the
+two readings differ by ~5x at the values in use and put the family on opposite
+sides of the `tau` sweep, so the class docstring, the JSON field `scale_is` and
+`pend_sig_validate.py sigma` all assert it. `|target|`, not `target`: a signed
+command sends the scale negative at `u = -0.637`, and the constructor rejects a
+negative `alpha` or `beta` for the same reason.
+
+### Where an action disturbance sits relative to saturation
+
+The pendulum takes `external_action_disturbance` (default `False`), which
+selects between two placements in `_preprocess_control`:
+
+| | applied | physical claim |
+| --- | --- | --- |
+| `False` | `sat(u + w)` | noise **inside** the actuator — command, current, quantisation. The motor cannot be driven past `u_sat` by it. |
+| `True` | `sat(u) + w` | an external torque on the **shaft** — wind, contact, friction. Still matched, still through `B`, but the actuator's limit does not apply to something the actuator is not producing. |
+
+This is a different physical claim, not a magnitude setting, and it decides
+whether noise can help at all — see `datasets.md`. Under `True` the disturbance
+is deliberately **not** re-clipped, and any signal-dependent scale reads the
+*saturated* command, which is the torque the actuator is really producing.
+
+`u_sat` is untouched by the switch and must stay that way: it is a property of
+the plant, and at an authority ratio of 0.866 raising it by 15% makes the
+pendulum fully actuated and collapses the whole region-of-attraction structure.
+The question is never how big the actuator is, only where `w` lives.

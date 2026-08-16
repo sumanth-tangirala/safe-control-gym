@@ -148,3 +148,24 @@ worth reintroducing for tidiness.
 **A full `alpha` x `beta` factorial.** 16 levels for perhaps 2x the information
 over a one-at-a-time design. Out of scope now; the `alpha` axis is the more
 interesting of the two and deserves its own spec.
+
+## Superseded, 2026-08-15
+
+Both "rejected" items above were overtaken the same day and this section records
+that rather than leaving the file reading as current intent.
+
+**The `alpha` sweep happened.** 3 betas x 8 alphas over the full 49,770-cell grid
+at K = 20, and it was necessary rather than a luxury: only `alpha` acts at the
+goal, so a `beta`-only sweep could not answer whether the floor eats the success
+box. It does not, anywhere in `0 <= alpha <= 0.8` — p rises monotonically because
+entry-cut scores entry with no dwell. Three `(alpha, beta)` pairs were then
+collected at K = 100.
+
+**A third family exists.** `sat(u) + w` — the same noise applied outside the
+actuator saturation, modelling an external shaft torque. It is the only pendulum
+family whose region of attraction is not a subset of the deterministic one. The
+prediction recorded above, that `beta = 0.04` would land near p = 0.375-0.38, was
+right (measured 0.3722); the reasoning about what the family could do was not,
+because it assumed the placement rather than examining it.
+
+See `.claude/docs/datasets.md` and `.claude/log.md` for what was collected.

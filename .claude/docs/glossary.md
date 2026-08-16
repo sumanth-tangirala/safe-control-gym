@@ -75,6 +75,22 @@ worst-case robust invariant ellipsoid is far looser than the observed region
 (`|theta_dot| <= 3.11` vs 0.20 at `tau = 0.5`, ~15x), which is the usual gap
 between an adversarial bound and unbiased noise.
 
+**`alpha` / `beta` (signal-dependent noise).** `sigma = alpha + beta*|u|`, a
+standard deviation. They control different things and only `alpha` acts *at the
+goal*: `beta` scales with the commanded torque, so it goes quiet exactly where a
+stabilising run is finishing, while `alpha` is the floor surviving as `u -> 0`.
+A `beta`-only sweep therefore cannot say anything about whether the settled
+region fits inside the success box — that is an `alpha` question.
+
+The landmark is `|theta_dot| <~ 0.70*alpha` for the settled spread, so
+`alpha ~ 0.07` is where the floor reaches the 0.05 box. Measured (full grid,
+K = 20, three betas), p does **not** turn over there or anywhere in `0 <= alpha
+<= 0.8` — it rises monotonically throughout. The reason is the success rule, not
+the physics: entry-cut scores *entry* with no dwell, so a floor too large for the
+pendulum to sit inside the box still helps it stumble in, and stumbling in is all
+that counts. A dwell requirement would restore the turn. This is the clearest
+case on record of a label choice determining a result that looks physical.
+
 **Noise preset.** A named entry in `NOISE_PRESETS`
 (`safe_control_gym/envs/gym_control/pendulum_noise.py`), mirroring the source
 repo's Hydra config names: `<family>_<level>`, e.g. `truncated_gaussian_act_med`,
@@ -121,10 +137,47 @@ datasets score **first entry with no dwell**.
 
 **Matched / unmatched uncertainty.** A perturbation is *matched* if it lies in
 `range(B)` — the same direction the controller commands — and unmatched
-otherwise. Load-bearing for ROA estimation: a controller partially rejects
-matched noise through its own input channel, so an ROA measured under it is
-biased toward the nominal, noise-free ROA. Cartpole's `action` mode is matched;
-its `dynamics` mode is not.
+otherwise. Cartpole's `action` mode is matched; its `dynamics` mode is not.
+
+Matchedness alone does NOT imply the ROA is biased toward the nominal one — an
+earlier version of this page said it did, and the external-torque pendulum family
+refutes it. That family is matched, enters through the same `B`, and *gains* up
+to 30,561 cells. What biases an ROA toward the nominal is **saturation
+placement**, not matchedness. See below.
+
+**Saturation placement.** Where an action disturbance sits relative to the
+actuator clip, and the single largest determinant of whether noise can help:
+
+```
+sat(u + w)   noise inside the actuator  -- command/current noise. The motor
+             cannot be driven past u_sat by it.
+sat(u) + w   noise outside -- an external shaft torque. Still matched, but the
+             actuator's limit does not bound something the actuator is not
+             producing.
+```
+
+Under `sat(u + w)`, whenever the command is saturated the clip discards every
+positive draw and passes every negative one, so the noise can only *subtract*
+control authority. Measured on the pendulum LQR, the command is saturated on
+70–98% of steps depending on level, and the realised noise std collapses to
+28–71% of what was drawn. A start state that fails for want of authority
+therefore cannot be rescued by a disturbance that can only remove authority —
+which is the mechanism behind the zero-gain result, and it is a property of the
+clip rather than of noise, of matchedness, or of pendulums.
+
+Measured at `alpha = 0.008, beta = 1.6` on 200 deterministically-failing cells ×
+K = 10, the *same* `w` rescues **0 of 2000** rollouts inside the clip and **956 of
+2000** outside it.
+
+**Zero gain (pre-saturation families).** Across every pre-saturation pendulum
+family — the seven published `tau` levels, the `beta` sweep, and the `beta = 1.6`
+full grid — **24,643,200 rollouts started from deterministically-failing cells and
+none reached the goal**; 95% upper bound on the mean gain probability 1.2e-7. Two
+independent reasons, both measured: the clip asymmetry above, and the fact that
+failing states park at the hanging equilibrium (72.8% of steps) with a settled
+energy of 14–21% of the 1.4715 J barrier — and *more* noise gives *less* energy,
+because more of it is clipped away. Not a horizon artifact: still zero at 8,000
+steps, ten times the dataset horizon.
 
 **Internal vs external uncertainty.** Internal: the plant is not what was
 modelled (parametric mismatch, unmodelled structure such as friction) —

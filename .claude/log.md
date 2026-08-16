@@ -1,7 +1,65 @@
 # Log
 
 Append-only, newest first. One entry per ingest, per filed query answer, per
-lint pass. Keep the `## [2026-08-15] ingest | unmatched-force quadrotor datasets; cartpole re-collection
+lint pass. Keep the `## [2026-08-15] ingest | signal-dependent and external-torque pendulum families; the placement result
+
+Two new pendulum families collected and one library capability added, plus a
+result that corrects a claim this wiki has been carrying.
+
+`SignalDependentNoise` registered in `DISTURBANCE_TYPES` (commit 734394d4):
+`w ~ Normal(0, alpha + beta*|u|)`, a standard deviation not a variance. Gated by
+reproducing the shipped `tau_0.00` labels on all 49,770 eval cells with
+`alpha = beta = 0`, and by an empirical sigma check within 0.2%.
+
+`external_action_disturbance` added to the pendulum env (7ea66acf), selecting
+`sat(u + w)` from `sat(u) + w`. Default `False`, gated at 300/300 against the
+already-collected `beta = 1.6` labels so no existing dataset moves.
+
+Collected, all at horizon 800 / `ctrl_freq` 100 / `pyb_freq` 300 / seed 42 / K=100
+so every pendulum family stays comparable cell-for-cell:
+
+- `signal_dependent/pendulum/lqr/beta_{0,0.2,0.4,0.8,1.6,3.2}` at `alpha = 0.008`
+- `external_torque/pendulum/lqr/a{0.050_b0.160, 0.008_b0.640, 0.100_b0.640}`,
+  plus four earlier `beta_*` levels at `alpha = 0.008` under the superseded
+  naming
+
+**What this overturns.** `glossary.md` said a controller partially rejects
+matched noise through its own input channel, so an ROA measured under it is
+biased toward the nominal. That is wrong. The external-torque family is matched —
+same `B` — and gains up to 30,561 cells. The cause is the saturation clip: under
+`sat(u + w)` a saturated command discards every positive draw and passes every
+negative one, so noise can only subtract authority. The same `w` at
+`alpha = 0.008, beta = 1.6` rescues 0 of 2000 rollouts inside the clip and 956 of
+2000 outside it. `datasets.md` stated the same result as a property of "the
+physically admissible channel"; corrected to a property of placement.
+
+The zero-gain result itself is now quantified rather than asserted: 24,643,200
+rollouts from deterministically-failing cells across every pre-saturation family,
+none successful, 95% bound 1.2e-7. Not a horizon artifact — still zero at 8,000
+steps.
+
+Second correction, this one to a prediction rather than a page: the alpha sweep
+(3 betas x 8 alphas, full grid, K=20) was expected to show p turning over near
+`alpha ~ 0.07` where the settled spread reaches the success box. It does not turn
+anywhere in `0 <= alpha <= 0.8`. Entry-cut scores entry with no dwell, so a floor
+too large to sit inside the box still helps a trajectory stumble in. Filed in
+`glossary.md` as the clearest case here of a label choice producing a result that
+looks physical.
+
+`compute.md` gains a fourth way a scheduler produces nothing useful: a job
+running stale code because `git pull | tail -1` hid an aborted merge, the error
+being on stderr and the reassuring `Updating A..B` on stdout. Cost one sweep that
+silently reproduced the previous sweep's numbers.
+
+Pages touched: `architecture.md`, `datasets.md`, `glossary.md`, `workflows.md`,
+`compute.md`, `INDEX.md`.
+
+Not yet done: none of these datasets is published to `DATA_ROOT` — all six
+signal-dependent levels and all seven external levels are still on cluster
+scratch. The 2026-08-15 spec still says an alpha sweep is out of scope, which is
+now the opposite of what happened.
+
+## [2026-08-15] ingest | unmatched-force quadrotor datasets; cartpole re-collection
 
 Three stochastic families collected 2026-08-14/15 and placed at
 `DATA_ROOT/stochastic/{quadrotor3D/noisy_dynamics/lqr, quadrotor2D/noisy_dynamics/rl,

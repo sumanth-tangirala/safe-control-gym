@@ -292,11 +292,16 @@ here). Numbers quoted from the legacy tree will not match the published one.
 
 **Mechanism.** `disturbances: {'action': [uniform(-tau, tau)]}` — added to the
 commanded torque in `_preprocess_control`, i.e. *before* the `u_sat` clip, so a
-saturated actuator cannot be pushed further. This is the physically admissible
-channel, and unlike the state-additive presets it cannot raise the success rate:
-measured across all 49,770 cells and all four noisy levels, the largest gain over
-the noiseless field is **+0.000**, and 3,047,000 rollouts from failing cells
-produced no success at all.
+saturated actuator cannot be pushed further. Unlike the state-additive presets it
+cannot raise the success rate: measured across all 49,770 cells and all four
+noisy levels, the largest gain over the noiseless field is **+0.000**, and
+3,047,000 rollouts from failing cells produced no success at all.
+
+That last property belongs to the **placement**, not to the channel. It holds for
+every family applied before the clip and fails immediately for the same noise
+applied after it — see the external-torque family below. Earlier wording here
+called this "the physically admissible channel", which reads as though matched
+torque noise is inherently unable to help; it is not.
 
 **Success rule.** First state with `|theta| < 0.05` AND `|theta_dot| < 0.05`; the
 rollout stops there. No dwell — see `glossary.md`, recurrence vs invariance. The
@@ -325,6 +330,89 @@ so there is no start-state leakage.
 Produced by `prepare_stochastic_layout.py` from the collector's npz output.
 Audited 2026-08-06: 120 checks across the five levels, including 15 rollouts per
 level replayed bit-for-bit from their recorded seeds.
+
+
+## Signal-dependent pendulum datasets (`stochastic/`)
+
+```
+DATA_ROOT/signal_dependent/pendulum/lqr/beta_{0.000,0.200,0.400,0.800,1.600,3.200}/
+```
+
+Collected 2026-08-15. Same LQR, grid, horizon (800), `ctrl_freq` 100, `pyb_freq`
+300, seed 42 and entry-cut box rule as `noisy_torque/`, so the two are comparable
+cell-for-cell. The law is Gaussian with a command-dependent scale, still applied
+**before** the clip:
+
+```
+xdot = f(x, sat(u + w)),   w ~ Normal(0, alpha + beta*|u|),   alpha = 0.008
+```
+
+| beta | sigma at `u_sat` | train p | eval p | interior | K |
+| --- | --- | --- | --- | --- | --- |
+| 0.0 | 0.0080 | 0.3800 | 0.3812 | 0.3% | 100 |
+| 0.2 | 0.1354 | 0.3180 | 0.3180 | 4.1% | 100 |
+| 0.4 | 0.2629 | 0.2742 | 0.2752 | 6.9% | 100 |
+| 0.8 | 0.5177 | 0.1977 | 0.1994 | 12.0% | 100 |
+| 1.6 | 1.0275 | 0.1082 | 0.1099 | 16.0% | 100 |
+| 3.2 | 2.0470 | 0.0427 | 0.0437 | 13.2% | 100 |
+
+`beta = 0` is kept at `alpha = 0.008` as the control the sweep needs — a constant
+sigma floor with no signal dependence — which separates what `beta` adds from
+what the floor does. The deterministic reference is the published `tau_0.00`.
+Interior fraction is not monotone: it peaks at `beta = 1.6` and falls once enough
+cells have been driven to a flat p = 0.
+
+Gains are **zero at every level**, for the reason in `glossary.md` under
+saturation placement.
+
+## External-torque pendulum datasets (`stochastic/`)
+
+```
+DATA_ROOT/external_torque/pendulum/lqr/a<alpha>_b<beta>/
+```
+
+Collected 2026-08-15. Identical to the signal-dependent family in every respect
+**except where `w` is applied**:
+
+```
+xdot = f(x, sat(u) + w),   w ~ Normal(0, alpha + beta*|u|)
+```
+
+`w` models an external torque on the shaft rather than noise inside the actuator,
+so `u_sat` does not bound it and the applied torque can exceed the motor's limit.
+It is still matched — same `B` — which is exactly why this family refutes the
+claim that matchedness biases an ROA toward the nominal.
+
+| alpha | beta | train p | eval p | interior | rescued | broken |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.050 | 0.16 | 0.3862 | 0.3869 | 11.2% | 2,200 | 1,909 |
+| 0.008 | 0.64 | 0.3957 | 0.3961 | 40.8% | 8,596 | 4,541 |
+| 0.100 | 0.64 | 0.4060 | 0.4067 | 64.6% | 14,430 | 5,346 |
+
+**This is the first family here whose ROA is not a subset of the deterministic
+one.** It gains cells — start states the noise-free controller fails from that
+noise rescues — and at the low end gains and losses nearly cancel (824 against
+772 at `beta = 0.08, alpha = 0.008`), so the mean is preserved to four decimals
+while thousands of cells change status. The field is a *reshaping* of the
+deterministic ROA rather than an erosion of it. For a terminal-state consumer
+that removes a property the other families give for free: `p_success > 0` no
+longer implies the deterministic label was 1.
+
+**Level naming carries both constants.** An earlier run of this family used
+`beta_<b>` with `alpha` implicit at 0.008 — accurate while `alpha` was pinned,
+and a trap the moment it was not, since a reader comparing `beta_0.640` across
+the two trees would silently be comparing different noise. `a<alpha>_b<beta>` is
+the surviving convention; the four `beta_*` levels at `alpha = 0.008`
+(`beta` 0.16/0.64/1.00/1.40, eval p 0.3865/0.3961/0.4448/0.5793) predate it.
+
+**Levels do not transfer between placements.** The same `beta` is far more potent
+outside the clip, because none of it is discarded, so the external sweep starts an
+order of magnitude lower. Roughly, `beta` ~ sigma at saturation as a fraction of
+`u_sat`. Levels past `beta ~ 1.0` put the disturbance above the motor's own
+authority: real, but the pendulum is then substantially driven by the noise
+rather than controlled, and the descriptions carry the sigma-to-`u_sat` ratio so
+a reader can tell which side of that crossover a level is on.
+
 
 ## Unmatched-force datasets: quad3d, quad2d, and the cartpole re-collection
 

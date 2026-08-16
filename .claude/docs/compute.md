@@ -69,6 +69,29 @@ NFS, so it is not a safe default. The directory must exist: `reset` raises
 
 Applies to cartpole only; the quadrotors load a static URDF from the package.
 
+## A job that runs the wrong code
+
+Distinct from the failure modes below: the job runs, exits clean, and produces
+plausible output — from a stale checkout. Seen 2026-08-15, where a sweep
+"reproduced" the previous sweep's numbers to four decimals because the cluster's
+copy of the repo was three commits behind.
+
+The cause was a `git pull` that had aborted:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        safe_control_gym/envs/gym_control/inverted_pendulum.py
+Aborting
+Updating 2e3dda0e..1ef51d2c
+```
+
+The error goes to **stderr** and the reassuring `Updating A..B` to **stdout**, so
+`git pull ... | tail -1` shows only the latter and reads as success. Two rules
+follow: never pipe a pull through `tail`, and before submitting, assert the code
+is actually there — check `git rev-parse HEAD` against `origin/<branch>` and
+import the symbol the job depends on. A remote checkout accumulates local edits
+from previous debugging and will block a fast-forward eventually.
+
 ## Three ways a scheduler reports success and produces nothing
 
 Measured during the 2026-08-14/15 collections. All three look identical to job
