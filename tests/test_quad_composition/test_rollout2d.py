@@ -22,6 +22,7 @@ MODEL = os.path.join(REPO_ROOT, 'examples/rl/models/safe_explorer_ppo/'
 
 def test_state_from_obs_reorders_env_obs_into_dataset_order():
     from quad_composition.rollout2d import state_from_obs
+
     # env order [x, x_dot, z, z_dot, theta, theta_dot]
     obs = np.array([0.1, 0.2, 1.3, 0.4, 0.5, 0.6])
     # dataset order [x, z, theta, x_dot, z_dot, theta_dot]
@@ -134,9 +135,9 @@ def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeyp
     yet (a later task trains and exercises it), so this stops short of an
     actual `.load()` against a real file.
     '''
+    from quad_composition.rollout2d import ENV_CONFIG, load_ctrl1
     from safe_control_gym.controllers.sac.sac import SAC
     from safe_control_gym.utils.registration import make
-    from quad_composition.rollout2d import ENV_CONFIG, load_ctrl1
 
     monkeypatch.setattr(SAC, 'load', lambda self, path: None)
 
@@ -156,7 +157,7 @@ def test_baseline_rollout_reproduces_the_shipped_labels():
     '''ctrl1=None must reproduce quadrotor2D_rl on its own initial states.'''
     if not os.path.exists(SHIPPED):
         pytest.skip('shipped dataset not mounted')
-    from quad_composition.rollout2d import (make_env_and_ctrl2, rollout_composite)
+    from quad_composition.rollout2d import make_env_and_ctrl2, rollout_composite
 
     rows = np.loadtxt(SHIPPED, delimiter=',', max_rows=40)
     inits, finals, labels = rows[:, :6], rows[:, 6:12], rows[:, 12].astype(int)

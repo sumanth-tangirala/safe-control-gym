@@ -163,11 +163,13 @@ def set_initial_state(env, init_state):
 
 @dataclass
 class RolloutResult:
+    '''flip_success is NOT meaningful when ctrl1 is None (the baseline path):
+    it is always False there, since there is no controller 1 whose success it
+    could report.
+    '''
     trajectory: list
-    handoff_index: int      # -1 when no handoff fired (incl. always, when ctrl1 is None)
-    flip_success: bool      # reached G1 during the rollout; NOT meaningful when
-                             # ctrl1 is None (baseline path -- always False there,
-                             # since there is no controller 1 to succeed or fail)
+    handoff_index: int      # -1 when no handoff fired (always, when ctrl1 is None)
+    flip_success: bool      # reached G1 during the rollout
     ctrl2_success: bool     # composite reached the goal ball under ctrl2
 
 
