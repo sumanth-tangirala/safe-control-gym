@@ -18,7 +18,6 @@ G_NOM = G1Region(tilt_c=0.175, w_c=1.0)     # 10 deg, 1 rad/s
 
 SHAPING_GAMMA = 0.99
 BONUS = 100.0
-OOB_PENALTY = -100.0
 
 # Normalisers for the potential: full tilt range and the theta_dot bound.
 TILT_SCALE = np.pi
@@ -36,8 +35,18 @@ def potential(state):
     return -(abs(theta) / TILT_SCALE + abs(theta_dot) / RATE_SCALE)
 
 
-def shaped_reward(state, next_state, in_g_nom, out_of_bounds):
-    '''Potential-based shaping plus terminal terms.
+def shaped_reward(state, next_state, in_g_nom):
+    '''Potential-based shaping plus the G_nom entry bonus. ATTITUDE ONLY.
+
+    No out-of-bounds penalty (Fix round 1, Critical): `info['out_of_bounds']`
+    is computed by `Quadrotor._get_done()` from a mask over
+    [x, x_dot, z, z_dot, theta_dot] -- i.e. it is True whenever POSITION or
+    TRANSLATIONAL VELOCITY leaves bounds, not just attitude. Scoring it would
+    make the reward depend on exactly the variables `G1` must not be defined
+    over, biasing the handoff region toward `RoA2` -- the contrivance this
+    experiment exists to avoid. Out-of-bounds still ENDS the episode (via
+    `FlipTrainingEnv.step()`'s own `done`), which already costs the policy
+    all future shaping and the bonus; it is simply not scored on top of that.
 
     Potential-based shaping leaves the optimal policy unchanged, so the bonus is
     what the policy actually optimises and the shaping only speeds it up.
@@ -45,8 +54,6 @@ def shaped_reward(state, next_state, in_g_nom, out_of_bounds):
     reward = SHAPING_GAMMA * potential(next_state) - potential(state)
     if in_g_nom:
         reward += BONUS
-    if out_of_bounds:
-        reward += OOB_PENALTY
     return reward
 
 
@@ -59,8 +66,13 @@ class FlipTrainingEnv(gym.Wrapper):
     '''Attitude-only objective over the 2D quadrotor.
 
     reset() places the drone at a uniform sample of the closed state space;
-    step() replaces the env reward with the attitude-only shaped reward and
-    terminates on G_nom entry or out-of-bounds.
+    step() replaces the env reward with the attitude-only shaped reward
+    (see shaped_reward: potential-based shaping on theta/theta_dot, plus a
+    bonus on G_nom entry -- nothing else) and terminates on G_nom entry or
+    out-of-bounds. Termination on out-of-bounds is UNSCORED: it still ends
+    the episode via `done`, forfeiting future shaping and the bonus, but no
+    separate penalty is added, since out-of-bounds depends on position and
+    translational velocity and penalizing it would bias G1 toward RoA2.
 
     Base class note (Ruling D-A/D-B): this codebase has no standalone `gym`
     package installed -- only `gymnasium`, imported as `gym` by every wrapper
@@ -90,12 +102,11 @@ class FlipTrainingEnv(gym.Wrapper):
         obs, _, done, info = self.env.step(action)
         next_state = np.asarray(state_from_obs(obs), dtype=float)
         in_g_nom = bool(self.g_nom.contains(abs(next_state[2]), abs(next_state[5])))
-        # Ground truth from the env itself, not inferred from `done`: `done`
-        # can also fire because the ORIGINAL stabilization goal (a
-        # position+attitude goal unrelated to G_nom) was reached, which is
-        # not an out-of-bounds condition. `info['out_of_bounds']` is always
-        # present because ENV_CONFIG sets done_on_out_of_bound=True.
-        out_of_bounds = bool(info.get('out_of_bounds', False))
-        reward = shaped_reward(self._state, next_state, in_g_nom, out_of_bounds)
+        # Reward depends only on attitude (shaped_reward) and never on why
+        # `done` fired -- `done` itself (out-of-bounds, or the original
+        # stabilization task's unrelated goal_reached) still ends the
+        # episode, but is not separately scored (Fix round 1, Critical: see
+        # shaped_reward's docstring).
+        reward = shaped_reward(self._state, next_state, in_g_nom)
         self._state = next_state
         return obs, reward, bool(done or in_g_nom), info

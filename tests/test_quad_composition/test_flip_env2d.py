@@ -33,7 +33,7 @@ def test_shaping_is_potential_based():
     '''r = gamma * Phi(s') - Phi(s), so cycles accumulate no reward.'''
     s = np.array([0.0, 1.0, 2.0, 0.0, 0.0, 4.0])
     s2 = np.array([0.0, 1.0, 1.0, 0.0, 0.0, 2.0])
-    r = shaped_reward(s, s2, in_g_nom=False, out_of_bounds=False)
+    r = shaped_reward(s, s2, in_g_nom=False)
     assert r == pytest.approx(SHAPING_GAMMA * potential(s2) - potential(s))
 
 
@@ -41,8 +41,28 @@ def test_entering_g_nom_pays_the_bonus():
     s = np.array([0.0, 1.0, 0.30, 0.0, 0.0, 1.5])
     s2 = np.array([0.0, 1.0, 0.05, 0.0, 0.0, 0.2])
     assert G_NOM.contains(abs(s2[2]), abs(s2[5]))
-    r = shaped_reward(s, s2, in_g_nom=True, out_of_bounds=False)
+    r = shaped_reward(s, s2, in_g_nom=True)
     assert r > BONUS
+
+
+def test_shaped_reward_is_invariant_to_position_and_translational_velocity():
+    '''Standing guard on spec D2 (attitude-only reward). Fix round 1
+    (Critical) found that routing `info['out_of_bounds']` into the reward
+    leaked exactly this dependency, because `Quadrotor._get_done()` computes
+    it from a mask over [x, x_dot, z, z_dot, theta_dot] -- position and
+    translational velocity, not just attitude. Two (state, next_state) pairs
+    that differ ONLY in x, z, x_dot, z_dot (indices 0, 1, 3, 4; theta and
+    theta_dot -- indices 2, 5 -- held fixed) must score identically.
+    '''
+    state_a = np.array([0.0, 1.0, 0.9, 0.0, 0.0, 3.0])
+    state_b = np.array([-0.8, 0.3, 0.9, 0.9, -0.7, 3.0])
+    next_a = np.array([0.5, 1.4, 0.2, -0.6, 0.4, 0.5])
+    next_b = np.array([-0.3, 0.15, 0.2, 0.3, -0.9, 0.5])
+
+    for in_g_nom in (False, True):
+        r_a = shaped_reward(state_a, next_a, in_g_nom=in_g_nom)
+        r_b = shaped_reward(state_b, next_b, in_g_nom=in_g_nom)
+        assert r_a == pytest.approx(r_b)
 
 
 def test_uniform_sampler_respects_the_closed_state_space():
@@ -116,7 +136,7 @@ def test_step_returns_shaped_reward_and_does_not_terminate_while_still_flying():
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
     next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
-    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False, out_of_bounds=False)
+    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
     assert reward == pytest.approx(expected)
     assert done is False
     assert info == {}
@@ -139,13 +159,18 @@ def test_step_terminates_on_g_nom_entry_even_when_the_env_itself_is_not_done():
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
     next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
-    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=True, out_of_bounds=False)
+    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=True)
     assert done is True, 'must terminate on G_nom entry even though the wrapped env is not done'
     assert reward == pytest.approx(expected)
     assert reward > flip_env2d.BONUS
 
 
-def test_step_out_of_bounds_applies_the_penalty_and_terminates():
+def test_step_terminates_on_out_of_bounds_but_does_not_score_a_penalty():
+    '''Fix round 1 (Critical): out-of-bounds still ENDS the episode (via
+    `done`), but must not be separately penalized -- `info['out_of_bounds']`
+    is computed from position/translational velocity, and scoring it would
+    make the reward depend on those, biasing G1 toward RoA2.
+    '''
     from quad_composition import flip_env2d
 
     class FakeEnv:
@@ -161,40 +186,88 @@ def test_step_out_of_bounds_applies_the_penalty_and_terminates():
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
     next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
-    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False, out_of_bounds=True)
-    assert done is True
-    assert reward == pytest.approx(expected)
-    assert reward < flip_env2d.OOB_PENALTY / 2, 'the OOB penalty must dominate the reward'
+    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
+    assert done is True, 'the episode must still end on out-of-bounds'
+    assert reward == pytest.approx(expected), 'reward must be pure shaped_reward -- no OOB penalty term exists'
+    assert not hasattr(flip_env2d, 'OOB_PENALTY'), 'OOB_PENALTY must be removed, not merely unused'
 
 
-def test_out_of_bounds_flag_comes_from_env_info_not_inferred_from_done():
-    '''`done` can be True because the ORIGINAL stabilization goal (a
-    position+attitude goal unrelated to G_nom) was reached, not because the
-    env actually went out of bounds. Inferring `out_of_bounds` as `done and
-    not in_g_nom` would wrongly apply OOB_PENALTY in that case; the env's own
-    `info['out_of_bounds']` (always present since ENV_CONFIG sets
-    done_on_out_of_bound=True) must be trusted instead.
+def test_step_reward_does_not_depend_on_info_or_why_done_fired():
+    '''The reward through the full step() path must be a pure function of
+    (state_before, next_state, in_g_nom) -- never of `info` or of why `done`
+    fired. Two envs that report done for unrelated reasons (an out-of-bounds
+    termination vs. the original stabilization task's unrelated goal_reached
+    termination), but land at the same attitude, must score identically.
     '''
     from quad_composition import flip_env2d
 
-    class FakeEnv:
+    class FakeEnvOOB:
         def step(self, action):
-            # theta=0.19 -- outside G_NOM (tilt_c=0.175), so in_g_nom=False,
-            # but done=True here only because the original stabilization
-            # goal was reached; the env itself reports out_of_bounds=False.
             obs = np.array([0.0, 0.0, 1.0, 0.0, 0.19, 0.0])
+            return obs, 0.0, True, {'out_of_bounds': True}
+
+    class FakeEnvGoalReached:
+        def step(self, action):
+            # Same theta/theta_dot (0.19, 0.0) as above, different position
+            # and a completely different reason for `done`.
+            obs = np.array([0.7, -0.3, 1.0, 0.4, 0.19, 0.0])
             return obs, 0.0, True, {'goal_reached': True, 'out_of_bounds': False}
 
-    wrapped = flip_env2d.FlipTrainingEnv(FakeEnv(), flip_env2d.G_NOM, seed=0)
     state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])
-    wrapped._state = state_before.copy()
 
-    obs, reward, done, info = wrapped.step(np.zeros(2))
+    wrapped_oob = flip_env2d.FlipTrainingEnv(FakeEnvOOB(), flip_env2d.G_NOM, seed=0)
+    wrapped_oob._state = state_before.copy()
+    _, reward_oob, done_oob, _ = wrapped_oob.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
-    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False, out_of_bounds=False)
-    assert done is True
-    assert reward == pytest.approx(expected), 'must not apply OOB_PENALTY when info["out_of_bounds"] is False'
+    wrapped_goal = flip_env2d.FlipTrainingEnv(FakeEnvGoalReached(), flip_env2d.G_NOM, seed=0)
+    wrapped_goal._state = state_before.copy()
+    _, reward_goal, done_goal, _ = wrapped_goal.step(np.zeros(2))
+
+    assert done_oob is True and done_goal is True
+    assert reward_oob == pytest.approx(reward_goal)
+
+
+def test_reward_through_step_is_invariant_to_position_and_translational_velocity():
+    '''Standing guard on the experiment's central claim (spec D2), exercised
+    through the full step() path rather than just shaped_reward directly.
+    Fix round 1 (Critical): routing info['out_of_bounds'] into the reward
+    leaked a dependency on x, x_dot, z, z_dot (Quadrotor._get_done() computes
+    it from a mask over exactly those plus theta_dot). Many random pairs of
+    states differing ONLY in x, z, x_dot, z_dot -- with varied `done`/`info`
+    causes on top -- must score identically as long as theta/theta_dot match.
+    '''
+    from quad_composition import flip_env2d
+
+    rng = np.random.default_rng(1)
+    state_before = np.array([0.3, 1.1, 0.9, -0.2, 0.1, 3.0])
+    theta, theta_dot = 0.4, 2.0  # shared attitude; outside G_NOM
+
+    for trial in range(20):
+        x1, z1 = rng.uniform(-1.0, 1.0), rng.uniform(0.1, 1.5)
+        xd1, zd1 = rng.uniform(-1.0, 1.0), rng.uniform(-1.0, 1.0)
+        x2, z2 = rng.uniform(-1.0, 1.0), rng.uniform(0.1, 1.5)
+        xd2, zd2 = rng.uniform(-1.0, 1.0), rng.uniform(-1.0, 1.0)
+        done = bool(trial % 2)  # alternate done/not-done and info contents
+
+        class FakeEnvA:
+            def step(self, action):
+                obs = np.array([x1, xd1, z1, zd1, theta, theta_dot])
+                return obs, 0.0, done, {'out_of_bounds': done}
+
+        class FakeEnvB:
+            def step(self, action):
+                obs = np.array([x2, xd2, z2, zd2, theta, theta_dot])
+                return obs, 0.0, done, {'goal_reached': done, 'out_of_bounds': False}
+
+        wrapped_a = flip_env2d.FlipTrainingEnv(FakeEnvA(), flip_env2d.G_NOM, seed=0)
+        wrapped_a._state = state_before.copy()
+        _, reward_a, _, _ = wrapped_a.step(np.zeros(2))
+
+        wrapped_b = flip_env2d.FlipTrainingEnv(FakeEnvB(), flip_env2d.G_NOM, seed=0)
+        wrapped_b._state = state_before.copy()
+        _, reward_b, _, _ = wrapped_b.step(np.zeros(2))
+
+        assert reward_a == pytest.approx(reward_b)
 
 
 @pytest.mark.slow
