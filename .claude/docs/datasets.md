@@ -368,7 +368,7 @@ saturation placement.
 ## External-torque pendulum datasets (`stochastic/`)
 
 ```
-DATA_ROOT/external_torque/pendulum/lqr/a<alpha>_b<beta>/
+DATA_ROOT/stochastic/pendulum/gaussian_signal/lqr/a<alpha>_b<beta>/
 ```
 
 Collected 2026-08-15. Identical to the signal-dependent family in every respect
@@ -412,12 +412,27 @@ deterministic ROA rather than an erosion of it. For a terminal-state consumer
 that removes a property the other families give for free: `p_success > 0` no
 longer implies the deterministic label was 1.
 
-**Level naming carries both constants.** An earlier run of this family used
-`beta_<b>` with `alpha` implicit at 0.008 — accurate while `alpha` was pinned,
-and a trap the moment it was not, since a reader comparing `beta_0.640` across
-the two trees would silently be comparing different noise. `a<alpha>_b<beta>` is
-the surviving convention; the four `beta_*` levels at `alpha = 0.008`
-(`beta` 0.16/0.64/1.00/1.40, eval p 0.3865/0.3961/0.4448/0.5793) predate it.
+**Only three levels are published**, the pairs above [user, 2026-08-15]. The
+family is named `gaussian_signal/` on disk — the noise law rather than the
+placement, which is recorded per level in `noise_model.placement`. Not published,
+still on cluster scratch: the four `beta_*` levels at `alpha = 0.008`
+(`beta` 0.16/0.64/1.00/1.40, eval p 0.3865/0.3961/0.4448/0.5793), the six
+pre-saturation `signal_dependent` levels, and the alpha x beta sweep.
+
+**Level naming carries both constants.** An earlier run used `beta_<b>` with
+`alpha` implicit at 0.008 — accurate while `alpha` was pinned, and a trap the
+moment it was not, since a reader comparing `beta_0.640` across two trees would
+silently be comparing different noise. `a<alpha>_b<beta>` is the surviving
+convention, applied to both families.
+
+**The published descriptions are enriched beyond what the collector writes.**
+Each level carries `noise_model` (style, equation, what alpha and beta each mean,
+placement and why it is load-bearing, plus the *realised* sigma and saturation
+statistics measured over 32,000 real control steps), `plant` (the ODE and its
+constants, the 0.866 authority ratio, the 1.4715 J swing-up barrier), and
+`statistics` including the rescued/broken comparison against `tau_0.00`. The
+comparison cannot be written at collection time because the cluster cannot see
+the reference set, so it is a publication-step addition.
 
 **Levels do not transfer between placements.** The same `beta` is far more potent
 outside the clip, because none of it is discarded, so the external sweep starts an
