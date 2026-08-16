@@ -4,6 +4,29 @@ All three datasets (baseline, flip-only, composite) go through
 `rollout_composite` so the baseline is reproduced by the same code path that
 produces the composition.  The env configuration below is copied from
 generate_quadrotor_2d_trajectories_rl.py and must not drift from it.
+
+RULING D-I (see task-2-report.md, "Fix round 2"): the shipped
+`quadrotor2D_rl` dataset is NOT bit-reproducible on this machine, per
+trajectory -- confirmed by running the untouched, unmodified
+generate_quadrotor_2d_trajectories_rl.run_trajectory against its own shipped
+eval_states.txt (label agreement 19/20, final-state agreement 12/20 at
+atol=1e-4 on a mixed-class window; one row's discrete outcome flips). This
+is chaotic divergence from whatever PyBullet/library/hardware state
+generated the dataset, amplified by this system's known sensitivity near
+recovery/failure boundaries -- not a defect in this module or in the
+original script. What IS exact is that this module's rollout core matches
+the reference generation script when both run in the same process on the
+same machine (verified at atol=1e-9; see
+test_rollout_core_matches_the_reference_implementation).
+
+CONSEQUENCE FOR LATER TASKS: any baseline-vs-composition comparison built on
+top of this module must use a baseline REGENERATED LOCALLY (on the same
+machine, in the same process/session) rather than the archived
+`quadrotor2D_rl` dataset directly, or the comparison will be confounded by
+this same environmental drift rather than by the actual controller
+composition being studied. Do not rediscover this by re-running the
+equivalence test against the shipped file and getting confused when it
+disagrees with itself.
 '''
 
 import math

@@ -1,4 +1,10 @@
-'''The rollout core must reproduce the shipped quadrotor2D_rl dataset.
+'''The rollout core must match the reference generation implementation, and
+be statistically consistent with the shipped quadrotor2D_rl dataset.
+
+Exact per-trajectory reproduction of the shipped dataset is NOT achievable
+on this machine and is not what these tests assert -- see RULING D-I in
+task-2-report.md ("Fix round 2") for the full investigation and the two
+tests below for the actual equivalence claims this task supports.
 
 Spec: docs/superpowers/specs/2026-08-16-quad-composition-g1-design.md (D3, D4, D5)
 '''
@@ -187,59 +193,146 @@ def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeyp
             env.close()
 
 
+# The only window verified to contain both label classes in one contiguous
+# span (Fix round 1). Used by both tests below.
+MIXED_WINDOW_SKIPROWS = 4102
+MIXED_WINDOW_ROWS = 20
+
+
 @pytest.mark.slow
-def test_baseline_rollout_reproduces_the_shipped_labels():
-    '''ctrl1=None must reproduce quadrotor2D_rl on its own initial states.
+def test_rollout_core_matches_the_reference_implementation():
+    '''RULING D-I(a): reference equivalence -- the real gate.
 
-    Covers both label classes. Rows 0..39 are early-grid failures (fast,
-    out-of-bounds terminations) -- but every one of them is class 0, so on
-    their own they only exercise the OOB path and prove nothing about
-    `goal_reached`, the success path that produces ctrl2_success, this
-    experiment's primary label. Rows 4102..4121 are a contiguous window
-    that is known to contain both classes (labels
-    [0 0 0 0 0 1 0 0 1 1 1 1 0 0 0 0 0 0 0 0]), so they exercise the success
-    path too. The assertion below on `labels` guards against the sample
-    silently degenerating back to one class if the shipped file changes.
+    Exact bit-level reproduction of the shipped quadrotor2D_rl dataset is not
+    achievable on this machine (Fix round 2, task-2-report.md): even the
+    UNTOUCHED, unmodified generate_quadrotor_2d_trajectories_rl.run_trajectory
+    does not reproduce its own shipped eval_states.txt on this mixed-class
+    window (measured directly: label agreement 19/20, final-state agreement
+    12/20 at atol=1e-4; one row's discrete outcome flips). That is a chaotic
+    divergence from whatever PyBullet/library/hardware state generated the
+    dataset -- not something any implementation run today can fix.
 
-    KNOWN FAILURE on the mixed window, root-caused and not papered over here
-    -- see the "Fix round 1" section of task-2-report.md for the full
-    investigation. Per-step comparison against the shipped
-    trajectories/sequence_*.txt files shows the rollout core tracks the
-    shipped trajectory to ~1e-6 at every step (proven bit-identical to the
-    untouched generate_quadrotor_2d_trajectories_rl.py when run fresh); that
-    tiny per-step float noise compounds over a long, high-rate rollout and
-    can shift the exact termination step by one (-> a final-state mismatch
-    past atol=1e-4) or, for at least one borderline near-goal trajectory,
-    flip the discrete success/failure outcome entirely. This is a
-    reproducibility property of the chaotic closed-loop system, not a bug in
-    this file -- do not loosen atol or special-case rows to force a pass.
+    What this task can and must guarantee is that quad_composition.rollout2d
+    exactly matches the reference generation script when both run in the
+    same process, on the same machine, against the same checkpoint. That is
+    the equivalence this test asserts, at atol=1e-9 (not 1e-4) on the final
+    state, plus label equality: if this ever fails, the rollout core has
+    drifted from the reference implementation, which is a real bug.
     '''
     if not os.path.exists(SHIPPED):
         pytest.skip('shipped dataset not mounted')
+    import shutil
+    from functools import partial
+
+    import generate_quadrotor_2d_trajectories_rl as gen_script
+    from quad_composition.rollout2d import make_env_and_ctrl2, rollout_composite
+    from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+    from safe_control_gym.utils.registration import make
+
+    rows = np.loadtxt(SHIPPED, delimiter=',', skiprows=MIXED_WINDOW_SKIPROWS,
+                       max_rows=MIXED_WINDOW_ROWS)
+    inits, labels = rows[:, :6], rows[:, 12].astype(int)
+    assert (labels == 1).any(), 'window must include at least one success (label 1)'
+    assert (labels == 0).any(), 'window must include at least one failure (label 0)'
+
+    # Independently reconstructed from the ORIGINAL script's own definitions
+    # (not quad_composition.rollout2d's ENV_CONFIG/ALGO_CONFIG), so this test
+    # also catches config drift between the two, not just loop-logic drift.
+    ref_env_kwargs = {
+        'quad_type': QuadType.TWO_D, 'task': 'stabilization',
+        'ctrl_freq': 100, 'pyb_freq': 5000, 'episode_len_sec': 1000,
+        'done_on_out_of_bound': True, 'cost': 'quadratic',
+        'normalized_rl_action_space': True, 'gui': False, 'randomized_init': False,
+        'constraints': gen_script.SAFE_EXPLORER_CONSTRAINTS, 'done_on_violation': False,
+        'task_info': {'stabilization_goal': [0, 1], 'stabilization_goal_tolerance': 0.2},
+    }
+    ref_termination = {0: (-1.0, 1.0), 1: (-1.0, 1.0), 2: (0.1, 1.5),
+                       3: (-1.0, 1.0), 4: (-np.inf, np.inf), 5: (-8.0, 8.0)}
+
+    # tempfile.TemporaryDirectory's strict cleanup raises OSError on this
+    # NFS mount whenever a controller's logger still holds an open file
+    # handle (Fix round 1); use plain mkdtemp + best-effort rmtree instead.
+    out_ours = tempfile.mkdtemp(prefix='rollout2d_ref_ours_')
+    out_ref = tempfile.mkdtemp(prefix='rollout2d_ref_orig_')
+    env = ctrl2 = env_ref = ctrl_ref = None
+    try:
+        env, ctrl2 = make_env_and_ctrl2(MODEL, out_ours)
+
+        env_func = partial(make, 'quadrotor', **ref_env_kwargs)
+        ctrl_ref = make('safe_explorer_ppo', env_func,
+                        **gen_script.ALGO_CONFIGS['safe_explorer_ppo'], output_dir=out_ref)
+        ctrl_ref.load(MODEL)
+        ctrl_ref.obs_normalizer.set_read_only()
+        env_ref = env_func()
+        for idx, (lo, hi) in ref_termination.items():
+            env_ref.state_space.low[idx] = lo
+            env_ref.state_space.high[idx] = hi
+
+        for init in inits:
+            res = rollout_composite(env, None, ctrl2, None, init)
+            traj, success, _, _ = gen_script.run_trajectory(
+                env_ref, ctrl_ref, init.tolist(), 'safe_explorer_ppo', max_steps=1200)
+
+            assert res.ctrl2_success == bool(success), f'label mismatch from {init}'
+            assert np.allclose(res.trajectory[-1], traj[-1], atol=1e-9), \
+                f'final state mismatch from {init}'
+    finally:
+        for obj in (env, ctrl2, env_ref, ctrl_ref):
+            if obj is not None:
+                obj.close()
+        shutil.rmtree(out_ours, ignore_errors=True)
+        shutil.rmtree(out_ref, ignore_errors=True)
+
+
+@pytest.mark.slow
+def test_baseline_rollout_is_statistically_consistent_with_the_shipped_labels():
+    '''RULING D-I(b): statistical consistency, not exact reproduction.
+
+    Exact per-row reproduction of the shipped quadrotor2D_rl dataset is
+    impossible on this machine -- even the UNTOUCHED
+    generate_quadrotor_2d_trajectories_rl.run_trajectory only reproduces its
+    own shipped labels on 19/20 rows and its own shipped final states on
+    12/20 rows (atol=1e-4) on this exact mixed-class window (measured
+    directly, Fix round 2, task-2-report.md). That is chaotic divergence
+    from whatever environment generated the dataset, not a rollout-core
+    defect: test_rollout_core_matches_the_reference_implementation pins the
+    core to the reference implementation exactly (atol=1e-9).
+
+    So this test does not assert per-row equality -- that would be asserting
+    something false. It asserts a >=0.85 label-agreement rate against the
+    shipped file (comfortably below the reference script's own 19/20 = 0.95
+    self-consistency, so passing does not depend on chaotic luck matching
+    exactly), plus both-classes presence. This still catches gross
+    regressions (wrong checkpoint, wrong action-space scale, wrong goal
+    tolerance) without asserting an untrue exact match.
+    '''
+    if not os.path.exists(SHIPPED):
+        pytest.skip('shipped dataset not mounted')
+    import shutil
+
     from quad_composition.rollout2d import make_env_and_ctrl2, rollout_composite
 
-    early_rows = np.loadtxt(SHIPPED, delimiter=',', max_rows=40)
-    mixed_rows = np.loadtxt(SHIPPED, delimiter=',', skiprows=4102, max_rows=20)
-    rows = np.concatenate([early_rows, mixed_rows], axis=0)
-    inits, finals, labels = rows[:, :6], rows[:, 6:12], rows[:, 12].astype(int)
+    rows = np.loadtxt(SHIPPED, delimiter=',', skiprows=MIXED_WINDOW_SKIPROWS,
+                       max_rows=MIXED_WINDOW_ROWS)
+    inits, labels = rows[:, :6], rows[:, 12].astype(int)
+    assert (labels == 1).any(), 'window must include at least one success (label 1)'
+    assert (labels == 0).any(), 'window must include at least one failure (label 0)'
 
-    assert (labels == 1).any(), 'sample must include at least one success (label 1)'
-    assert (labels == 0).any(), 'sample must include at least one failure (label 0)'
-
-    with tempfile.TemporaryDirectory() as tmp:
-        env, ctrl2 = make_env_and_ctrl2(MODEL, tmp)
-        try:
-            for init, final, label in zip(inits, finals, labels):
-                res = rollout_composite(env, None, ctrl2, None, init)
-                assert res.ctrl2_success == bool(label), f'label mismatch from {init}'
-                assert np.allclose(res.trajectory[-1], final, atol=1e-4), \
-                    f'final state mismatch from {init}'
-                assert res.handoff_index == -1, 'no handoff without ctrl1'
-                assert res.flip_success is False, 'not meaningful on the baseline path'
-        finally:
-            # ctrl2's logger holds an open file handle in tmp (output_dir);
-            # close it before the TemporaryDirectory context tries to rmtree
-            # tmp, or NFS leaves a phantom .nfsXXXX file and cleanup fails
-            # with "Directory not empty" despite every assertion above passing.
+    out = tempfile.mkdtemp(prefix='rollout2d_stat_')
+    env = ctrl2 = None
+    try:
+        env, ctrl2 = make_env_and_ctrl2(MODEL, out)
+        n_match = 0
+        for init, label in zip(inits, labels):
+            res = rollout_composite(env, None, ctrl2, None, init)
+            n_match += int(res.ctrl2_success == bool(label))
+            assert res.handoff_index == -1, 'no handoff without ctrl1'
+            assert res.flip_success is False, 'not meaningful on the baseline path'
+        rate = n_match / len(labels)
+        assert rate >= 0.85, f'label agreement {rate:.2f} too low ({n_match}/{len(labels)})'
+    finally:
+        if env is not None:
             env.close()
+        if ctrl2 is not None:
             ctrl2.close()
+        shutil.rmtree(out, ignore_errors=True)
