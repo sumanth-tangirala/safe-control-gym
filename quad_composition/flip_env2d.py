@@ -90,7 +90,12 @@ class FlipTrainingEnv(gym.Wrapper):
         obs, _, done, info = self.env.step(action)
         next_state = np.asarray(state_from_obs(obs), dtype=float)
         in_g_nom = bool(self.g_nom.contains(abs(next_state[2]), abs(next_state[5])))
-        out_of_bounds = bool(done and not in_g_nom)
+        # Ground truth from the env itself, not inferred from `done`: `done`
+        # can also fire because the ORIGINAL stabilization goal (a
+        # position+attitude goal unrelated to G_nom) was reached, which is
+        # not an out-of-bounds condition. `info['out_of_bounds']` is always
+        # present because ENV_CONFIG sets done_on_out_of_bound=True.
+        out_of_bounds = bool(info.get('out_of_bounds', False))
         reward = shaped_reward(self._state, next_state, in_g_nom, out_of_bounds)
         self._state = next_state
         return obs, reward, bool(done or in_g_nom), info

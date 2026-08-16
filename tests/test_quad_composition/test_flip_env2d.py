@@ -167,6 +167,36 @@ def test_step_out_of_bounds_applies_the_penalty_and_terminates():
     assert reward < flip_env2d.OOB_PENALTY / 2, 'the OOB penalty must dominate the reward'
 
 
+def test_out_of_bounds_flag_comes_from_env_info_not_inferred_from_done():
+    '''`done` can be True because the ORIGINAL stabilization goal (a
+    position+attitude goal unrelated to G_nom) was reached, not because the
+    env actually went out of bounds. Inferring `out_of_bounds` as `done and
+    not in_g_nom` would wrongly apply OOB_PENALTY in that case; the env's own
+    `info['out_of_bounds']` (always present since ENV_CONFIG sets
+    done_on_out_of_bound=True) must be trusted instead.
+    '''
+    from quad_composition import flip_env2d
+
+    class FakeEnv:
+        def step(self, action):
+            # theta=0.19 -- outside G_NOM (tilt_c=0.175), so in_g_nom=False,
+            # but done=True here only because the original stabilization
+            # goal was reached; the env itself reports out_of_bounds=False.
+            obs = np.array([0.0, 0.0, 1.0, 0.0, 0.19, 0.0])
+            return obs, 0.0, True, {'goal_reached': True, 'out_of_bounds': False}
+
+    wrapped = flip_env2d.FlipTrainingEnv(FakeEnv(), flip_env2d.G_NOM, seed=0)
+    state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])
+    wrapped._state = state_before.copy()
+
+    obs, reward, done, info = wrapped.step(np.zeros(2))
+
+    next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
+    expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False, out_of_bounds=False)
+    assert done is True
+    assert reward == pytest.approx(expected), 'must not apply OOB_PENALTY when info["out_of_bounds"] is False'
+
+
 @pytest.mark.slow
 def test_flip_training_env_smoke_runs_a_real_episode():
     '''Integration smoke test against the real Quadrotor/PyBullet env, driven
