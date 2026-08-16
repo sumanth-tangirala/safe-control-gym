@@ -2,6 +2,7 @@
 
 Spec: docs/superpowers/specs/2026-08-16-quad-composition-g1-design.md (D3, D4, D5)
 '''
+import math
 import os
 import sys
 import tempfile
@@ -129,6 +130,40 @@ def test_ctrl1_none_baseline_has_no_handoff_and_flip_success_false(monkeypatch):
     assert res.ctrl2_success is True
 
 
+def test_seed_row_theta_is_normalized(monkeypatch):
+    '''The seed (row 0) trajectory entry must go through the same theta
+    normalization as every later row (state_from_obs), matching
+    generate_quadrotor_2d_trajectories_rl.py's run_trajectory (line ~494).
+    This is dormant on the shipped dataset (its init states are already
+    normalized) but a later task calibrating G1 will pass raw, unnormalized
+    theta and would otherwise silently write a bad row 0.
+    '''
+    from quad_composition import rollout2d
+
+    class FakeCtrl:
+        def obs_normalizer(self, obs):
+            return obs
+
+        def select_action(self, obs, info):
+            return np.zeros(2)
+
+    class FakeEnv:
+        def step(self, action):
+            obs = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+            return obs, 0.0, True, {'goal_reached': False}
+
+    monkeypatch.setattr(rollout2d, 'set_initial_state',
+                         lambda env, init_state: (np.zeros(6), {}))
+
+    theta_unnormalized = 4.0  # outside [-pi, pi]
+    init_state = [0.0, 1.0, theta_unnormalized, 0.0, 0.0, 0.0]
+    res = rollout2d.rollout_composite(FakeEnv(), None, FakeCtrl(), None,
+                                       init_state, max_steps=1)
+
+    assert res.trajectory[0][2] == pytest.approx(rollout2d.normalize_angle(theta_unnormalized))
+    assert abs(res.trajectory[0][2]) <= math.pi
+
+
 @pytest.mark.slow
 def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeypatch):
     '''Construction smoke test only: controller 1 has no trained checkpoint
@@ -154,13 +189,42 @@ def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeyp
 
 @pytest.mark.slow
 def test_baseline_rollout_reproduces_the_shipped_labels():
-    '''ctrl1=None must reproduce quadrotor2D_rl on its own initial states.'''
+    '''ctrl1=None must reproduce quadrotor2D_rl on its own initial states.
+
+    Covers both label classes. Rows 0..39 are early-grid failures (fast,
+    out-of-bounds terminations) -- but every one of them is class 0, so on
+    their own they only exercise the OOB path and prove nothing about
+    `goal_reached`, the success path that produces ctrl2_success, this
+    experiment's primary label. Rows 4102..4121 are a contiguous window
+    that is known to contain both classes (labels
+    [0 0 0 0 0 1 0 0 1 1 1 1 0 0 0 0 0 0 0 0]), so they exercise the success
+    path too. The assertion below on `labels` guards against the sample
+    silently degenerating back to one class if the shipped file changes.
+
+    KNOWN FAILURE on the mixed window, root-caused and not papered over here
+    -- see the "Fix round 1" section of task-2-report.md for the full
+    investigation. Per-step comparison against the shipped
+    trajectories/sequence_*.txt files shows the rollout core tracks the
+    shipped trajectory to ~1e-6 at every step (proven bit-identical to the
+    untouched generate_quadrotor_2d_trajectories_rl.py when run fresh); that
+    tiny per-step float noise compounds over a long, high-rate rollout and
+    can shift the exact termination step by one (-> a final-state mismatch
+    past atol=1e-4) or, for at least one borderline near-goal trajectory,
+    flip the discrete success/failure outcome entirely. This is a
+    reproducibility property of the chaotic closed-loop system, not a bug in
+    this file -- do not loosen atol or special-case rows to force a pass.
+    '''
     if not os.path.exists(SHIPPED):
         pytest.skip('shipped dataset not mounted')
     from quad_composition.rollout2d import make_env_and_ctrl2, rollout_composite
 
-    rows = np.loadtxt(SHIPPED, delimiter=',', max_rows=40)
+    early_rows = np.loadtxt(SHIPPED, delimiter=',', max_rows=40)
+    mixed_rows = np.loadtxt(SHIPPED, delimiter=',', skiprows=4102, max_rows=20)
+    rows = np.concatenate([early_rows, mixed_rows], axis=0)
     inits, finals, labels = rows[:, :6], rows[:, 6:12], rows[:, 12].astype(int)
+
+    assert (labels == 1).any(), 'sample must include at least one success (label 1)'
+    assert (labels == 0).any(), 'sample must include at least one failure (label 0)'
 
     with tempfile.TemporaryDirectory() as tmp:
         env, ctrl2 = make_env_and_ctrl2(MODEL, tmp)

@@ -118,6 +118,17 @@ def state_from_obs(obs):
             float(x_dot), float(z_dot), float(theta_dot)]
 
 
+def _normalized_dataset_row(state):
+    '''dataset order [x, z, theta, x_dot, z_dot, theta_dot] with theta
+    normalized to [-pi, pi], matching what state_from_obs produces for every
+    later row (and what generate_quadrotor_2d_trajectories_rl.py's
+    run_trajectory does for its own seed row, line ~494).
+    '''
+    x, z, theta, x_dot, z_dot, theta_dot = state
+    return [float(x), float(z), float(normalize_angle(theta)),
+            float(x_dot), float(z_dot), float(theta_dot)]
+
+
 def make_env_and_ctrl2(model_path, output_dir):
     '''Build the env and load controller 2 (safe_explorer_ppo) unmodified.'''
     env_func = partial(make, 'quadrotor', **ENV_CONFIG)
@@ -195,7 +206,7 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
     iteration.
     '''
     obs, info = set_initial_state(env, init_state)
-    trajectory = [list(map(float, init_state))]
+    trajectory = [_normalized_dataset_row(init_state)]
 
     if ctrl1 is None:
         handoff_index, latched = -1, True
