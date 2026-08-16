@@ -73,15 +73,27 @@ quad2D (RL):   81.4% velocity-only, 16.0% position-only
                ZERO successes above 90°, out of ~245,000 states
 ```
 
-### Actuator authority (identical on both systems — Crazyflie 2.x)
+### Actuator authority — the two baselines do NOT share it
 
-```
-total thrust      0.11265 – 0.59337 N     weight 0.26487 N   (TWR 0.425 – 2.240)
-roll/pitch lever  0.02807 m               α_max  482 rad/s²
-```
+The physical Crazyflie 2.x gives total thrust 0.11265 – 0.59337 N against a
+0.26487 N weight (TWR 0.425 – 2.240) and, on a 0.02807 m lever, α_max = 482 rad/s².
+But the two existing datasets were generated with **different** action-space
+configurations:
 
-Flip duration is therefore set by the **body-rate cap**, not by torque:
-a rate-limited 180° rotation takes 0.18 s at 24 rad/s (3D) and 0.41 s at 8 rad/s (2D).
+| dataset | config | TWR max | α_max |
+|---|---|---|---|
+| `quadrotor2D_rl` | `normalized_rl_action_space=True`, `norm_act_scale=0.1` | **1.100** | **53.1 rad/s²** |
+| `quadrotor3D_lqr` | `normalized_rl_action_space=False` (physical) | 2.240 | 482 rad/s² |
+
+`norm_act_scale=0.1` is the `Quadrotor.__init__` default and is never overridden
+in `generate_quadrotor_2d_trajectories_rl.py:588`. The denormalisation is
+`thrust = (1 + norm_act_scale·a)·hover_thrust`, so controller 2 commands only
+±10% around hover.
+
+**This explains the 2D tilt cliff.** Controller 2's zero successes above 90° are
+not a learned limitation: at TWR 1.10 it can barely hold altitude, and at
+α = 53 rad/s² a 180° rotation needs ≥0.54 s. It physically cannot right itself.
+It also partly explains 21.97% vs 8.02% between the two baselines.
 
 ### Flip feasibility budget
 
@@ -96,13 +108,18 @@ z̈*(θ) = (T_max/m)·cos θ − g   for θ < 90°
          (T_min/m)·cos θ − g   for θ ≥ 90°
 ```
 
-| | ω_max | ż band | max recoverable tilt (ż = +bound / 0 / −½bound) | ceiling on success |
-|---|---|---|---|---|
-| 2D | 8 rad/s | 2.0 m/s | 168° / 134° / 115° | 8.02% → ~64% |
-| 3D | 24 rad/s | 6.0 m/s | 180° / 180° / 180° | 21.97% → ~91% |
+Evaluated with `θ_target = 10°` (the tightest attitude-only `G1` the 2D grid can
+express) for 2D, and `30°` for 3D:
 
-2D cannot recover from full inversion (unavoidable loss 2.73 m/s exceeds the
-2.0 m/s band); 3D can, with ~6.6× margin. These ceilings ignore the horizontal
+| | actuator | ω_max | ż band | max recoverable tilt (ż = +bound / 0 / −½bound) | ceiling |
+|---|---|---|---|---|---|
+| **2D as specified (D6)** | restricted, TWR 1.10 | 8 rad/s | 2.0 m/s | **138° / 107° / 85°** | 8.02% → **54.0%** |
+| 2D if given physical | TWR 2.24 | 8 rad/s | 2.0 m/s | 180° / 150° / 133° | 8.02% → 76.6% |
+| 3D | physical, TWR 2.24 | 24 rad/s | 6.0 m/s | 180° / 180° / 180° | 21.97% → 91.2% |
+
+Under D6, 52.4% of failing states above 10° are budget-feasible. 2D cannot
+recover from full inversion at either authority level without starting with
+upward velocity; 3D can from anywhere. These ceilings ignore the horizontal
 velocity bound, the altitude box, and the rate required at handoff, so they are
 strict upper bounds.
 
@@ -197,8 +214,13 @@ control law.
 
 ```
 quad2D:  x ±1.0, z ∈ [0.1,1.5], |v| ≤ 1.0, |θ̇| ≤ 8,  goal radius 0.2, 100 Hz
+         normalized_rl_action_space=True, norm_act_scale=0.1  (TWR 1.10, α 53.1)
 quad3D:  x,y ±1.8, z ∈ [0.1,3.0], |v| ≤ 3.0, |ω| ≤ 24, goal radius 0.05, 100 Hz
+         normalized_rl_action_space=False                     (TWR 2.24, α 482)
 ```
+
+Actuator authority is part of "the limits" and is per-system, inherited from
+whichever configuration generated that system's baseline.
 
 ### D5 — Controller 2 is the existing checkpoint
 
@@ -207,13 +229,18 @@ generated `quadrotor2D_rl`. quad3D: LQR as configured in
 `generate_quadrotor_3d_trajectories.py`. No retraining, so `RoA2` is the already
 characterised set.
 
-### D6 — Controller 1 is a learned policy on the physical action space
+### D6 — Controller 1 is a learned policy on controller 2's action space
 
-- `normalized_rl_action_space=False`. At the RL default `norm_act_scale=0.1` the
-  usable range is ±10% around hover, giving α ≈ 53 rad/s² instead of 482 and a
-  0.49 s rotation instead of 0.18 s. In 2D, where the whole ż budget is 2.0 m/s,
-  that difference decides feasibility. This is the highest-risk silent failure in
-  the project.
+- **`normalized_rl_action_space=True`, `norm_act_scale=0.1` — identical to
+  controller 2.** Controller 1 gets TWR 1.10 and α_max 53.1 rad/s², exactly what
+  generated `quadrotor2D_rl`. Giving it the physical range would nearly double the
+  composed ROA (ceiling 76.6% vs 54.0%) but would make the gain attributable to
+  actuation rather than control, which is not a claim this work wants to defend.
+- Note the tradeoff direction: a weaker controller 1 delivers *looser* attitude at
+  handoff, hence a looser `G1`, hence a **higher** non-subsumption fraction. The
+  restriction strengthens the primary result while shrinking the secondary one.
+- Any future variant that changes actuator authority must regenerate controller 2's
+  baseline under the same authority, or the comparison is confounded.
 - Observation replaces the stored angle representation, whose discontinuity sits
   exactly on the region of interest: 2D feeds `(cos θ, sin θ)` (7-dim); 3D feeds
   the rotation matrix (18-dim) rather than the `qw ≥ 0` canonicalised quaternion.
@@ -277,9 +304,12 @@ Secondary:
 3. **Handoff states are not uniform in `G1`.** All non-subsumption figures above
    come from grid initial states. Real handoffs cluster, so the true fraction may
    differ in either direction; only the composition dataset settles it.
-4. **Controller 1 may not train.** The 2D budget is tight (`Δż` of 2.73 m/s
-   required vs. 2.0 m/s available for full inversion), so a large part of the
-   state space is genuinely unrecoverable and the reward will be sparse there.
+4. **Controller 1 may not train.** Under D6's restricted actuator, recovery is
+   budget-infeasible above ~107° at `ż = 0` and above ~85° at `ż = −0.5`, so
+   roughly half the failing state space is genuinely unrecoverable and the reward
+   is sparse there. Shaping must not be mistaken for progress in that region — the
+   validation below checks measured `Δż` against the analytic budget precisely so
+   an unreachable region is not misread as a training failure.
 
 ## Validation
 
