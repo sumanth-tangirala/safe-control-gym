@@ -10,7 +10,7 @@ import gymnasium as gym
 import numpy as np
 
 from quad_composition.g1 import G1Region
-from quad_composition.rollout2d import normalize_angle, set_initial_state, state_from_obs
+from quad_composition.rollout2d import normalize_angle, set_initial_state, state_from_env
 
 # Nominal training target.  This is NOT the G1 that triggers handoff -- that is
 # calibrated later from measured exits (spec D1 step 2) and may be looser.
@@ -29,7 +29,16 @@ STATE_HIGH = np.array([1.0, 1.5, np.pi, 1.0, 1.0, 8.0])
 
 
 def potential(state):
-    '''Phi(s), attitude only.  Higher is closer to upright and still.'''
+    '''Phi(s), attitude only.  Higher is closer to upright and still.
+
+    `state[2]` MUST be TRUE attitude on [-pi, pi] -- i.e. a dataset-order row
+    built by `rollout2d.state_from_env`, never by `state_from_obs` (Finding
+    C1). The env's own observed theta is gimbal-folded into [-pi/2, pi/2], so
+    scoring it would rate a fully inverted drone (true theta pi, folded 0) as
+    perfectly upright, and `FlipTrainingEnv.step` would pay the +100 G_NOM
+    BONUS and terminate there -- training controller 1 to STAY inverted,
+    which is the exact opposite of its objective.
+    '''
     theta = normalize_angle(float(state[2]))
     theta_dot = float(state[5])
     return -(abs(theta) / TILT_SCALE + abs(theta_dot) / RATE_SCALE)
@@ -74,6 +83,25 @@ class FlipTrainingEnv(gym.Wrapper):
     separate penalty is added, since out-of-bounds depends on position and
     translational velocity and penalizing it would bias G1 toward RoA2.
 
+    Reward and G_nom termination are computed on TRUE attitude
+    (`rollout2d.state_from_env`), not on the env's gimbal-folded observation
+    theta (Finding C1 -- see `potential`).
+
+    OPEN ITEM, deliberately NOT changed here: the OBSERVATION handed to the
+    policy is still the env's native folded one. Folding aliases true pitch t
+    with sign(t)*pi - t, so an upright drone and an inverted one can present
+    the identical observation while their dynamics are opposite (thrust up vs
+    thrust down). Controller 1 therefore trains on an aliased, partially
+    observed attitude. The fix dispatch that introduced `state_from_env`
+    ruled explicitly on which four decisions must use true attitude (G1
+    membership, the flip reward/potential, G_nom termination, G1 calibration)
+    and on leaving CONTROLLER 2's observation alone; it did not rule on
+    controller 1's observation, and unfolding it is a real design change (new
+    observation semantics for the training env, and a matching change to what
+    `rollout2d.rollout_composite` feeds ctrl1 at eval time). No controller-1
+    checkpoint has been trained yet, so nothing is invalidated by deferring
+    it -- but it must be ruled on before the 1M-step training run is launched.
+
     Base class note (Ruling D-A/D-B): this codebase has no standalone `gym`
     package installed -- only `gymnasium`, imported as `gym` by every wrapper
     in `safe_control_gym` (e.g. `RecordEpisodeStatistics`). Those wrappers
@@ -95,12 +123,16 @@ class FlipTrainingEnv(gym.Wrapper):
     def reset(self, **kwargs):
         init = sample_uniform_state(self.rng)
         obs, info = set_initial_state(self.env, init)
-        self._state = np.asarray(state_from_obs(obs), dtype=float)
+        self._state = np.asarray(state_from_env(self.env, obs), dtype=float)
         return obs, info
 
     def step(self, action):
         obs, _, done, info = self.env.step(action)
-        next_state = np.asarray(state_from_obs(obs), dtype=float)
+        # state_from_env, not state_from_obs: the reward and the G_NOM
+        # termination test must see TRUE attitude, not the env's gimbal-folded
+        # observation (Finding C1 -- see `potential`). `obs` itself is returned
+        # untouched, so the policy keeps its native observation.
+        next_state = np.asarray(state_from_env(self.env, obs), dtype=float)
         in_g_nom = bool(self.g_nom.contains(abs(next_state[2]), abs(next_state[5])))
         # Reward depends only on attitude (shaped_reward) and never on why
         # `done` fired -- `done` itself (out-of-bounds, or the original

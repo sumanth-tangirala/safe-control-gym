@@ -5,6 +5,7 @@ import os
 import sys
 
 import numpy as np
+import pybullet as p
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -66,28 +67,44 @@ class _FakeCtrl1:
         return np.zeros(2)
 
 
+def _quat(theta):
+    '''Body orientation for a pure pitch of `theta` -- what a real env caches
+    on `.quat`, and what `rollout2d.true_theta` reads (Finding C1).
+    '''
+    return p.getQuaternionFromEuler([0.0, float(theta), 0.0])
+
+
 class _ScriptedEnv:
     '''Replays a fixed list of (theta, theta_dot, done) per .step() call, in
     env order [x, x_dot, z, z_dot, theta, theta_dot]. `set_initial_state` is
     faked (below) to rewind this env's script index to 0 at the start of
     every rollout, mirroring what a real env.reset() would do.
+
+    The scripted theta is TRUE attitude: `.quat` is set from it and the
+    observation carries PyBullet's own folded pitch, as a real env does
+    (Finding C1). Calibration reads the exits off `.quat`, so a fake without
+    one would not exercise the path at all.
     '''
 
     def __init__(self, script):
         self.script = script
         self.i = 0
         self.n_steps = 0
+        self.quat = _quat(0.0)
 
     def step(self, action):
         theta, theta_dot, done = self.script[self.i]
         self.i += 1
         self.n_steps += 1
-        obs = np.array([0.0, 0.0, 1.0, 0.0, theta, theta_dot])
+        self.quat = _quat(theta)
+        folded = p.getEulerFromQuaternion(self.quat)[1]
+        obs = np.array([0.0, 0.0, 1.0, 0.0, folded, theta_dot])
         return obs, 0.0, done, {}
 
 
 def _fake_set_initial_state(env, init_state):
     env.i = 0
+    env.quat = _quat(0.0)
     return np.zeros(6), {}
 
 
@@ -146,6 +163,7 @@ def test_collect_exit_attitudes_runs_num_rollouts_independent_rollouts(monkeypat
     def fake_reset(env, init_state):
         reset_calls['n'] += 1
         env.i = 0
+        env.quat = _quat(0.0)
         return np.zeros(6), {}
 
     monkeypatch.setattr(cal, 'set_initial_state', fake_reset)
@@ -177,6 +195,31 @@ def test_collect_exit_attitudes_uses_magnitude_so_sign_does_not_matter(monkeypat
 
     assert tilts == pytest.approx([0.2])
     assert omegas == pytest.approx([1.0])
+
+
+def test_collect_exit_attitudes_records_true_attitude_not_the_folded_observation(monkeypatch):
+    '''Finding C1. An exit at true theta = pi - 0.05 OBSERVES theta = 0.05, so
+    calibrating on the observation would record a near-perfect exit for a drone
+    that is upside down -- and, across a whole calibration run, would fit
+    `tilt_c` to a distribution structurally capped at pi/2. `_ScriptedEnv` folds
+    via PyBullet, so this test sees the real fold.
+    '''
+    import calibrate_quad2d_g1 as cal
+
+    inverted = np.pi - 0.05
+    env = _ScriptedEnv([(inverted, 0.0, True)])
+    monkeypatch.setattr(cal, 'set_initial_state', _fake_set_initial_state)
+    monkeypatch.setattr(cal, 'sample_uniform_state', lambda rng: np.zeros(6))
+
+    # The fake really is presenting an upright-looking observation.
+    assert abs(env.step(None)[0][4]) == pytest.approx(0.05, abs=1e-6)
+    env.i = 0
+
+    tilts, omegas = cal.collect_exit_attitudes(
+        env, _FakeCtrl1(), np.random.default_rng(0), num_rollouts=1, settle_steps=5)
+
+    assert tilts == pytest.approx([inverted], abs=1e-6)
+    assert tilts[0] > np.pi / 2, 'a folded exit distribution cannot exceed pi/2'
 
 
 def test_collect_exit_attitudes_drops_a_rollout_that_takes_zero_steps(monkeypatch):

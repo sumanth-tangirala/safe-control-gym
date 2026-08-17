@@ -18,6 +18,7 @@ import os
 import sys
 
 import numpy as np
+import pybullet as p
 import pytest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -153,6 +154,13 @@ class _FakeCtrl:
         pass
 
 
+def _quat(theta):
+    '''Body orientation for a pure pitch of `theta` -- what a real env caches
+    on `.quat`, and what `rollout2d.true_theta` reads (Finding C1).
+    '''
+    return p.getQuaternionFromEuler([0.0, float(theta), 0.0])
+
+
 class _ScriptedEnv:
     '''Replays a fixed list of (theta, theta_dot, done) per .step() call, in
     env order [x, x_dot, z, z_dot, theta, theta_dot] with x=0, z=1 fixed.
@@ -162,16 +170,25 @@ class _ScriptedEnv:
     policy chose the action. `set_initial_state` is faked (below) to rewind
     this env's script index to 0 at the start of every rollout, mirroring
     what a real env.reset() would do.
+
+    The scripted theta is TRUE attitude: `.quat` is set from it and the
+    observation carries PyBullet's own folded pitch, exactly as a real env
+    does (Finding C1). Every theta in the scripts below is well inside
+    [-pi/2, pi/2], where the two coincide, so the fixtures read the same as
+    before -- what changed is that the fake now has an attitude at all.
     '''
 
     def __init__(self, script):
         self.script = list(script)
         self.i = 0
+        self.quat = _quat(0.0)
 
     def step(self, action):
         theta, theta_dot, done = self.script[self.i]
         self.i += 1
-        obs = np.array([0.0, 0.0, 1.0, 0.0, theta, theta_dot])
+        self.quat = _quat(theta)
+        folded = p.getEulerFromQuaternion(self.quat)[1]
+        obs = np.array([0.0, 0.0, 1.0, 0.0, folded, theta_dot])
         info = {'goal_reached': bool(done and theta == 0.0 and theta_dot == 0.0)}
         return obs, 0.0, done, info
 
@@ -192,8 +209,15 @@ class _FakeG1:
 
 
 def _fake_set_initial_state(env, init_state):
+    '''Rewinds the script and places the fake at `init_state`, including the
+    quaternion `rollout2d.true_theta` reads and the FOLDED observation theta a
+    real env would report.
+    '''
     env.i = 0
-    return np.zeros(6), {}
+    x, z, theta, x_dot, z_dot, theta_dot = init_state
+    env.quat = _quat(theta)
+    folded = p.getEulerFromQuaternion(env.quat)[1]
+    return np.array([x, x_dot, z, z_dot, folded, theta_dot], dtype=float), {}
 
 
 # Enters G1 (tilt_c=w_c=0.05) at step index 1, then finishes successfully at

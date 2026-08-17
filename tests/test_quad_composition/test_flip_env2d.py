@@ -2,10 +2,12 @@
 
 Spec: docs/superpowers/specs/2026-08-16-quad-composition-g1-design.md (D2)
 '''
+import math
 import os
 import sys
 
 import numpy as np
+import pybullet as p
 import pytest
 
 from quad_composition.flip_env2d import (BONUS, G_NOM, SHAPING_GAMMA, potential, sample_uniform_state,
@@ -14,6 +16,13 @@ from quad_composition.flip_env2d import (BONUS, G_NOM, SHAPING_GAMMA, potential,
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+
+
+def _quat(theta):
+    '''Body orientation for a pure pitch of `theta` -- what a real env caches
+    on `.quat`, and what `rollout2d.true_theta` reads (Finding C1).
+    '''
+    return p.getQuaternionFromEuler([0.0, float(theta), 0.0])
 
 
 def test_potential_depends_only_on_attitude():
@@ -80,12 +89,35 @@ def test_uniform_sampler_respects_the_closed_state_space():
 
 # --- FlipTrainingEnv (Ruling D-A/D-B: built here, not in Task 4) ---
 #
-# These use a fake env (no PyBullet) mimicking the OLD Gym API this codebase
-# actually implements: `step()` -> 4-tuple, `reset()` -> 2-tuple. See
+# These use a fake env (no PyBullet physics) mimicking the OLD Gym API this
+# codebase actually implements: `step()` -> 4-tuple, `reset()` -> 2-tuple. See
 # `safe_control_gym/controllers/sac/sac.py` (`obs, info = self.env.reset()`;
 # `next_obs, rew, done, info = self.env.step(action)`) and
 # `Quadrotor.step`/`Quadrotor.reset` in
 # `safe_control_gym/envs/gym_pybullet_drones/quadrotor.py`.
+
+class _AttitudeEnv:
+    '''Fake env that sits at one TRUE (theta, theta_dot) and reports it the way
+    a real env does (Finding C1): `.quat` carries the full orientation, while
+    the OBSERVATION carries PyBullet's gimbal-folded pitch.
+
+    Folding here is done by PyBullet itself, not faked, so these tests are not
+    begging the question -- an inverted `_AttitudeEnv` really does present the
+    same observation as an upright one.
+    '''
+
+    def __init__(self, theta, theta_dot, done=False, info=None,
+                 x=0.0, x_dot=0.0, z=1.0, z_dot=0.0):
+        self.quat = _quat(theta)
+        folded = p.getEulerFromQuaternion(self.quat)[1]
+        # env order [x, x_dot, z, z_dot, theta, theta_dot]
+        self._obs = np.array([x, x_dot, z, z_dot, folded, theta_dot], dtype=float)
+        self._done = done
+        self._info = {} if info is None else info
+
+    def step(self, action):
+        return self._obs.copy(), 0.0, self._done, dict(self._info)
+
 
 def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state(monkeypatch):
     from quad_composition import flip_env2d
@@ -106,7 +138,7 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
     monkeypatch.setattr(flip_env2d, 'set_initial_state', fake_set_initial_state)
 
     class FakeEnv:
-        pass
+        quat = _quat(0.2)
 
     env = FakeEnv()
     wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
@@ -116,26 +148,21 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
     np.testing.assert_array_equal(calls['init_state'], fixed_init)
     assert obs is fake_obs
     assert info is fake_info
-    np.testing.assert_allclose(wrapped._state, flip_env2d.state_from_obs(fake_obs))
+    np.testing.assert_allclose(wrapped._state, flip_env2d.state_from_env(env, fake_obs))
 
 
 def test_step_returns_shaped_reward_and_does_not_terminate_while_still_flying():
     from quad_composition import flip_env2d
 
-    class FakeEnv:
-        def step(self, action):
-            # env order [x, x_dot, z, z_dot, theta, theta_dot]; theta=1.0,
-            # theta_dot=3.0 -- well outside G_NOM (tilt_c=0.175, w_c=1.0).
-            obs = np.array([0.0, 0.0, 1.0, 0.0, 1.0, 3.0])
-            return obs, 0.0, False, {}
-
-    wrapped = flip_env2d.FlipTrainingEnv(FakeEnv(), flip_env2d.G_NOM, seed=0)
+    # theta=1.0, theta_dot=3.0 -- well outside G_NOM (tilt_c=0.175, w_c=1.0).
+    env = _AttitudeEnv(1.0, 3.0)
+    wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
     state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])  # dataset order
     wrapped._state = state_before.copy()
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
+    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
     assert reward == pytest.approx(expected)
     assert done is False
@@ -146,23 +173,44 @@ def test_step_returns_shaped_reward_and_does_not_terminate_while_still_flying():
 def test_step_terminates_on_g_nom_entry_even_when_the_env_itself_is_not_done():
     from quad_composition import flip_env2d
 
-    class FakeEnv:
-        def step(self, action):
-            # theta=0.05, theta_dot=0.1 -- inside G_NOM; env reports not done.
-            obs = np.array([0.0, 0.0, 1.0, 0.0, 0.05, 0.1])
-            return obs, 0.0, False, {}
-
-    wrapped = flip_env2d.FlipTrainingEnv(FakeEnv(), flip_env2d.G_NOM, seed=0)
+    # theta=0.05, theta_dot=0.1 -- inside G_NOM; env reports not done.
+    env = _AttitudeEnv(0.05, 0.1)
+    wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
     state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])
     wrapped._state = state_before.copy()
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
+    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=True)
     assert done is True, 'must terminate on G_nom entry even though the wrapped env is not done'
     assert reward == pytest.approx(expected)
     assert reward > flip_env2d.BONUS
+
+
+def test_step_does_not_pay_the_g_nom_bonus_to_an_inverted_drone():
+    '''Finding C1, the consequence that would have shaped controller 1's whole
+    policy: an inverted drone (true theta = pi - 0.05) OBSERVES theta = 0.05,
+    which is inside G_NOM (tilt_c = 0.175). On the folded quantity `step()`
+    would pay the +100 BONUS and terminate the episode there -- i.e. controller
+    1 would be trained to reach, and stay at, upside down.
+    '''
+    from quad_composition import flip_env2d
+
+    env = _AttitudeEnv(math.pi - 0.05, 0.0)
+
+    # The fake really is presenting an upright-looking observation.
+    obs_theta = env.step(np.zeros(2))[0][4]
+    assert abs(obs_theta) == pytest.approx(0.05, abs=1e-6)
+    assert G_NOM.contains(abs(obs_theta), 0.0), 'the folded observation is inside G_NOM'
+
+    wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
+    wrapped._state = np.array([0.0, 1.0, math.pi - 0.05, 0.0, 0.0, 0.0])
+
+    _, reward, done, _ = wrapped.step(np.zeros(2))
+
+    assert done is False, 'inversion must not count as reaching G_nom'
+    assert reward < BONUS, 'the G_nom bonus must not be paid for being upside down'
 
 
 def test_step_terminates_on_out_of_bounds_but_does_not_score_a_penalty():
@@ -173,19 +221,15 @@ def test_step_terminates_on_out_of_bounds_but_does_not_score_a_penalty():
     '''
     from quad_composition import flip_env2d
 
-    class FakeEnv:
-        def step(self, action):
-            # theta=2.5, theta_dot=6.0 -- outside G_NOM; env terminates (OOB).
-            obs = np.array([0.0, 0.0, 1.0, 0.0, 2.5, 6.0])
-            return obs, 0.0, True, {'out_of_bounds': True}
-
-    wrapped = flip_env2d.FlipTrainingEnv(FakeEnv(), flip_env2d.G_NOM, seed=0)
+    # theta=1.4, theta_dot=6.0 -- outside G_NOM; env terminates (OOB).
+    env = _AttitudeEnv(1.4, 6.0, done=True, info={'out_of_bounds': True})
+    wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
     state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])
     wrapped._state = state_before.copy()
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_obs(obs), dtype=float)
+    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
     assert done is True, 'the episode must still end on out-of-bounds'
     assert reward == pytest.approx(expected), 'reward must be pure shaped_reward -- no OOB penalty term exists'
@@ -201,25 +245,19 @@ def test_step_reward_does_not_depend_on_info_or_why_done_fired():
     '''
     from quad_composition import flip_env2d
 
-    class FakeEnvOOB:
-        def step(self, action):
-            obs = np.array([0.0, 0.0, 1.0, 0.0, 0.19, 0.0])
-            return obs, 0.0, True, {'out_of_bounds': True}
-
-    class FakeEnvGoalReached:
-        def step(self, action):
-            # Same theta/theta_dot (0.19, 0.0) as above, different position
-            # and a completely different reason for `done`.
-            obs = np.array([0.7, -0.3, 1.0, 0.4, 0.19, 0.0])
-            return obs, 0.0, True, {'goal_reached': True, 'out_of_bounds': False}
+    # Same theta/theta_dot (0.19, 0.0), different position and a completely
+    # different reason for `done`.
+    env_oob = _AttitudeEnv(0.19, 0.0, done=True, info={'out_of_bounds': True})
+    env_goal = _AttitudeEnv(0.19, 0.0, done=True, x=0.7, x_dot=-0.3, z_dot=0.4,
+                            info={'goal_reached': True, 'out_of_bounds': False})
 
     state_before = np.array([0.0, 1.0, 1.5, 0.0, 0.0, 4.0])
 
-    wrapped_oob = flip_env2d.FlipTrainingEnv(FakeEnvOOB(), flip_env2d.G_NOM, seed=0)
+    wrapped_oob = flip_env2d.FlipTrainingEnv(env_oob, flip_env2d.G_NOM, seed=0)
     wrapped_oob._state = state_before.copy()
     _, reward_oob, done_oob, _ = wrapped_oob.step(np.zeros(2))
 
-    wrapped_goal = flip_env2d.FlipTrainingEnv(FakeEnvGoalReached(), flip_env2d.G_NOM, seed=0)
+    wrapped_goal = flip_env2d.FlipTrainingEnv(env_goal, flip_env2d.G_NOM, seed=0)
     wrapped_goal._state = state_before.copy()
     _, reward_goal, done_goal, _ = wrapped_goal.step(np.zeros(2))
 
@@ -249,25 +287,50 @@ def test_reward_through_step_is_invariant_to_position_and_translational_velocity
         xd2, zd2 = rng.uniform(-1.0, 1.0), rng.uniform(-1.0, 1.0)
         done = bool(trial % 2)  # alternate done/not-done and info contents
 
-        class FakeEnvA:
-            def step(self, action):
-                obs = np.array([x1, xd1, z1, zd1, theta, theta_dot])
-                return obs, 0.0, done, {'out_of_bounds': done}
+        env_a = _AttitudeEnv(theta, theta_dot, done=done, x=x1, x_dot=xd1, z=z1, z_dot=zd1,
+                             info={'out_of_bounds': done})
+        env_b = _AttitudeEnv(theta, theta_dot, done=done, x=x2, x_dot=xd2, z=z2, z_dot=zd2,
+                             info={'goal_reached': done, 'out_of_bounds': False})
 
-        class FakeEnvB:
-            def step(self, action):
-                obs = np.array([x2, xd2, z2, zd2, theta, theta_dot])
-                return obs, 0.0, done, {'goal_reached': done, 'out_of_bounds': False}
-
-        wrapped_a = flip_env2d.FlipTrainingEnv(FakeEnvA(), flip_env2d.G_NOM, seed=0)
+        wrapped_a = flip_env2d.FlipTrainingEnv(env_a, flip_env2d.G_NOM, seed=0)
         wrapped_a._state = state_before.copy()
         _, reward_a, _, _ = wrapped_a.step(np.zeros(2))
 
-        wrapped_b = flip_env2d.FlipTrainingEnv(FakeEnvB(), flip_env2d.G_NOM, seed=0)
+        wrapped_b = flip_env2d.FlipTrainingEnv(env_b, flip_env2d.G_NOM, seed=0)
         wrapped_b._state = state_before.copy()
         _, reward_b, _, _ = wrapped_b.step(np.zeros(2))
 
         assert reward_a == pytest.approx(reward_b)
+
+
+@pytest.mark.slow
+def test_potential_scores_an_inverted_state_worse_than_an_upright_one_through_the_real_env():
+    '''Finding C1, through real PyBullet rather than a synthetic state vector.
+
+    `potential` is the function controller 1 is trained to climb and the one
+    G1 calibration scores exits by, so if it cannot tell upright from inverted,
+    nothing downstream can either. On the env's own folded observation the two
+    states below score IDENTICALLY -- that equality is asserted here too, as a
+    live record of what the bug was.
+    '''
+    from quad_composition.rollout2d import make_env, set_initial_state, state_from_env, state_from_obs
+
+    env = make_env(seed=0)
+    try:
+        obs_upright, _ = set_initial_state(env, [0.0, 1.0, 0.05, 0.0, 0.0, 0.0])
+        upright_true = potential(state_from_env(env, obs_upright))
+        upright_folded = potential(state_from_obs(obs_upright))
+
+        obs_inverted, _ = set_initial_state(env, [0.0, 1.0, math.pi - 0.05, 0.0, 0.0, 0.0])
+        inverted_true = potential(state_from_env(env, obs_inverted))
+        inverted_folded = potential(state_from_obs(obs_inverted))
+
+        assert inverted_true < upright_true, \
+            'an inverted drone must score strictly worse than an upright one'
+        assert inverted_folded == pytest.approx(upright_folded, abs=1e-9), \
+            'on the folded observation the two are indistinguishable -- the bug'
+    finally:
+        env.close()
 
 
 @pytest.mark.slow

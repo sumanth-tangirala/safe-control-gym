@@ -27,6 +27,44 @@ this same environmental drift rather than by the actual controller
 composition being studied. Do not rediscover this by re-running the
 equivalence test against the shipped file and getting confused when it
 disagrees with itself.
+
+FINDING C1 -- THE STORED `theta` COLUMN IS TRUE ATTITUDE, NOT THE ENV'S
+FOLDED OBSERVATION
+--------------------------------------------------------------------------
+PyBullet's `getEulerFromQuaternion` returns the euler branch with pitch in
+[-pi/2, pi/2], so `quadrotor.py`'s TWO_D observation (`rpy[1]`) is
+GIMBAL-FOLDED: a drone at true pitch 3.0 rad -- nearly inverted -- observes
+theta = 0.1416, i.e. upright. `true_theta`/`true_theta_from_quat` recover the
+unfolded value from the drone's rotation matrix, and EVERY supervisory
+decision on this branch is made on that: G1 membership (rollout_composite),
+the flip reward/potential and G_NOM termination (flip_env2d), and G1
+calibration (calibrate_quad2d_g1.py).
+
+DECISION: the stored trajectory `theta` column (and the final-state theta in
+eval_states.txt / roa_labels.txt, and the handoff state in
+handoff_states.txt) is TRUE attitude on [-pi, pi]. It is the physically
+meaningful quantity, the flip/composite/regenerated-baseline datasets are
+new, and the folded column is actively misleading for any downstream
+consumer -- a trajectory that rotates through inversion reads, in folded
+coordinates, as a bounce off +-pi/2, which is not a trajectory of any
+continuous system.
+
+CONSEQUENCE: the regenerated baseline's theta columns no longer match the
+archived quadrotor2D_rl file's, whose final-state theta is folded (measured:
+its column 8 spans exactly [-1.570796, 1.570796] = [-pi/2, pi/2], while its
+INIT theta column spans -3.141593..2.908407 -- init states were sampled, not
+observed, so they were already true). Only the theta columns differ, and
+only where |true theta| > pi/2; every other column and every label is
+unaffected. Initial states are read from the archived file and passed
+through unchanged, so pairing between the datasets is untouched.
+`test_rollout_core_matches_the_reference_implementation` therefore compares
+the reference script's folded theta against `fold_pitch(ours)` (defined in
+that test module) rather than against ours directly.
+
+CONTROLLER 2 IS NOT AFFECTED: it keeps receiving the env's native folded
+observation, exactly as it was trained and exactly as the shipped baseline
+was generated. Changing its input would redefine its region of attraction
+and invalidate every comparison against that baseline.
 '''
 
 import math
@@ -134,18 +172,99 @@ def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
+def true_theta_from_quat(quat):
+    '''TRUE pitch (rotation about the body y axis), in [-pi, pi], from a
+    body-orientation quaternion.
+
+    THE PROBLEM (Finding C1).  The env's observed `theta` is
+    `p.getEulerFromQuaternion(quat)[1]`, and PyBullet returns the euler branch
+    whose PITCH IS CLAMPED TO [-pi/2, pi/2], pushing the remainder of the
+    rotation into roll/yaw ~ +-pi.  A nearly-inverted drone therefore reads as
+    nearly upright.  Measured directly on this machine:
+
+        set pitch 2.00 -> getEulerFromQuaternion -> [3.1416, 1.1416, 3.1416]
+        set pitch 3.00 -> getEulerFromQuaternion -> [3.1416, 0.1416, 3.1416]
+        through the real env: init theta 3.0000 -> observed theta 0.1416
+
+    `normalize_angle` cannot undo this: the folded value is already inside
+    [-pi, pi], so normalization is a no-op and the fold is invisible.
+
+    THE FIX.  The rotation matrix carries the full rotation with no branch cut.
+    For a rotation about y alone,
+
+        R = [[ cos t, 0, sin t],
+             [     0, 1,     0],
+             [-sin t, 0, cos t]]
+
+    so `atan2(R[0, 2], R[0, 0]) == t` for every t in [-pi, pi], both signs, with
+    no dependence on which euler branch PyBullet happened to pick (verified
+    against a real-env sweep over |theta| up to pi -- see
+    tests/test_quad_composition/test_rollout2d.py's real-env attitude tests,
+    max error 0.0).  The 2D quadrotor stays in the x-z plane (measured
+    |R[1, 0]|, |R[1, 2]| ~ 1e-19 after stepping), so this is exact here rather
+    than an approximation of a general 3D attitude.
+
+    USE THIS FOR EVERY SUPERVISORY DECISION -- G1 membership, the flip
+    reward/potential, G_NOM termination, G1 calibration.  NEVER feed it to
+    controller 2: controller 2 was trained on, and generated the shipped
+    baseline dataset from, the env's own FOLDED observation, and substituting
+    a different attitude convention would redefine its region of attraction
+    and destroy comparability with that baseline.
+    '''
+    rot = np.asarray(p.getMatrixFromQuaternion(quat), dtype=float).reshape(3, 3)
+    return float(math.atan2(rot[0, 2], rot[0, 0]))
+
+
+def true_theta(env):
+    '''TRUE pitch of the drone in `env`, in [-pi, pi] (see
+    `true_theta_from_quat` for why the observation's own theta cannot be used).
+
+    Reads `env.quat`, the orientation `BaseAviary._update_and_store_kinematic_information`
+    caches on every reset and every step -- the exact same quaternion the
+    observation's folded theta was derived from, so the two can never drift
+    apart within a tick, and no extra PyBullet round trip is needed.
+    '''
+    return true_theta_from_quat(env.quat)
+
+
 def state_from_obs(obs):
-    '''env order [x, x_dot, z, z_dot, theta, theta_dot] -> dataset order.'''
+    '''env order [x, x_dot, z, z_dot, theta, theta_dot] -> dataset order.
+
+    theta here is the env's own GIMBAL-FOLDED pitch (Finding C1).  This is the
+    right function for anything that must reproduce the env's native view --
+    and the wrong one for any attitude decision.  Use `state_from_env` for
+    those.
+    '''
     x, x_dot, z, z_dot, theta, theta_dot = obs[:6]
     return [float(x), float(z), float(normalize_angle(theta)),
             float(x_dot), float(z_dot), float(theta_dot)]
 
 
+def state_from_env(env, obs):
+    '''Dataset-order state with TRUE attitude (Finding C1).
+
+    Identical to `state_from_obs` except that theta is recovered from the
+    drone's rotation matrix instead of read out of the folded observation.
+    This is the state every supervisory decision on this branch is made on,
+    and the state written to the stored trajectories.
+    '''
+    state = state_from_obs(obs)
+    state[2] = true_theta(env)
+    return state
+
+
 def _normalized_dataset_row(state):
     '''dataset order [x, z, theta, x_dot, z_dot, theta_dot] with theta
-    normalized to [-pi, pi], matching what state_from_obs produces for every
+    normalized to [-pi, pi], matching what state_from_env produces for every
     later row (and what generate_quadrotor_2d_trajectories_rl.py's
     run_trajectory does for its own seed row, line ~494).
+
+    The seed row is built from the REQUESTED init state, not read back off the
+    env, and needs no unfolding: an init theta is already TRUE attitude on
+    +-pi (the archived quadrotor2D_rl init column spans -3.141593..2.908407,
+    i.e. it was never passed through the env's folded observation). So row 0
+    and every later row are the same quantity -- see rollout_composite's
+    ATTITUDE CONVENTION note.
     '''
     x, z, theta, x_dot, z_dot, theta_dot = state
     return [float(x), float(z), float(normalize_angle(theta)),
@@ -240,6 +359,16 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
     and the resulting done must still be handled on that same tick, rather
     than being missed and the (now-finished) env stepped again next
     iteration.
+
+    ATTITUDE CONVENTION (Findings C1/C2). Every g1 test below -- step 0 and
+    step >= 1 alike -- is made on TRUE attitude read off the env's rotation
+    matrix via `state_from_env`/`true_theta`, never on the env's own
+    gimbal-folded observation theta. Before the fix, step 0 tested the raw
+    (true, +-pi) `init_state[2]` while every later step tested the FOLDED obs
+    theta, so the same physical state was classified two different ways
+    depending on when it was seen -- and a nearly-inverted drone (true theta
+    3.0 -> folded 0.1416) triggered a spurious handoff on step 1.
+    Controller 2 is unaffected: `_act` still hands it the untouched `obs`.
     '''
     obs, info = set_initial_state(env, init_state)
     trajectory = [_normalized_dataset_row(init_state)]
@@ -247,15 +376,19 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
     if ctrl1 is None:
         handoff_index, latched = -1, True
     else:
-        tilt, omega = abs(normalize_angle(init_state[2])), abs(init_state[5])
-        latched = bool(g1.contains(tilt, omega))
+        # Same quantity, same code path as the loop below (Finding C2).
+        # `set_initial_state` has just placed the drone at `init_state`, so
+        # this is `normalize_angle(init_state[2])` -- read back off the env
+        # rather than recomputed, so the two can never diverge.
+        state = state_from_env(env, obs)
+        latched = bool(g1.contains(abs(state[2]), abs(state[5])))
         handoff_index = 0 if latched else -1
 
     ctrl2_success = False
     for step in range(max_steps):
         action = _act(ctrl2 if latched else ctrl1, obs, info)
         obs, _, done, info = env.step(action)
-        state = state_from_obs(obs)
+        state = state_from_env(env, obs)
         trajectory.append(state)
 
         if not latched and bool(g1.contains(abs(state[2]), abs(state[5]))):

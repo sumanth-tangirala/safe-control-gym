@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import numpy as np
+import pybullet as p
 import pytest
 import yaml
 
@@ -25,6 +26,49 @@ SHIPPED = ('/common/users/shared/pracsys/genMoPlan/data_trajectories/'
            'deterministic/quadrotor2D_rl/eval_states.txt')
 MODEL = os.path.join(REPO_ROOT, 'examples/rl/models/safe_explorer_ppo/'
                                 'safe_explorer_ppo_model_quadrotor_2D_stab.pt')
+
+
+def quat_for(theta):
+    '''Body orientation for a pure pitch of `theta`, i.e. what a real env
+    caches on `.quat`.
+
+    Every fake env below carries one, because supervisory decisions read TRUE
+    attitude off the rotation matrix (`rollout2d.true_theta`) rather than out
+    of the gimbal-folded observation (Finding C1). A fake that only produced
+    an obs would let the folded/true distinction go untested -- which is
+    exactly how the bug survived: every attitude test used synthetic state
+    vectors, where folding never happens.
+    '''
+    return p.getQuaternionFromEuler([0.0, float(theta), 0.0])
+
+
+def fold_pitch(theta):
+    '''The env's own gimbal fold, applied to a TRUE pitch.
+
+    `p.getEulerFromQuaternion` returns the branch with pitch in [-pi/2, pi/2],
+    so a true pitch t outside that range is reported as sign(t)*pi - t. This
+    is the map that turns the rollout core's TRUE theta column back into what
+    the reference generation script stores, and it exists only so the
+    reference-equivalence test can compare the two conventions like for like.
+    '''
+    theta = math.atan2(math.sin(theta), math.cos(theta))
+    if abs(theta) <= math.pi / 2:
+        return theta
+    return math.copysign(math.pi, theta) - theta
+
+
+def fake_set_initial_state(env, init_state):
+    '''Stand-in for rollout2d.set_initial_state against a fake env: places the
+    drone at `init_state` (dataset order), including the quaternion.
+
+    The returned obs carries the FOLDED pitch, computed by PyBullet itself,
+    exactly as a real env's would -- so the step-0 latch decision is genuinely
+    exercised against the fold rather than handed a pre-unfolded value.
+    '''
+    x, z, theta, x_dot, z_dot, theta_dot = init_state
+    env.quat = quat_for(theta)
+    folded = p.getEulerFromQuaternion(env.quat)[1]
+    return np.array([x, x_dot, z, z_dot, folded, theta_dot], dtype=float), {}
 
 
 def test_state_from_obs_reorders_env_obs_into_dataset_order():
@@ -79,15 +123,17 @@ def test_a_step_that_enters_g1_and_finishes_does_not_step_a_dead_env(monkeypatch
     calls = {'steps': 0}
 
     class FakeEnv:
+        quat = quat_for(0.0)
+
         def step(self, action):
             calls['steps'] += 1
             # Lands inside G1 (theta=0, theta_dot=0) AND finishes, same tick.
+            self.quat = quat_for(0.0)
             obs = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             info = {'goal_reached': True}
             return obs, 0.0, True, info
 
-    monkeypatch.setattr(rollout2d, 'set_initial_state',
-                         lambda env, init_state: (np.zeros(6), {}))
+    monkeypatch.setattr(rollout2d, 'set_initial_state', fake_set_initial_state)
 
     # Outside G1 initially (theta=0.5, theta_dot=0.5).
     init_state = [0.0, 1.0, 0.5, 0.0, 0.0, 0.5]
@@ -115,6 +161,8 @@ def test_ctrl1_none_baseline_has_no_handoff_and_flip_success_false(monkeypatch):
             return np.zeros(2)
 
     class FakeEnv:
+        quat = quat_for(0.0)
+
         def __init__(self):
             self.n = 0
 
@@ -125,8 +173,7 @@ def test_ctrl1_none_baseline_has_no_handoff_and_flip_success_false(monkeypatch):
             info = {'goal_reached': done}
             return obs, 0.0, done, info
 
-    monkeypatch.setattr(rollout2d, 'set_initial_state',
-                         lambda env, init_state: (np.zeros(6), {}))
+    monkeypatch.setattr(rollout2d, 'set_initial_state', fake_set_initial_state)
 
     res = rollout2d.rollout_composite(FakeEnv(), None, FakeCtrl(), None,
                                        [0, 1, 0, 0, 0, 0], max_steps=5)
@@ -154,12 +201,13 @@ def test_seed_row_theta_is_normalized(monkeypatch):
             return np.zeros(2)
 
     class FakeEnv:
+        quat = quat_for(0.0)
+
         def step(self, action):
             obs = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             return obs, 0.0, True, {'goal_reached': False}
 
-    monkeypatch.setattr(rollout2d, 'set_initial_state',
-                         lambda env, init_state: (np.zeros(6), {}))
+    monkeypatch.setattr(rollout2d, 'set_initial_state', fake_set_initial_state)
 
     theta_unnormalized = 4.0  # outside [-pi, pi]
     init_state = [0.0, 1.0, theta_unnormalized, 0.0, 0.0, 0.0]
@@ -168,6 +216,151 @@ def test_seed_row_theta_is_normalized(monkeypatch):
 
     assert res.trajectory[0][2] == pytest.approx(rollout2d.normalize_angle(theta_unnormalized))
     assert abs(res.trajectory[0][2]) <= math.pi
+
+
+# ---------------------------------------------------------------------------
+# Finding C1: TRUE vs GIMBAL-FOLDED attitude.
+#
+# These are REAL-ENV tests on purpose. Every attitude test that existed before
+# this fix used synthetic state vectors, where a theta is whatever you wrote
+# down and the fold never happens -- which is precisely why a whole branch of
+# attitude logic could be computed on the wrong quantity with a green suite.
+# The fold only exists on the far side of PyBullet's quaternion.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_true_theta_recovers_the_attitude_the_observation_folds_away():
+    '''`p.getEulerFromQuaternion` returns the branch with pitch in
+    [-pi/2, pi/2], so the env's observed theta for a nearly-inverted drone is
+    a small number. `true_theta` must recover the real one, for both signs,
+    over the whole range up to |theta| = pi. Fails on the pre-fix code, where
+    the only available theta was the folded one.
+    '''
+    from quad_composition.rollout2d import (make_env, set_initial_state, state_from_env, state_from_obs,
+                                            true_theta)
+
+    env = make_env(seed=0)
+    try:
+        for theta in (0.0, 1.0, -1.0, 1.5, 2.0, -2.0, 3.0, -3.0, math.pi - 1e-4):
+            obs, _ = set_initial_state(env, [0.0, 1.0, theta, 0.0, 0.0, 0.0])
+            assert true_theta(env) == pytest.approx(theta, abs=1e-3), \
+                f'true attitude not recovered for theta={theta}'
+            assert state_from_env(env, obs)[2] == pytest.approx(theta, abs=1e-3)
+
+        # Not vacuous: the observation really is folded, by a lot.
+        obs, _ = set_initial_state(env, [0.0, 1.0, 3.0, 0.0, 0.0, 0.0])
+        assert state_from_obs(obs)[2] == pytest.approx(math.pi - 3.0, abs=1e-3)
+        assert abs(state_from_obs(obs)[2]) < 0.2, 'an inverted drone reads as upright'
+    finally:
+        env.close()
+
+
+@pytest.mark.slow
+def test_a_fully_inverted_drone_is_not_in_g1():
+    '''G1 is attitude-only, so it is exactly the decision the fold corrupts:
+    an upside-down drone must not be handed to controller 2 as "upright".
+    '''
+    from quad_composition.g1 import G1Region
+    from quad_composition.rollout2d import make_env, set_initial_state, state_from_env, state_from_obs
+
+    g1 = G1Region(tilt_c=0.175, w_c=1.0)    # G_NOM's numbers: 10 deg, 1 rad/s
+    env = make_env(seed=0)
+    try:
+        obs, _ = set_initial_state(env, [0.0, 1.0, math.pi - 0.05, 0.0, 0.0, 0.0])
+
+        state = state_from_env(env, obs)
+        assert not bool(g1.contains(abs(state[2]), abs(state[5]))), \
+            'a drone 0.05 rad from fully inverted must not be inside G1'
+
+        # And this is what the pre-fix code was actually asking, on the same
+        # physical state -- kept as a live demonstration of the bug.
+        folded = state_from_obs(obs)
+        assert bool(g1.contains(abs(folded[2]), abs(folded[5]))), \
+            'the folded observation says an inverted drone IS in G1'
+    finally:
+        env.close()
+
+
+@pytest.mark.slow
+def test_rollout_composite_does_not_hand_off_an_inverted_drone_on_the_real_env():
+    '''End to end through the real env: starting fully inverted, the handoff
+    must never fire. Before the fix the folded obs put the very first step
+    inside G1, so controller 2 was handed an upside-down drone at step ~1.
+    '''
+    from quad_composition.g1 import G1Region
+    from quad_composition.rollout2d import make_env, rollout_composite
+
+    class FakeCtrl:
+        def obs_normalizer(self, obs):
+            return obs
+
+        def select_action(self, obs, info):
+            return np.zeros(2)
+
+    g1 = G1Region(tilt_c=0.175, w_c=1.0)
+    env = make_env(seed=0)
+    try:
+        res = rollout_composite(env, FakeCtrl(), FakeCtrl(), g1,
+                                [0.0, 1.0, math.pi - 0.05, 0.0, 0.0, 0.0], max_steps=40)
+        assert res.handoff_index == -1, \
+            f'spurious handoff at step {res.handoff_index} on an inverted drone'
+        assert res.flip_success is False
+        # The stored theta column is TRUE attitude, so it must stay near pi --
+        # a folded column would show |theta| <= pi/2 throughout.
+        assert max(abs(row[2]) for row in res.trajectory) > math.pi / 2
+    finally:
+        env.close()
+
+
+def test_the_same_true_attitude_is_classified_identically_at_step_0_and_step_1(monkeypatch):
+    '''Finding C2: `rollout_composite` used to test the RAW (true) init theta
+    at step 0 and the FOLDED obs theta at step >= 1, so one physical attitude
+    got two different answers depending on when it appeared. theta = 3.0
+    (folded: 0.1416) is the discriminating case for a G1 with tilt_c = 0.2:
+    true says "outside", folded says "inside".
+
+    The fake env below folds for real, via PyBullet, so it is not begging the
+    question -- it reports exactly what a real env reports.
+    '''
+    from quad_composition import rollout2d
+    from quad_composition.g1 import G1Region
+
+    class FakeCtrl:
+        def obs_normalizer(self, obs):
+            return obs
+
+        def select_action(self, obs, info):
+            return np.zeros(2)
+
+    class FoldingEnv:
+        '''Lands at `next_theta` (TRUE) on its first step and finishes.'''
+
+        def __init__(self, next_theta):
+            self.next_theta = next_theta
+            self.quat = quat_for(0.0)
+
+        def step(self, action):
+            self.quat = quat_for(self.next_theta)
+            folded = p.getEulerFromQuaternion(self.quat)[1]
+            return np.array([0.0, 0.0, 1.0, 0.0, folded, 0.0]), 0.0, True, {}
+
+    g1 = G1Region(tilt_c=0.2, w_c=1.0)
+    monkeypatch.setattr(rollout2d, 'set_initial_state', fake_set_initial_state)
+
+    def handoff_for(step0_theta, step1_theta):
+        env = FoldingEnv(step1_theta)
+        res = rollout2d.rollout_composite(
+            env, FakeCtrl(), FakeCtrl(), g1,
+            [0.0, 1.0, step0_theta, 0.0, 0.0, 0.0], max_steps=3)
+        return res.handoff_index
+
+    # theta = 3.0 is outside G1 wherever it appears.
+    assert handoff_for(3.0, 0.0) == 1, 'sanity: an upright step 1 must latch'
+    assert handoff_for(3.0, 3.0) == -1, 'true theta 3.0 at step 1 must not latch'
+    assert handoff_for(0.5, 3.0) == -1, 'true theta 3.0 at step 1 must not latch'
+    # theta = 0.1 is inside G1 wherever it appears.
+    assert handoff_for(0.1, 0.1) == 0, 'true theta 0.1 at step 0 must latch at 0'
+    assert handoff_for(3.0, 0.1) == 1, 'true theta 0.1 at step 1 must latch at 1'
 
 
 @pytest.mark.slow
@@ -218,6 +411,16 @@ def test_rollout_core_matches_the_reference_implementation():
     the equivalence this test asserts, at atol=1e-9 (not 1e-4) on the final
     state, plus label equality: if this ever fails, the rollout core has
     drifted from the reference implementation, which is a real bug.
+
+    ONE CONVENTION DIFFERENCE IS EXPECTED, AND IS CHECKED RATHER THAN WAIVED
+    (Finding C1): the reference script stores the env's GIMBAL-FOLDED
+    observation theta, while the rollout core now stores TRUE attitude. The
+    theta column is therefore compared through `fold_pitch`, which maps our
+    true value onto the reference's branch; every other column is still
+    compared directly at atol=1e-9. That still pins our theta to the
+    reference's physics up to a known, invertible map -- it is not a dropped
+    column. What pins the REPRESENTATION (true, not folded) is the separate
+    set of real-env attitude tests further down this file.
     '''
     if not os.path.exists(SHIPPED):
         pytest.skip('shipped dataset not mounted')
@@ -274,8 +477,13 @@ def test_rollout_core_matches_the_reference_implementation():
                 env_ref, ctrl_ref, init.tolist(), 'safe_explorer_ppo', max_steps=1200)
 
             assert res.ctrl2_success == bool(success), f'label mismatch from {init}'
-            assert np.allclose(res.trajectory[-1], traj[-1], atol=1e-9), \
+            ours, ref = np.asarray(res.trajectory[-1]), np.asarray(traj[-1])
+            non_theta = [0, 1, 3, 4, 5]
+            assert np.allclose(ours[non_theta], ref[non_theta], atol=1e-9), \
                 f'final state mismatch from {init}'
+            assert fold_pitch(ours[2]) == pytest.approx(ref[2], abs=1e-9), \
+                f'final theta mismatch from {init} (ours is TRUE attitude, ' \
+                f"the reference's is the env's folded observation)"
     finally:
         for obj in (env, ctrl2, env_ref, ctrl_ref):
             if obj is not None:

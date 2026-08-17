@@ -24,7 +24,7 @@ import numpy as np
 
 from quad_composition.flip_env2d import potential, sample_uniform_state
 from quad_composition.g1 import fit_from_exits
-from quad_composition.rollout2d import load_ctrl1, make_env, set_initial_state, state_from_obs
+from quad_composition.rollout2d import load_ctrl1, make_env, set_initial_state, state_from_env
 
 
 def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
@@ -42,6 +42,11 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
     Returns (tilts, omegas) as numpy arrays of |theta|, |theta_dot| -- G1's
     only inputs. Nothing about controller 2 or RoA2 is read here or by any
     function this one calls.
+
+    Attitudes are TRUE attitude (`state_from_env`), not the env's
+    gimbal-folded observation theta (Finding C1). Fitting G1 to folded exits
+    would fit it to a distribution structurally capped at pi/2, and would
+    score a fully inverted exit as a perfect one.
     '''
     tilts, omegas = [], []
     for _ in range(num_rollouts):
@@ -50,7 +55,7 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
         for _ in range(settle_steps):
             action = ctrl1.select_action(ctrl1.obs_normalizer(obs), info)
             obs, _, done, info = env.step(action)
-            state = state_from_obs(obs)
+            state = state_from_env(env, obs)
             phi = potential(state)
             if best is None or phi > best[0]:
                 best = (phi, abs(state[2]), abs(state[5]))
