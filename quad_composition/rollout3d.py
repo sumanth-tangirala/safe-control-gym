@@ -398,13 +398,31 @@ def in_g1(g1, state):
                             omega_norm(state)))
 
 
-def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
+def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS, guard=None):
     '''Run ctrl1 until the first state inside g1, then latch to ctrl2 forever.
 
     ctrl1=None runs ctrl2 from the start, reproducing the baseline: no handoff
     ever fires, so handoff_index=-1 and flip_success=False unconditionally.
     The latch is permanent: once handed off, g1 is never consulted again
     (spec D3).
+
+    `guard`, THE SUPERVISORY GUARD (quad_composition/guard3d.py): an optional
+    `state -> bool` callable, consulted exactly once, on the INITIAL state.
+    True means "controller 2 (LQR) alone is predicted to succeed from here";
+    that prediction overrides ctrl1 to None FOR THIS ROLLOUT ONLY, which
+    collapses to exactly the ctrl1=None baseline path above -- controller 1
+    is never run, no handoff can fire, handoff_index=-1, flip_success=False.
+    False (or guard=None, the default) leaves ctrl1 untouched, i.e. the
+    pre-guard composition behaviour. Consequences, by construction:
+      - guard=None reproduces current (unguarded) behaviour exactly, for
+        every caller that does not pass it -- this parameter changes nothing
+        by default.
+      - a guard that always returns True reproduces the ctrl1=None baseline
+        exactly, whatever ctrl1 was passed in.
+      - a guard that always returns False reproduces the unguarded
+        composition exactly.
+    ctrl1=None is left as-is regardless of `guard`: there is no controller 1
+    to override away from in the baseline path, so a guard is a no-op there.
 
     `done` is evaluated exactly once per iteration, AFTER the latch update, so
     a step that both enters g1 and terminates the env is handled on that same
@@ -417,7 +435,10 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
     obs, info = set_initial_state(env, init_state)
     trajectory = [state_from_env(env, obs)]
 
-    if ctrl1 is None:
+    guarded_off = guard is not None and ctrl1 is not None and guard(trajectory[0])
+    effective_ctrl1 = None if guarded_off else ctrl1
+
+    if effective_ctrl1 is None:
         handoff_index, latched = -1, True
     else:
         latched = in_g1(g1, trajectory[0])
@@ -430,7 +451,7 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
         # _act_ctrl2 does not accept one.  Swapping them is a TypeError, not
         # a silent bug.
         action = (_act_ctrl2(ctrl2, obs, info) if latched
-                  else _act_ctrl1(env, ctrl1, obs, info))
+                  else _act_ctrl1(env, effective_ctrl1, obs, info))
         obs, _, done, info = env.step(action)
         state = state_from_env(env, obs)
         trajectory.append(state)
