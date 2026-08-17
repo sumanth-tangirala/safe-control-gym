@@ -24,6 +24,7 @@ class Cost(str, Enum):
     RL_REWARD = 'rl_reward'  # Default RL reward function.
     QUADRATIC = 'quadratic'  # Quadratic cost.
     SPARSE = 'sparse'  # Outcome-only: goal bonus, out-of-bounds penalty, step cost.
+    SHAPED_DMC = 'shaped_dmc'  # dm_control's swingup shaping; cartpole only.
 
 
 class Task(str, Enum):

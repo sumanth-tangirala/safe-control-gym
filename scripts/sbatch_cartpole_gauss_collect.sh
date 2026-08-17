@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --time=08:00:00
 #SBATCH --array=0-104
-#SBATCH --output=/home/dm1487/scg-repo/logs/cp_gcol_%A_%a.out
+#SBATCH --output=logs/cp_gcol_%A_%a.out
 
 # Full collection of the cartpole gaussian_signal family at the three chosen
 # levels. sigma = alpha + beta*|u| on the commanded cart force.
@@ -40,7 +40,12 @@
 
 set -euo pipefail
 
-cd /home/dm1487/scg-repo
+# Repo and interpreter are per-user; override with CP_REPO / PYTHON rather than
+# editing this file. The defaults are the layout compute.md documents for this
+# account (dedicated clone under ~/Projects, miniforge in ~).
+CP_REPO=${CP_REPO:-$HOME/Projects/safe-control-gym}
+cd "$CP_REPO"
+mkdir -p logs
 
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -48,7 +53,7 @@ export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 
-PY=${PYTHON:-/home/dm1487/envs/scg/bin/python}
+PY=${PYTHON:-$HOME/miniforge3/envs/scg/bin/python}
 ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
 : "${CP_DET_DIR:?set CP_DET_DIR to the directory holding eval_states.txt}"
 : "${CP_SIGMA0:?set CP_SIGMA0 to the sigma_0 eval_success_prob.npz}"

@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --time=04:00:00
 #SBATCH --array=0-79
-#SBATCH --output=/home/dm1487/scg-repo/logs/cp_gauss_%A_%a.out
+#SBATCH --output=logs/cp_gauss_%A_%a.out
 
 # Cartpole gaussian_signal level sweep: sigma = alpha + beta*|u| on the cart
 # force, against the published uniform family on the same cells.
@@ -27,7 +27,9 @@
 
 set -euo pipefail
 
-cd /home/dm1487/scg-repo
+CP_REPO=${CP_REPO:-$HOME/Projects/safe-control-gym}
+cd "$CP_REPO"
+mkdir -p logs
 
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -35,9 +37,9 @@ export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
 
-PY=${PYTHON:-/home/dm1487/envs/scg/bin/python}
+PY=${PYTHON:-$HOME/miniforge3/envs/scg/bin/python}
 MODE=${MODE:-collect}
-ROOT=${CP_GAUSS_ROOT:-/scratch/dm1487/cartpole_gauss_sweep_20260817}
+ROOT=${CP_GAUSS_ROOT:-/scratch/$USER/cartpole_gauss_sweep}
 NSHARDS=8
 
 mkdir -p "$ROOT"

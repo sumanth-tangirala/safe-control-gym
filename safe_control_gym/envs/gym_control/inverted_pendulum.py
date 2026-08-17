@@ -350,8 +350,6 @@ class InvertedPendulum(BenchmarkEnv):
 
     def _get_reward(self):
         '''Compute the step reward/cost.'''
-        if self.COST == Cost.SHAPED:
-            return self._shaped_reward()
         if self.COST == Cost.SPARSE:
             return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
