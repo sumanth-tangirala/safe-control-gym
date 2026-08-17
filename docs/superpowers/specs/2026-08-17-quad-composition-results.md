@@ -52,6 +52,26 @@ SO(3) sampling essentially never starts inside it.
 
 Reproduce: `analyze_quad3d_composition.py`; result in `results/quad3d_composition.json`.
 
+### Caveat: the magnitude depends on controller 1 too
+
+Same system, same `G1` (`G_NOM_3D`), same 900 paired initial states — only controller 1 differs:
+
+| controller 1 | S1 | S1→S2 | **non-subsumption** |
+|---|---|---|---|
+| SAC (selected) | 42.1% | 33.7% | **0.200** |
+| geometric (hand-coded) | 50.9% | 18.9% | **0.629** |
+
+A 3× swing from controller quality alone. The reason is the interesting part: `G1` constrains
+only tilt and `|ω|`, so *where inside `G1`* the controller lands is unconstrained — and a good
+controller happens to arrive slower and closer to the goal in the dimensions nobody asked it
+about. The geometric controller reaches `G1` more often (higher S1) precisely by arriving fast
+and off-centre, which satisfies an attitude-only region while leaving LQR nothing to work with.
+
+So "`G1` is not subsumed by `RoA2`" is not a single number about a system. It is
+**`f(system, G1, controller 1)`**. All three must be stated. The qualitative claim is robust —
+every configuration measured tonight gives a value bounded away from 0 and 1 — but the
+magnitude is not a system constant and must not be presented as one.
+
 ### Caveat: the magnitude depends on `G1`, so never quote it alone
 
 Non-subsumption is substantially a measure of **how loose `G1` is**. Sweeping `G1` and scoring
