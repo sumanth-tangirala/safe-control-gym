@@ -41,8 +41,11 @@ three S1_to_F2 clips). `assign_rollouts` gives each rollout to at most one set
 CLIPS MUST BE LONG ENOUGH TO WATCH. Selection filters on the length of the
 clip a category actually RENDERS (`clip_for_category`, `MIN_CLIP_STATES`) --
 not on the rollout's total length, which for 'S1' overstates it by a factor of
-30 -- and prefers the highest initial tilt among what survives, a bigger flip
-being both longer and the better picture. Categories that cannot reach the
+30 -- and among what survives the filter prefers the LONGEST clip first,
+highest initial tilt as tie-break (`assign_rollouts`). Passing the length
+floor only gates entry to the pool; without preferring the longest among
+survivors, a barely-qualifying-but-high-tilt clip could still be selected
+over one comfortably clear of the floor. Categories that cannot reach the
 `MIN_CLIP_SECONDS` floor at real time (F1 ends when the drone leaves the box,
 often within a handful of ticks) are captured at the full simulation rate and
 played back slower; `playback_plan` decides that and summary.json records it.
@@ -243,9 +246,16 @@ def assign_rollouts(pool, categories, num_per_category, disjoint_sets=None,
     one had.  Ties are broken by the caller's category order, so the assignment
     is deterministic.
 
-    `prefer_high_tilt` takes the highest initial tilt first: a bigger flip is
-    both longer and the more interesting picture.  Without it, pool order (i.e.
-    sampling order) wins, which is the historical behaviour.
+    `prefer_high_tilt` takes the LONGEST clip first (per-category clip length,
+    `clip_lengths[category]` -- the same quantity `min_clip_states` filters
+    on, not the whole rollout), with the highest initial tilt as a tie-break.
+    This is what makes selection length-aware rather than merely
+    length-filtered: passing the `min_clip_states` floor only gates entry to
+    the pool, so without this a barely-qualifying-but-high-tilt clip could
+    beat a much longer one that also qualified -- exactly how an F1 clip
+    landed under a frame floor despite the floor being enforced at admission.
+    Without `prefer_high_tilt`, pool order (i.e. sampling order) wins, which
+    is the historical behaviour.
     '''
     group_of = {}
     for index, group in enumerate(disjoint_sets or []):
@@ -265,7 +275,9 @@ def assign_rollouts(pool, categories, num_per_category, disjoint_sets=None,
         candidates = [i for i, e in enumerate(pool)
                       if category in e['categories'] and claimed.get(i, group) == group]
         if prefer_high_tilt:
-            candidates.sort(key=lambda i: pool[i]['initial_tilt_deg'], reverse=True)
+            candidates.sort(key=lambda i: (pool[i]['clip_lengths'][category],
+                                           pool[i]['initial_tilt_deg']),
+                            reverse=True)
         for i in candidates[:num_per_category]:
             claimed[i] = group
             recorded[category].append((pool[i]['init_state'], pool[i]['result']))
@@ -379,18 +391,21 @@ def sample_and_classify(env, ctrl1, ctrl2, g1, rng, categories, num_per_category
         if min_trajectory_states and len(result.trajectory) < min_trajectory_states:
             continue
         cats = []
+        clip_lengths = {}
         for cat in classify(result):
             if cat not in counts:
                 continue
-            if len(clip_for_category(cat, result)[0]) < min_clip_states.get(cat, 0):
+            length = len(clip_for_category(cat, result)[0])
+            if length < min_clip_states.get(cat, 0):
                 continue
             cats.append(cat)
+            clip_lengths[cat] = length
         if not cats:
             continue
         for cat in cats:
             counts[cat] += 1
         pool.append({'init_state': init_state, 'result': result, 'categories': cats,
-                     'initial_tilt_deg': initial_tilt_deg(result)})
+                     'initial_tilt_deg': initial_tilt_deg(result), 'clip_lengths': clip_lengths})
     return assign_rollouts(pool, categories, num_per_category,
                            disjoint_sets=disjoint_sets,
                            prefer_high_tilt=prefer_high_tilt), attempts
@@ -829,8 +844,8 @@ def parse_args(argv=None):
                              'Default: 12 * num_per_category.')
     parser.add_argument('--no_prefer_high_tilt', action='store_true',
                         help='Take candidates in sampling order instead of preferring the '
-                             'highest initial tilt (a bigger flip is both longer and the more '
-                             'interesting picture).')
+                             'longest clip (highest initial tilt as tie-break) among candidates '
+                             'that already pass --min_clip_states.')
     parser.add_argument('--no_disjoint_sets', action='store_true',
                         help='Allow the {S1, F1} and {S1_to_S2, S1_to_F2} video sets to reuse '
                              'the same rollouts (the old behaviour, which produced identical '

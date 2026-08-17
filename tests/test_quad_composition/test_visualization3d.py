@@ -753,6 +753,40 @@ def test_sample_and_classify_prefers_the_highest_initial_tilt():
     assert picked == pytest.approx([120.0, 170.0], abs=1e-6)
 
 
+def test_sample_and_classify_prefers_the_longest_clip_over_higher_tilt():
+    '''Length must dominate tilt, not the other way around. Passing the
+    `min_clip_states` floor only gates entry to the pool -- among survivors,
+    picking by tilt alone can select a clip that barely cleared the floor
+    over one comfortably clear of it, which is exactly how an F1 clip landed
+    under a frame floor despite the floor being enforced at admission
+    (see visualize_quad3d_composition.py's module docstring). Two candidates
+    here have the highest tilts (170, 120 deg) but are short (45, 41 states);
+    two others are much longer (200, 150 states) with low tilt (10, 30 deg).
+    The longest two must win.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    lengths = [200, 45, 150, 41, 50]
+    tilts = [10.0, 170.0, 30.0, 120.0, 5.0]
+    calls = {'n': 0}
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        i = calls['n'] % len(lengths)
+        tilt = np.radians(tilts[i])
+        calls['n'] += 1
+        return make_result(False, False, handoff_index=-1,
+                           trajectory=[_tilted_row(j, tilt) for j in range(lengths[i])])
+
+    recorded, _ = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['F1'], num_per_category=2, max_steps=10, max_attempts=5,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
+        prefer_high_tilt=True, pool_per_category=5, min_clip_states={'F1': 40})
+
+    picked = sorted(len(r.trajectory) for _, r in recorded['F1'])
+    assert picked == [150, 200], 'the two longest clips must win, not the two highest-tilt ones'
+
+
 def test_sample_and_classify_defaults_still_stream_and_share_rollouts():
     '''With none of the new options the old behaviour must survive exactly:
     one rollout fills both 'S1' and its subdivision, from a single attempt.
