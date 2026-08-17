@@ -84,7 +84,22 @@ def _scratch():
     return d
 
 
-def build(sigma):
+def build(sigma, alpha=None, beta=None):
+    '''Env + LQR at one noise level.
+
+    ``sigma`` selects the original uniform family, ``U(-sigma, sigma)`` on the
+    commanded cart force. ``alpha``/``beta`` select the gaussian_signal family,
+    ``w ~ Normal(0, alpha + beta*|u|)``, and are mutually exclusive with it.
+
+    Both are applied PRE-saturation, and on this system that is not a choice
+    with consequences: the LQR's demand is a median 0.27 N against a 2000 N
+    bound and never saturates in 16,494 measured steps, so clip(u + w) and
+    clip(u) + w are the same function here. The pendulum's placement
+    distinction has nothing to bite on.
+    '''
+    if (alpha is not None or beta is not None) and sigma > 0:
+        raise ValueError('uniform sigma and gaussian alpha/beta are different '
+                         'mechanisms; pass one')
     kw = dict(task='stabilization', ctrl_freq=100, pyb_freq=5000, gui=False,
               output_dir=_scratch(), randomized_init=False,
               randomized_inertial_prop=False, action_scale=FORCE,
@@ -93,7 +108,12 @@ def build(sigma):
               task_info={'stabilization_goal': [0],
                          'stabilization_goal_tolerance': TOL},
               x_dot_limit=INF, theta_dot_limit=INF, obs_wrap_angle=True)
-    if sigma > 0:
+    if alpha is not None or beta is not None:
+        alpha, beta = float(alpha or 0.0), float(beta or 0.0)
+        if alpha or beta:
+            kw['disturbances'] = {'action': [{'disturbance_func': 'signal_dependent',
+                                              'alpha': alpha, 'beta': beta}]}
+    elif sigma > 0:
         kw['disturbances'] = {'action': [{'disturbance_func': 'uniform',
                                           'low': -sigma, 'high': sigma}]}
     ef = partial(make, 'cartpole', **kw)
@@ -171,8 +191,11 @@ def _range(rng_):
     else:
         S, det = eval_starts()
         S, det = S[lo:hi], det[lo:hi]
-    trials = 1 if ARGS.level == 0 else ARGS.trials
-    env, ctrl = build(ARGS.level)
+    gaussian = getattr(ARGS, 'alpha', None) is not None or getattr(ARGS, 'beta', None) is not None
+    noiseless = (ARGS.level == 0) if not gaussian else not (ARGS.alpha or ARGS.beta)
+    trials = 1 if noiseless else ARGS.trials
+    env, ctrl = (build(0.0, alpha=ARGS.alpha, beta=ARGS.beta) if gaussian
+                 else build(ARGS.level))
     if ARGS.split == 'train':
         states, lengths, labels, seeds = [], [], [], []
         for i in range(len(S)):
@@ -196,12 +219,25 @@ def _range(rng_):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--split', choices=['train', 'eval'], required=True)
-    ap.add_argument('--level', type=float, required=True)
+    ap.add_argument('--level', type=float, default=0.0,
+                    help='uniform family: half-width sigma on the commanded cart force')
+    ap.add_argument('--alpha', type=float, default=None,
+                    help='gaussian_signal family: the sigma floor, in N. Needs --beta.')
+    ap.add_argument('--beta', type=float, default=None,
+                    help='gaussian_signal family: effort-proportional term, so '
+                         'sigma = alpha + beta*|u|. Needs --alpha. On cartpole |u| is '
+                         'heavily skewed (p50 0.27 N, p99 28.9), so beta near 1 leaves '
+                         'the median untouched and multiplies the tail.')
     ap.add_argument('--trials', type=int, default=100)
     ap.add_argument('--shard', type=int, required=True)
     ap.add_argument('--nshards', type=int, required=True)
     ap.add_argument('--out', required=True)
     args = ap.parse_args()
+    if (args.alpha is None) != (args.beta is None):
+        ap.error('--alpha and --beta must be given together')
+    if args.alpha is not None and args.level:
+        ap.error('--level (uniform) and --alpha/--beta (gaussian) are different '
+                 'mechanisms; pass one')
 
     if os.path.exists(args.out):
         print(f'{args.out} exists, skipping', flush=True)
@@ -216,7 +252,9 @@ def main():
     ranges = [(int(sub[i]), int(sub[i + 1])) for i in range(nproc)
               if sub[i + 1] > sub[i]]
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    print(f'{args.split} sigma={args.level} shard {args.shard}/{args.nshards} '
+    tag = (f'alpha={args.alpha} beta={args.beta}' if args.alpha is not None
+           else f'sigma={args.level}')
+    print(f'{args.split} {tag} shard {args.shard}/{args.nshards} '
           f'[{lo}:{hi}] on {len(ranges)} procs', flush=True)
 
     with Pool(len(ranges), initializer=_init, initargs=(args,)) as pool:
