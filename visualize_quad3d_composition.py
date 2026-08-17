@@ -62,6 +62,7 @@ import pybullet_data
 
 from quad_composition.flip_env3d import G_NOM_3D, sample_uniform_state, sampling_bounds_from_env
 from quad_composition.g1 import G1Region
+from quad_composition.geometric_flip3d import GeometricFlipController3D
 from quad_composition.rollout3d import (ENV_CONFIG, GOAL_TOLERANCE, MAX_STEPS, QUAT_SLICE, SAC_CONFIG,
                                         TERMINATION, _Ctrl1ObservationSpaceEnv, load_ctrl1,
                                         make_env_and_ctrl2, quat_wxyz_to_pybullet, rollout_composite,
@@ -146,7 +147,8 @@ def build_ctrl1(flip_model_path, env, output_dir):
 
 def sample_and_classify(env, ctrl1, ctrl2, g1, rng, categories, num_per_category,
                         max_steps, max_attempts,
-                        sample_fn=None, rollout_fn=rollout_composite):
+                        sample_fn=None, rollout_fn=rollout_composite,
+                        min_trajectory_states=None):
     '''Sample initial states and roll them out until every category in
     `categories` has `num_per_category` recorded rollouts, or `max_attempts`
     total rollouts have been sampled (the budget is SHARED across
@@ -157,6 +159,15 @@ def sample_and_classify(env, ctrl1, ctrl2, g1, rng, categories, num_per_category
     needs the env's own closed-state-space bounds baked in (see
     `flip_env3d.sample_uniform_state`), so callers must supply a closure --
     `main` does via `sampling_bounds_from_env(env)`. Tests supply a fake.
+
+    `min_trajectory_states`, if given, discards a rollout from EVERY category
+    it would otherwise fill when `len(result.trajectory) < min_trajectory_states`
+    -- it still counts toward `attempts`. This exists because a real (and
+    physically legitimate) chunk of F1 failures are initial states already
+    at a Euclidean bound with outward velocity, which terminate in 2-3 ticks:
+    technically correct but not a watchable video (quality bar, not a bug in
+    the rollout itself). Default `None` preserves the old unfiltered
+    behaviour exactly, matching every existing caller/test.
 
     Returns (recorded, attempts): `recorded` maps category -> ordered list of
     (init_state, result) tuples; `attempts` is the total number of rollouts
@@ -171,6 +182,8 @@ def sample_and_classify(env, ctrl1, ctrl2, g1, rng, categories, num_per_category
         attempts += 1
         init_state = list(sample_fn(rng))
         result = rollout_fn(env, ctrl1, ctrl2, g1, init_state, max_steps=max_steps)
+        if min_trajectory_states and len(result.trajectory) < min_trajectory_states:
+            continue
         for cat in classify(result):
             if cat in recorded and len(recorded[cat]) < num_per_category:
                 recorded[cat].append((init_state, result))
@@ -404,9 +417,13 @@ def record_rollout(category, idx, init_state, result, output_dir, fps=FPS,
         marker_index = None
 
     poses = poses_from_states(states)
-    if category == 'S1':
-        # Hold the final (handoff) pose for a moment so the colour change
-        # that marks it is actually visible, not a single instantaneous frame.
+    if category in ('S1', 'F1'):
+        # S1: hold the final (handoff) pose so the colour change that marks
+        # it is actually visible, not a single instantaneous frame. F1: many
+        # failures are a Euclidean-bound violation reached in a handful of
+        # ticks (quality bar) -- holding the final (out-of-bounds) pose gives
+        # the viewer time to register where and how it failed instead of a
+        # blink-and-you-miss-it clip.
         hold_frames = max(1, int(round(S1_HOLD_SECONDS * fps)))
         poses = poses + [poses[-1]] * hold_frames
 
@@ -444,10 +461,14 @@ def record_rollout(category, idx, init_state, result, output_dir, fps=FPS,
 # ---------------------------------------------------------------------------
 
 def write_summary(output_dir, categories, num_per_category, attempts, max_attempts,
-                  seed, max_steps, sidecars):
+                  seed, max_steps, sidecars, controller=None, g1_source=None):
     '''Per requirement 5: per category, how many were found, how many were
     sampled (shared attempt budget across all categories), and each recorded
     rollout's handoff index and initial tilt.
+
+    `controller`/`g1_source` are optional provenance strings (which controller
+    1 and which G1 produced this batch) recorded for traceability; omitted by
+    callers (tests) that do not care.
     '''
     categories_summary = {}
     unfilled = []
@@ -476,6 +497,8 @@ def write_summary(output_dir, categories, num_per_category, attempts, max_attemp
         'sampling_budget_exhausted': attempts >= max_attempts,
         'categories': categories_summary,
         'unfilled_categories': unfilled,
+        'controller': controller,
+        'g1_source': g1_source,
     }
     with open(os.path.join(output_dir, 'summary.json'), 'w') as fh:
         json.dump(summary, fh, indent=2)
@@ -489,10 +512,16 @@ def write_summary(output_dir, categories, num_per_category, attempts, max_attemp
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--controller', choices=['sac', 'geometric'], default='sac',
+                        help='Controller 1: a SAC policy (default -- pass --flip_model for a '
+                             'trained checkpoint, otherwise a randomly-initialised network, see '
+                             'build_ctrl1) or the hand-coded geometric controller '
+                             '(quad_composition.geometric_flip3d), which needs no --flip_model.')
     parser.add_argument('--flip_model', default=None,
                         help='SAC checkpoint for controller 1 (the flip/recovery policy). '
                              'If omitted, controller 1 is a RANDOMLY-INITIALISED SAC policy '
-                             '(see build_ctrl1) -- use this before a trained checkpoint exists.')
+                             '(see build_ctrl1) -- use this before a trained checkpoint exists. '
+                             'Ignored (and unnecessary) when --controller geometric.')
     parser.add_argument('--g1', default=None,
                         help='Path to a g1.json (quad_composition.g1.G1Region). '
                              'If omitted, uses flip_env3d.G_NOM_3D (the training-time nominal '
@@ -509,6 +538,12 @@ def parse_args(argv=None):
     parser.add_argument('--fps', type=int, default=FPS)
     parser.add_argument('--width', type=int, default=RENDER_WIDTH)
     parser.add_argument('--height', type=int, default=RENDER_HEIGHT)
+    parser.add_argument('--min_trajectory_states', type=int, default=None,
+                        help='Discard a rollout (from every category) whose full trajectory has '
+                             'fewer than this many recorded states -- see sample_and_classify. '
+                             'Guards against near-instant (2-3 tick) Euclidean-bound-violation '
+                             'F1 clips that are technically real but not watchable. Default: no '
+                             'filtering, matching the old behaviour.')
     args = parser.parse_args(argv)
 
     args.categories = [c.strip() for c in args.categories.split(',') if c.strip()]
@@ -532,12 +567,15 @@ def main(argv=None):
     env = ctrl1 = ctrl2 = None
     try:
         env, ctrl2 = make_env_and_ctrl2(tmp)
-        ctrl1 = build_ctrl1(args.flip_model, env, tmp)
+        ctrl1 = (GeometricFlipController3D(env) if args.controller == 'geometric'
+                else build_ctrl1(args.flip_model, env, tmp))
         if args.g1:
             with open(args.g1) as fh:
                 g1 = G1Region.from_dict(json.load(fh)['g1'])
+            g1_source = args.g1
         else:
             g1 = G_NOM_3D
+            g1_source = 'G_NOM_3D'
 
         bounds = sampling_bounds_from_env(env)
 
@@ -548,7 +586,8 @@ def main(argv=None):
 
         recorded, attempts = sample_and_classify(
             env, ctrl1, ctrl2, g1, rng, args.categories, args.num_per_category,
-            args.max_steps, args.max_attempts, sample_fn=sample_fn, rollout_fn=rollout_composite)
+            args.max_steps, args.max_attempts, sample_fn=sample_fn, rollout_fn=rollout_composite,
+            min_trajectory_states=args.min_trajectory_states)
 
         urdf_path = env.URDF_PATH
         sidecars = {cat: [] for cat in args.categories}
@@ -560,7 +599,8 @@ def main(argv=None):
                     urdf_path=urdf_path))
 
         summary = write_summary(args.output_dir, args.categories, args.num_per_category,
-                                attempts, args.max_attempts, args.seed, args.max_steps, sidecars)
+                                attempts, args.max_attempts, args.seed, args.max_steps, sidecars,
+                                controller=args.controller, g1_source=g1_source)
     finally:
         for obj in (ctrl1, ctrl2, env):
             if obj is not None:

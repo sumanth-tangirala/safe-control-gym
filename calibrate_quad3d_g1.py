@@ -28,6 +28,7 @@ import numpy as np
 
 from quad_composition.flip_env3d import potential, sample_uniform_state, sampling_bounds_from_env
 from quad_composition.g1 import fit_from_exits
+from quad_composition.geometric_flip3d import GeometricFlipController3D
 from quad_composition.rollout3d import (QUAT_SLICE, ctrl1_observation, load_ctrl1, make_env,
                                         omega_norm, set_initial_state, state_from_env,
                                         tilt_from_quat_wxyz)
@@ -80,13 +81,21 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--flip_model', required=True)
+    parser.add_argument('--controller', choices=['sac', 'geometric'], default='sac',
+                        help='Controller 1 to calibrate against: a SAC checkpoint (default, '
+                             'needs --flip_model) or the hand-coded geometric controller '
+                             '(quad_composition.geometric_flip3d), which needs no checkpoint.')
+    parser.add_argument('--flip_model', default=None,
+                        help='SAC checkpoint for controller 1. Required when --controller sac; '
+                             'unused (and unnecessary) when --controller geometric.')
     parser.add_argument('--output', default='models/quad3d_flip/g1.json')
     parser.add_argument('--num_rollouts', type=int, default=5000)
     parser.add_argument('--quantile', type=float, default=0.9)
     parser.add_argument('--settle_steps', type=int, default=300)
     parser.add_argument('--seed', type=int, default=123)
     args = parser.parse_args()
+    if args.controller == 'sac' and not args.flip_model:
+        parser.error('--flip_model is required when --controller sac')
 
     rng = np.random.default_rng(args.seed)
 
@@ -97,7 +106,8 @@ def main():
     env = ctrl1 = None
     try:
         env = make_env(seed=args.seed)
-        ctrl1 = load_ctrl1(args.flip_model, env, tmp)
+        ctrl1 = (GeometricFlipController3D(env) if args.controller == 'geometric'
+                else load_ctrl1(args.flip_model, env, tmp))
 
         tilts, omegas = collect_exit_attitudes(
             env, ctrl1, rng, args.num_rollouts, args.settle_steps)
@@ -113,6 +123,7 @@ def main():
                     'settle_steps': args.settle_steps,
                     'quantile': args.quantile,
                     'seed': args.seed,
+                    'controller': args.controller,
                     'flip_model': args.flip_model,
                     'exit_tilt_quantiles': {
                         str(q): float(np.quantile(tilts, q))

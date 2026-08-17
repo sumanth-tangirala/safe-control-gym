@@ -168,6 +168,59 @@ def test_sample_and_classify_respects_the_sampling_budget_and_never_loops_foreve
     assert len(recorded['S1_to_S2']) == 0    # never fillable from this outcome stream
 
 
+def test_sample_and_classify_min_trajectory_states_discards_short_rollouts():
+    '''A real (quality-bar) concern: many F1 failures are a Euclidean-bound
+    violation reached in 2-3 ticks -- technically correct but not a watchable
+    video. `min_trajectory_states` must discard those from EVERY category
+    (not just F1) while still counting them toward `attempts`, and must leave
+    unfiltered behaviour untouched when omitted (every other test here relies
+    on that).
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    short_traj = [_row(i) for i in range(2)]
+    long_traj = [_row(i) for i in range(20)]
+    outcomes = [
+        make_result(False, False, -1, trajectory=short_traj),   # F1, too short: discarded
+        make_result(False, False, -1, trajectory=long_traj),    # F1, long enough: kept
+    ]
+    calls = {'n': 0}
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        res = outcomes[calls['n'] % len(outcomes)]
+        calls['n'] += 1
+        return res
+
+    recorded, attempts = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['F1'], num_per_category=1, max_steps=10, max_attempts=10,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout, min_trajectory_states=10)
+
+    assert attempts == 2, 'the discarded short rollout must still count toward the budget'
+    assert len(recorded['F1']) == 1
+    assert recorded['F1'][0][1].trajectory == long_traj
+
+
+def test_sample_and_classify_without_min_trajectory_states_keeps_everything():
+    '''Default (None) must reproduce the pre-filter behaviour exactly -- a
+    single-tick rollout is accepted, matching every other test in this file.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    tiny_traj = [_row(0)]
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        return make_result(False, False, -1, trajectory=tiny_traj)
+
+    recorded, attempts = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['F1'], num_per_category=1, max_steps=10, max_attempts=10,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout)
+
+    assert attempts == 1
+    assert len(recorded['F1']) == 1
+
+
 # ---------------------------------------------------------------------------
 # record_rollout (file writing, category-specific truncation/marking)
 # ---------------------------------------------------------------------------
@@ -275,6 +328,29 @@ def test_record_rollout_f1_has_no_handoff_marker(tmp_path, monkeypatch):
     assert sidecar['handoff_index'] == -1
 
 
+def test_record_rollout_f1_holds_the_final_frame(tmp_path, monkeypatch):
+    '''Quality bar: many F1 failures are a 2-3 tick Euclidean-bound
+    violation. record_rollout must hold the LAST pose for a moment (as S1
+    already does at its handoff) so the failure is actually visible rather
+    than a blink-and-miss-it clip -- while the PLOT still sees the real,
+    unpadded trajectory (num_recorded_states must not be inflated by the
+    hold, which is a rendering-only artefact).
+    '''
+    from visualize_quad3d_composition import record_rollout
+
+    calls = {}
+    _patch_rendering(monkeypatch, calls)
+
+    trajectory = [_row(i) for i in range(3)]  # a near-instant OOB failure
+    result = make_result(False, False, handoff_index=-1, trajectory=trajectory)
+
+    sidecar = record_rollout('F1', 0, _row(0), result, str(tmp_path))
+
+    assert calls['render_poses_len'] > 3, 'the final (failure) pose must be held, not shown once'
+    assert calls['plot_states_len'] == 3, 'the plot must see the real trajectory, unpadded'
+    assert sidecar['num_recorded_states'] == 3
+
+
 def test_record_rollout_names_files_by_category_and_index(tmp_path, monkeypatch):
     from visualize_quad3d_composition import record_rollout
 
@@ -370,6 +446,20 @@ def test_parse_args_default_max_attempts_scales_with_num_per_category():
 
     args = parse_args(['--output_dir', 'out', '--num_per_category', '10'])
     assert args.max_attempts == 500
+
+
+def test_parse_args_controller_defaults_to_sac_and_accepts_geometric():
+    from visualize_quad3d_composition import parse_args
+
+    args = parse_args(['--output_dir', 'out'])
+    assert args.controller == 'sac'
+    assert args.min_trajectory_states is None
+
+    args = parse_args(['--output_dir', 'out', '--controller', 'geometric'])
+    assert args.controller == 'geometric'
+
+    with pytest.raises(SystemExit):
+        parse_args(['--output_dir', 'out', '--controller', 'bogus'])
 
 
 def test_parse_args_requires_no_g1_and_no_ctrl2_model():
