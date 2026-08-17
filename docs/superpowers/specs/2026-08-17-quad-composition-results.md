@@ -72,6 +72,28 @@ priori rather than tuned — but **always report the (`G1`, non-subsumption, S1�
 together.** A loose `G1` yields a more dramatic 0.895 while the composition collapses to 9%
 end-to-end; that is a weaker result presented as a stronger one.
 
+### Recommended `G1` for future work: 15° / 5 rad/s
+
+A slightly tighter region beats the nominal one, confirmed across two independent samples
+(n=1500 each, paired, McNemar):
+
+| sample | nominal S1→S2 | 15°/5 S1→S2 | discordant | χ² |
+|---|---|---|---|---|
+| A (post-hoc — winner of the sweep) | 32.93% | 34.07% | 20 / 37 | 4.49 |
+| B (pre-registered, independent seed) | 31.80% | 33.00% | 15 / 33 | 6.02 |
+
+Bonferroni applies to A, because testing a sweep's winner against the incumbent inflates
+significance by construction, and 4.49 does not clear the ~7.9 that five comparisons need. It
+does not apply to B, a single pre-specified comparison, where α=.05 is the right bar. The
+replication is the evidence, not either p-value alone.
+
+**The delivered videos use `G_NOM_3D` (10°, 4), not this.** The ~1.2-point gain did not justify
+regenerating a verified artifact whose purpose is to show the mechanism, not to sit at the
+optimum. Use 15°/5 for future runs.
+
+Note it moves both numbers up: non-subsumption 0.215 vs 0.184 *and* S1→S2 higher. They travel
+together here.
+
 ### Spec D1's calibration procedure should be withdrawn
 
 D1 sets `G1` from a high quantile of controller 1's exit attitudes. Tested fairly — calibrated
