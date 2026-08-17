@@ -83,10 +83,18 @@ SHIPPED_DESC = {
 }
 
 
-def _write_dir(root, rows, desc):
+def _write_dir(root, rows, desc, handoffs=None):
+    '''Write a fixture dataset directory. `handoffs` (13-column rows) is
+    written as handoff_states.txt; composite directories need one, since
+    analyze_quad2d_composition requires handoff_index to separate real
+    handoffs from rows that started inside G1 (Finding I6).
+    '''
     os.makedirs(root, exist_ok=True)
     np.savetxt(os.path.join(root, 'eval_states.txt'), np.array(rows, dtype=float),
                delimiter=',', fmt='%.6f')
+    if handoffs is not None:
+        np.savetxt(os.path.join(root, 'handoff_states.txt'), np.array(handoffs, dtype=float),
+                   delimiter=',', fmt='%.6f')
     with open(os.path.join(root, 'dataset_description.json'), 'w') as fh:
         json.dump(desc, fh)
     return root
@@ -106,6 +114,28 @@ def _composite_row(seed_offset, flip, ctrl2):
 
 def _baseline_row(seed_offset, ctrl2):
     return _init(seed_offset) + _final() + [ctrl2]
+
+
+def _handoff_row(seed_offset, handoff_index):
+    '''13 columns: init(6) + handoff state(6) + handoff_index.'''
+    state = _final() if handoff_index >= 0 else [-1.0] * 6
+    return _init(seed_offset) + state + [handoff_index]
+
+
+def _handoffs_for(comp_rows, indices=None):
+    '''Handoff rows consistent with `comp_rows`' flip_success column.
+
+    Default: every handoff is a real one (index 5). Pass `indices` to place
+    some of them at 0 (initial state already inside G1).
+    '''
+    out = []
+    for i, row in enumerate(comp_rows):
+        if indices is not None:
+            idx = indices[i]
+        else:
+            idx = 5 if row[12] else -1
+        out.append(_handoff_row(row[0] - _init()[0], idx))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +284,184 @@ def test_validate_baseline_dir_refuses_a_flip_dir(scratch_dir):
 
 
 # ---------------------------------------------------------------------------
+# validate_composite_dir: the mirror of validate_baseline_dir. A --mode flip
+# output is ALSO 14 columns, so a column-count check would let it through --
+# and it would yield a plausible, entirely wrong headline number.
+# ---------------------------------------------------------------------------
+
+def test_validate_composite_dir_accepts_a_composite_dataset(scratch_dir):
+    from analyze_quad2d_composition import validate_composite_dir
+    rows = [_composite_row(0, 1, 1)]
+    root = _write_dir(os.path.join(scratch_dir, 'comp'), rows, COMPOSITE_DESC,
+                      _handoffs_for(rows))
+    desc = validate_composite_dir(root)
+    assert desc['dataset_name'] == 'Quadrotor-2D composite trajectories'
+
+
+def test_validate_composite_dir_refuses_a_flip_dir(scratch_dir):
+    '''The dangerous one: a --mode flip directory has the same 14 columns in
+    the same order, so it parses. Its trajectories stop at the handoff, so
+    ctrl2_success is 0 in every row and non-subsumption would come out at 1.0
+    -- "G1 barely intersects RoA2", a real (and wrong) conclusion.
+    '''
+    from analyze_quad2d_composition import validate_composite_dir
+    rows = [_composite_row(0, 1, 0)]
+    root = _write_dir(os.path.join(scratch_dir, 'flip_as_composite'), rows, FLIP_DESC,
+                      _handoffs_for(rows))
+    with pytest.raises(ValueError, match='not a composite dataset|--mode flip'):
+        validate_composite_dir(root)
+
+
+def test_validate_composite_dir_refuses_a_baseline_dir(scratch_dir):
+    from analyze_quad2d_composition import validate_composite_dir
+    root = _write_dir(os.path.join(scratch_dir, 'baseline_as_composite'),
+                      [_baseline_row(0, 1)], BASELINE_DESC)
+    with pytest.raises(ValueError, match='not a composite dataset'):
+        validate_composite_dir(root)
+
+
+def test_validate_composite_dir_refuses_missing_description(scratch_dir):
+    from analyze_quad2d_composition import validate_composite_dir
+    root = os.path.join(scratch_dir, 'nodesc')
+    os.makedirs(root)
+    np.savetxt(os.path.join(root, 'eval_states.txt'), np.array([_composite_row(0, 1, 1)]),
+               delimiter=',', fmt='%.6f')
+    with pytest.raises(ValueError, match='dataset_description.json'):
+        validate_composite_dir(root)
+
+
+def test_main_refuses_a_flip_dir_as_composite_dir(scratch_dir):
+    from analyze_quad2d_composition import main
+    rows = [_composite_row(0, 1, 0)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'flip'), rows, FLIP_DESC,
+                          _handoffs_for(rows))
+    base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), [_baseline_row(0, 1)],
+                          BASELINE_DESC)
+    out_path = os.path.join(scratch_dir, 'result.json')
+    with pytest.raises(ValueError, match='not a composite dataset|--mode flip'):
+        main(['--composite_dir', comp_dir, '--baseline_dir', base_dir, '--output', out_path])
+    assert not os.path.exists(out_path)
+
+
+# ---------------------------------------------------------------------------
+# load_handoff_indices: Finding I6. Without handoff_index, a row whose INITIAL
+# state was already inside G1 is indistinguishable from a real handoff.
+# ---------------------------------------------------------------------------
+
+def test_load_handoff_indices_reads_the_index_column(scratch_dir):
+    from analyze_quad2d_composition import load_handoff_indices
+    rows = [_composite_row(0, 1, 1), _composite_row(1, 1, 0), _composite_row(2, 0, 0)]
+    root = _write_dir(os.path.join(scratch_dir, 'comp'), rows, COMPOSITE_DESC,
+                      _handoffs_for(rows, indices=[0, 7, -1]))
+    np.testing.assert_array_equal(load_handoff_indices(root, 3), [0, 7, -1])
+
+
+def test_load_handoff_indices_refuses_a_missing_file(scratch_dir):
+    from analyze_quad2d_composition import load_handoff_indices
+    root = _write_dir(os.path.join(scratch_dir, 'comp'), [_composite_row(0, 1, 1)],
+                      COMPOSITE_DESC)
+    with pytest.raises(ValueError, match='handoff_states.txt is missing'):
+        load_handoff_indices(root, 1)
+
+
+def test_load_handoff_indices_refuses_the_old_twelve_column_format(scratch_dir):
+    '''A pre-Finding-I6 dataset cannot answer the question, so it must fail
+    rather than be silently reported as if every handoff were real.
+    '''
+    from analyze_quad2d_composition import load_handoff_indices
+    root = _write_dir(os.path.join(scratch_dir, 'comp'), [_composite_row(0, 1, 1)],
+                      COMPOSITE_DESC)
+    np.savetxt(os.path.join(root, 'handoff_states.txt'),
+               np.array([_init() + _final()]), delimiter=',', fmt='%.6f')
+    with pytest.raises(ValueError, match='12 columns|expected 13'):
+        load_handoff_indices(root, 1)
+
+
+def test_load_handoff_indices_refuses_a_row_count_mismatch(scratch_dir):
+    from analyze_quad2d_composition import load_handoff_indices
+    rows = [_composite_row(0, 1, 1), _composite_row(1, 1, 0)]
+    root = _write_dir(os.path.join(scratch_dir, 'comp'), rows, COMPOSITE_DESC,
+                      [_handoff_row(0, 3)])
+    with pytest.raises(ValueError, match='rows but eval_states.txt has'):
+        load_handoff_indices(root, 2)
+
+
+def test_main_reports_non_subsumption_over_all_and_over_real_handoffs(scratch_dir):
+    '''Finding I6. Rows 0 and 1 hand off at index 0 -- their initial state was
+    already inside G1, so controller 1 never acted -- and both succeed under
+    controller 2. Rows 2 and 3 are real handoffs and both fail. Over ALL
+    handoffs non-subsumption is 0.5; over REAL handoffs it is 1.0. Reporting
+    only the first would badly understate the result, and reporting only the
+    second would overstate it; both are recorded.
+    '''
+    from analyze_quad2d_composition import main
+
+    comp_rows = [
+        _composite_row(0, 1, 1),
+        _composite_row(1, 1, 1),
+        _composite_row(2, 1, 0),
+        _composite_row(3, 1, 0),
+        _composite_row(4, 0, 0),
+    ]
+    base_rows = [_baseline_row(i, 0) for i in range(5)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows, indices=[0, 0, 9, 11, -1]))
+    base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
+    out_path = os.path.join(scratch_dir, 'result.json')
+
+    main(['--composite_dir', comp_dir, '--baseline_dir', base_dir, '--output', out_path])
+
+    with open(out_path) as fh:
+        result = json.load(fh)
+
+    assert result['non_subsumption']['point'] == pytest.approx(0.5)
+    assert result['non_subsumption']['n_handoffs'] == 4
+    assert result['non_subsumption_real_handoffs']['point'] == pytest.approx(1.0)
+    assert result['non_subsumption_real_handoffs']['n_handoffs'] == 2
+    assert result['n_handoffs_at_index_zero'] == 2
+
+
+def test_main_reports_no_real_handoffs_rather_than_crashing(scratch_dir):
+    '''If every handoff is at index 0, the real-handoff figure is undefined --
+    it must be reported as absent, not raised as "no handoffs" (which would
+    kill the run even though the all-handoffs figure is perfectly valid).
+    '''
+    from analyze_quad2d_composition import main
+
+    comp_rows = [_composite_row(0, 1, 1), _composite_row(1, 1, 0)]
+    base_rows = [_baseline_row(0, 0), _baseline_row(1, 0)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows, indices=[0, 0]))
+    base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
+    out_path = os.path.join(scratch_dir, 'result.json')
+
+    result = main(['--composite_dir', comp_dir, '--baseline_dir', base_dir,
+                   '--output', out_path])
+
+    assert result['non_subsumption']['point'] == pytest.approx(0.5)
+    assert result['non_subsumption_real_handoffs']['point'] is None
+    assert result['non_subsumption_real_handoffs']['n_handoffs'] == 0
+
+
+def test_main_rejects_handoff_indices_that_disagree_with_flip_success(scratch_dir):
+    '''flip_success is defined as handoff_index >= 0, so a disagreement means
+    the two files came from different runs -- and every downstream figure
+    would be mixing them.
+    '''
+    from analyze_quad2d_composition import main
+
+    comp_rows = [_composite_row(0, 1, 1), _composite_row(1, 0, 0)]
+    base_rows = [_baseline_row(0, 0), _baseline_row(1, 0)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows, indices=[-1, 4]))   # both inverted
+    base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
+    out_path = os.path.join(scratch_dir, 'result.json')
+
+    with pytest.raises(ValueError, match='disagree'):
+        main(['--composite_dir', comp_dir, '--baseline_dir', base_dir, '--output', out_path])
+
+
+# ---------------------------------------------------------------------------
 # load_eval_states: the two datasets have DIFFERENT column counts. Wiring the
 # wrong file to the wrong flag must fail loudly, not silently misparse.
 # ---------------------------------------------------------------------------
@@ -327,7 +535,8 @@ def test_main_end_to_end_with_synthetic_fixtures(scratch_dir):
         _baseline_row(3, 0),
         _baseline_row(4, 0),
     ]
-    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC)
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows))
     base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
     out_path = os.path.join(scratch_dir, 'result.json')
 
@@ -362,7 +571,8 @@ def test_main_non_subsumption_uses_full_composite_even_when_baseline_is_shorter(
     # Baseline is a strict prefix -- only 2 rows -- of composite's init states.
     base_rows = [_baseline_row(0, 1), _baseline_row(1, 0)]
 
-    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC)
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows))
     base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
     out_path = os.path.join(scratch_dir, 'result.json')
 
@@ -380,8 +590,9 @@ def test_main_non_subsumption_uses_full_composite_even_when_baseline_is_shorter(
 
 def test_main_refuses_shipped_style_baseline_dir(scratch_dir):
     from analyze_quad2d_composition import main
-    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), [_composite_row(0, 1, 1)],
-                          COMPOSITE_DESC)
+    comp_rows = [_composite_row(0, 1, 1)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows,
+                          COMPOSITE_DESC, _handoffs_for(comp_rows))
     base_dir = _write_dir(os.path.join(scratch_dir, 'shipped'), [_baseline_row(0, 1)],
                           SHIPPED_DESC)
     out_path = os.path.join(scratch_dir, 'result.json')
@@ -393,7 +604,8 @@ def test_main_refuses_shipped_style_baseline_dir(scratch_dir):
 def test_main_rejects_impossible_label_combination(scratch_dir):
     from analyze_quad2d_composition import main
     bad_rows = [_composite_row(0, 0, 1)]        # flip=0, ctrl2=1: impossible
-    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), bad_rows, COMPOSITE_DESC)
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), bad_rows, COMPOSITE_DESC,
+                          _handoffs_for(bad_rows))
     base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), [_baseline_row(0, 1)],
                           BASELINE_DESC)
     out_path = os.path.join(scratch_dir, 'result.json')
@@ -403,8 +615,9 @@ def test_main_rejects_impossible_label_combination(scratch_dir):
 
 def test_main_rejects_unpaired_initial_states(scratch_dir):
     from analyze_quad2d_composition import main
-    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'),
-                          [_composite_row(0, 1, 1), _composite_row(1, 1, 0)], COMPOSITE_DESC)
+    comp_rows = [_composite_row(0, 1, 1), _composite_row(1, 1, 0)]
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC,
+                          _handoffs_for(comp_rows))
     base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'),
                           [_baseline_row(0, 1), _baseline_row(99, 0)], BASELINE_DESC)
     out_path = os.path.join(scratch_dir, 'result.json')

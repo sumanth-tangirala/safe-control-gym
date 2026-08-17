@@ -118,7 +118,7 @@ def test_handoff_row_is_minus_one_when_no_handoff():
     res = RolloutResult(trajectory=[init], handoff_index=-1,
                         flip_success=False, ctrl2_success=False)
     row = handoff_row(init, res)
-    assert row == pytest.approx(init + [-1.0] * 6)
+    assert row == pytest.approx(init + [-1.0] * 6 + [-1.0])
 
 
 def test_handoff_row_is_the_state_at_handoff_index():
@@ -129,7 +129,30 @@ def test_handoff_row_is_the_state_at_handoff_index():
     res = RolloutResult(trajectory=[init, handoff_state], handoff_index=1,
                         flip_success=True, ctrl2_success=False)
     row = handoff_row(init, res)
-    assert row == pytest.approx(init + handoff_state)
+    assert row == pytest.approx(init + handoff_state + [1.0])
+
+
+def test_handoff_row_persists_the_handoff_index_so_step_zero_is_distinguishable():
+    '''Finding I6: a rollout whose INITIAL state was already inside G1 has
+    handoff_index == 0 -- controller 1 never acted -- and must be
+    distinguishable from a real handoff. Both rows otherwise look identical:
+    flip_success is 1 in both, and the "handoff state" of an index-0 row is
+    just the initial state.
+    '''
+    from generate_quadrotor_2d_composition import handoff_row
+    from quad_composition.rollout2d import RolloutResult
+
+    init = [0.1, 1.2, 0.02, 0.4, 0.5, 0.01]     # already inside a tight G1
+    started_inside = RolloutResult(trajectory=[init, [0.0] * 6], handoff_index=0,
+                                   flip_success=True, ctrl2_success=True)
+    real = RolloutResult(trajectory=[init, list(init)], handoff_index=1,
+                         flip_success=True, ctrl2_success=True)
+
+    assert handoff_row(init, started_inside)[12] == 0
+    assert handoff_row(init, real)[12] == 1
+    # ... and the two are otherwise the same row, which is the whole point.
+    assert handoff_row(init, started_inside)[:12] == \
+        pytest.approx(handoff_row(init, real)[:12])
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +269,8 @@ def test_generate_dataset_flip_mode_truncates_trajectory_at_handoff(monkeypatch,
     assert rows[0][12] == 1  # flip_success: controller 1 reached G1
     # final state stored is the (truncated) handoff state, not the full rollout's end
     assert rows[0][6:12] == pytest.approx([0.0, 1.0, 0.02, 0.0, 0.0, 0.01])
-    assert handoffs[0][6:] == pytest.approx([0.0, 1.0, 0.02, 0.0, 0.0, 0.01])
+    assert handoffs[0][6:12] == pytest.approx([0.0, 1.0, 0.02, 0.0, 0.0, 0.01])
+    assert handoffs[0][12] == 2   # handoff_index: trajectory row 2 (Finding I6)
 
 
 def test_generate_dataset_composite_mode_keeps_the_full_trajectory(monkeypatch, tmp_path):
@@ -278,7 +302,32 @@ def test_generate_dataset_baseline_mode_uses_ctrl2_alone_and_one_label(monkeypat
     rows, handoffs = generate_dataset('baseline', env, None, ctrl2, None, [_INIT], str(tmp_path))
 
     assert len(rows) == 1 and len(rows[0]) == 13
-    assert handoffs[0][6:] == pytest.approx([-1.0] * 6)  # baseline never hands off
+    # baseline never hands off: handoff state and handoff_index are all -1
+    assert handoffs[0][6:] == pytest.approx([-1.0] * 7)
+
+
+def test_generate_dataset_records_handoff_index_zero_for_an_init_already_inside_g1(
+        monkeypatch, tmp_path):
+    '''Finding I6, through the real assembly path: an initial state already
+    inside G1 latches at step 0, controller 1 never acts, and the persisted
+    handoff_index must say so. Its eval_states row is indistinguishable from a
+    real handoff's -- flip_success is 1 either way -- so handoff_states.txt is
+    the only place the difference survives.
+    '''
+    from generate_quadrotor_2d_composition import generate_dataset
+    from quad_composition import rollout2d
+
+    monkeypatch.setattr(rollout2d, 'set_initial_state', _fake_set_initial_state)
+    env = _ScriptedEnv([(0.0, 0.0, True)])
+    ctrl = _FakeCtrl()
+
+    inside_g1 = [0.0, 1.0, 0.02, 0.0, 0.0, 0.01]    # |theta| < 0.05, |theta_dot| < 0.05
+    rows, handoffs = generate_dataset('composite', env, ctrl, ctrl, _FakeG1(), [inside_g1],
+                                      str(tmp_path))
+
+    assert rows[0][12] == 1, 'flip_success is 1, exactly as for a real handoff'
+    assert handoffs[0][12] == 0, 'handoff_index must record that ctrl1 never acted'
+    assert handoffs[0][6:12] == pytest.approx(inside_g1)
 
 
 def test_prefix_invariant_flip_trajectory_prefixes_composite_up_to_handoff(monkeypatch, tmp_path):
@@ -322,7 +371,7 @@ def test_write_outputs_baseline_mode_writes_thirteen_and_seven_column_files(tmp_
     args = parse_args(['--mode', 'baseline', '--baseline_dir', '/x',
                        '--output_dir', str(tmp_path)])
     rows = [[0.0] * 13, [0.1] * 12 + [1.0]]
-    handoffs = [[0.0] * 12, [0.0] * 12]
+    handoffs = [[0.0] * 12 + [-1.0], [0.0] * 12 + [-1.0]]
 
     write_outputs(args, None, rows, handoffs)
 
@@ -337,13 +386,58 @@ def test_write_outputs_baseline_mode_writes_thirteen_and_seven_column_files(tmp_
     assert desc['statistics']['ctrl2_success'] == 1
 
 
+def test_baseline_description_documents_handoff_states_and_its_inert_columns(tmp_path):
+    '''The baseline directory ships a handoff_states.txt whose handoff columns
+    are always -1 -- there is no controller 1 on this path, so no handoff can
+    fire. Undocumented, a reader finding the file has no way to know whether
+    -1 means "no handoff" or "the run failed", and every file in the directory
+    except this one is described.
+    '''
+    from generate_quadrotor_2d_composition import parse_args, write_outputs
+
+    args = parse_args(['--mode', 'baseline', '--baseline_dir', '/x',
+                       '--output_dir', str(tmp_path)])
+    write_outputs(args, None, [[0.0] * 13], [[0.0] * 6 + [-1.0] * 7])
+
+    desc = json.loads((tmp_path / 'dataset_description.json').read_text())
+    handoff_doc = desc['files']['handoff_states.txt']
+    assert '13 columns' in handoff_doc
+    assert 'handoff_index' in handoff_doc
+    assert 'ALWAYS' in handoff_doc and '-1' in handoff_doc
+    # every file the directory actually contains is described
+    assert {'eval_states.txt', 'roa_labels.txt', 'handoff_states.txt'} <= set(desc['files'])
+
+
+def test_descriptions_record_that_theta_is_true_attitude(tmp_path):
+    '''Finding C1: the stored theta column is TRUE attitude, unlike the
+    archived quadrotor2D_rl dataset's folded one. A dataset that silently
+    changes the meaning of a column is a trap; every mode records the
+    convention.
+    '''
+    from generate_quadrotor_2d_composition import parse_args, write_outputs
+
+    for argv, g1, rows in (
+        (['--mode', 'baseline', '--baseline_dir', '/x'], None, [[0.0] * 13]),
+        (['--mode', 'composite', '--flip_model', 'u.pt', '--baseline_dir', '/x'],
+         _FakeG1(), [[0.0] * 12 + [1.0, 1.0]]),
+    ):
+        out = tmp_path / argv[1]
+        args = parse_args(argv + ['--output_dir', str(out)])
+        write_outputs(args, g1, rows, [[0.0] * 6 + [-1.0] * 7])
+
+        desc = json.loads((out / 'dataset_description.json').read_text())
+        note = desc['theta_convention']
+        assert 'TRUE attitude' in note
+        assert 'quadrotor2D_rl' in note, 'must say how it differs from the archived dataset'
+
+
 def test_write_outputs_flip_mode_writes_fourteen_and_eight_column_files(tmp_path):
     from generate_quadrotor_2d_composition import parse_args, write_outputs
 
     args = parse_args(['--mode', 'flip', '--flip_model', 'unused.pt',
                        '--baseline_dir', '/x', '--output_dir', str(tmp_path)])
     rows = [[0.0] * 12 + [1.0, 0.0], [0.0] * 12 + [1.0, 1.0]]
-    handoffs = [[0.0] * 12, [0.0] * 12]
+    handoffs = [[0.0] * 12 + [-1.0], [0.0] * 12 + [-1.0]]
 
     write_outputs(args, _FakeG1(), rows, handoffs)
 
@@ -365,7 +459,7 @@ def test_write_outputs_rejects_impossible_labels_for_flip_and_composite(tmp_path
                        '--baseline_dir', '/x', '--output_dir', str(tmp_path)])
     rows = [[0.0] * 12 + [0, 1]]  # impossible: flip_success=0, ctrl2_success=1
     with pytest.raises(ValueError, match='impossible label'):
-        write_outputs(args, _FakeG1(), rows, [[0.0] * 12])
+        write_outputs(args, _FakeG1(), rows, [[0.0] * 12 + [-1.0]])
     # and it must not have written a partial/bad eval_states.txt on the way out
     assert not os.path.exists(tmp_path / 'eval_states.txt')
 
@@ -470,7 +564,7 @@ def test_baseline_mode_runs_for_real_end_to_end(tmp_path):
     roa = np.loadtxt(output_dir / 'roa_labels.txt', delimiter=',', ndmin=2)
     assert roa.shape == (5, 7)
     handoffs = np.loadtxt(output_dir / 'handoff_states.txt', delimiter=',', ndmin=2)
-    assert handoffs.shape == (5, 12)
+    assert handoffs.shape == (5, 13)
     assert np.all(handoffs[:, 6:] == -1.0)  # controller 1 never runs on this path
 
     desc = json.loads((output_dir / 'dataset_description.json').read_text())

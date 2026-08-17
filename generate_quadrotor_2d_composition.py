@@ -65,6 +65,21 @@ REGENERATED_BASELINE_NOTE = (
     "comparison's 'lost' count, which is expected to be near zero."
 )
 
+THETA_CONVENTION_NOTE = (
+    'The theta column is TRUE attitude on [-pi, pi], recovered from the '
+    "drone's rotation matrix (quad_composition.rollout2d.true_theta), NOT the "
+    "env's own observed pitch. PyBullet's getEulerFromQuaternion returns the "
+    'branch with pitch clamped to [-pi/2, pi/2], so the observation reports a '
+    'nearly-inverted drone (true theta 3.0) as nearly upright (0.1416). The '
+    'archived quadrotor2D_rl dataset stores that folded value in its '
+    'final-state theta column (measured: it spans exactly [-pi/2, pi/2]); '
+    'these datasets do not. Initial-state theta is unaffected -- it was '
+    'sampled, never observed, and is true in both. Controller 2 still '
+    'receives the folded observation it was trained on; only the stored '
+    'column and the supervisory decisions changed. See Finding C1 in '
+    "quad_composition/rollout2d.py's module docstring."
+)
+
 
 def validate_labels(flip_success, ctrl2_success):
     '''(flip_success=0, ctrl2_success=1) cannot occur -- no handoff, no ctrl 2.'''
@@ -100,12 +115,26 @@ def baseline_eval_states_row(init, result):
 
 
 def handoff_row(init, result):
-    '''init(6) + the state at handoff_index (6), or init + [-1]*6 when no
-    handoff fired (flip failure, or --mode baseline where it never can).
+    '''13 columns: init(6) + the state at handoff_index (6) + handoff_index.
+
+    The handoff state is [-1]*6 when no handoff fired (flip failure, or
+    --mode baseline where it never can), in which case handoff_index is -1.
+
+    handoff_index is PERSISTED (it was not, before) because without it the
+    rows where the INITIAL state was already inside G1 -- handoff_index == 0,
+    controller 1 never acted -- cannot be told apart from real handoffs, and
+    they measure something different: a subsumption figure computed over them
+    is partly a statement about the sampling grid, not about controller 1.
+    This is not hypothetical here. G1's shape is attitude-only and the
+    archived initial-state grid's smallest |theta| is 0.158407 rad (9.08 deg),
+    which sits inside G_NOM's 0.175 rad and may well sit inside a calibrated
+    G1, so a real fraction of rows can hand off at step 0.
+    analyze_quad2d_composition.py reports non-subsumption both ways.
     '''
     handoff = (result.trajectory[result.handoff_index]
                if result.handoff_index >= 0 else [-1.0] * 6)
-    return list(map(float, init)) + list(map(float, handoff))
+    row = list(map(float, init)) + list(map(float, handoff))
+    return row + [float(result.handoff_index)]
 
 
 def load_initial_states(baseline_dir):
@@ -128,7 +157,8 @@ def generate_dataset(mode, env, ctrl1, ctrl2, g1, inits, output_dir, max_steps=M
 
     Returns (rows, handoffs): rows are 14-column (flip/composite, via
     `eval_states_row`) or 13-column (baseline, via `baseline_eval_states_row`)
-    plain lists ready for np.array; handoffs are always 12-column.
+    plain lists ready for np.array; handoffs are always 13-column
+    (`handoff_row`: init(6) + handoff state(6) + handoff_index).
     '''
     os.makedirs(os.path.join(output_dir, 'trajectories'), exist_ok=True)
     row_fn = baseline_eval_states_row if mode == 'baseline' else eval_states_row
@@ -159,6 +189,7 @@ def build_description(args, g1, rows):
     action_space = {'normalized_rl_action_space': True, 'norm_act_scale': 0.1,
                     'twr_max': 1.100, 'alpha_max_rad_s2': 53.1}
     success_criteria = {'type': 'radius', 'threshold': GOAL_TOLERANCE}
+    theta_convention = THETA_CONVENTION_NOTE
 
     if args.mode == 'baseline':
         stats['ctrl2_success'] = int(rows[:, 12].sum())
@@ -172,6 +203,19 @@ def build_description(args, g1, rows):
             'controller_2': {'type': 'safe_explorer_ppo', 'model': CTRL2_MODEL},
             'action_space': action_space,
             'labels': {'ctrl2_success': '1 if controller 2 alone reached the goal ball'},
+            'files': {
+                'eval_states.txt': '13 columns: init(6), final(6), ctrl2_success',
+                'roa_labels.txt': '7 columns: init(6), ctrl2_success',
+                'handoff_states.txt': (
+                    '13 columns: init(6), handoff state(6), handoff_index. Written for '
+                    'format parity with the flip/composite datasets, but INERT on this '
+                    'path: --mode baseline runs controller 2 alone, with no controller 1 '
+                    'and no G1, so no handoff can ever fire and columns 6..12 are ALWAYS '
+                    '-1 in every row. Nothing downstream should read them from a baseline '
+                    'directory.'),
+                'trajectories/sequence_<i>.txt': 'full state trajectory, dataset order',
+            },
+            'theta_convention': theta_convention,
             'success_criteria': success_criteria,
             'statistics': stats,
         }
@@ -192,6 +236,21 @@ def build_description(args, g1, rows):
             'flip_success': '1 if controller 1 reached G1',
             'ctrl2_success': '1 if the composite reached the goal ball',
             'note': '(flip_success=0, ctrl2_success=1) cannot occur'},
+        'files': {
+            'eval_states.txt': '14 columns: init(6), final(6), flip_success, ctrl2_success',
+            'roa_labels.txt': '8 columns: init(6), flip_success, ctrl2_success',
+            'handoff_states.txt': (
+                '13 columns: init(6), handoff state(6), handoff_index. handoff_index is '
+                '-1 when no handoff fired (columns 6..12 are then all -1), 0 when the '
+                'INITIAL state was already inside G1 (controller 1 never acted), and > 0 '
+                'for a real handoff at that trajectory row. Separating index 0 from '
+                'index > 0 matters: subsumption measured over index-0 rows is partly a '
+                'statement about the initial-state grid rather than about controller 1.'),
+            'trajectories/sequence_<i>.txt': (
+                'full state trajectory, dataset order; --mode flip truncates it at (and '
+                'including) the handoff state'),
+        },
+        'theta_convention': theta_convention,
         'success_criteria': success_criteria,
         'statistics': stats,
     }
