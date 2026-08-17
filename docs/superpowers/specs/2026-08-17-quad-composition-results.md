@@ -192,6 +192,36 @@ scalars — but the 1051 losses are a genuine cost of composition, not a bug to 
 
 ---
 
+## Training controller 1 longer stops helping the composition
+
+Same `G1`, same 700 paired states, only the checkpoint varying (run `s5_tfull`):
+
+| step | S1 | S1→S2 | S1→F2 | non-subsumption |
+|---|---|---|---|---|
+| 20k | 3.3% | 1.9% | 1.4% | 0.435 |
+| **100k** | 40.9% | 34.4% | 6.4% | **0.157** ← minimum |
+| 200k | 47.4% | 35.6% | 11.9% | 0.250 |
+| 300k | 48.6% | 37.7% | 10.9% | 0.224 |
+| 400k | 50.0% | 37.1% | 12.9% | 0.257 |
+| 500k | 52.1% | 37.4% | 14.7% | 0.282 |
+
+Non-monotone. Handoff quality improves sharply to 100k, then degrades while flip rate keeps
+climbing. From 100k → 500k: **S1 +11.2 points, S1→S2 only +3.0, S1→F2 +8.3** — roughly **74% of
+every additional flip the policy learns ends in a handoff LQR cannot finish.**
+
+The composition does not get worse; it stops improving while non-subsumption nearly doubles. The
+policy is buying flip rate with handoff quality, because its reward is attitude-only and says
+nothing about where it lands.
+
+**Consequence: stop controller 1 on S1→S2 over held-out states, not on convergence of its own
+objective.** `ep_return` rises throughout and would tell you to keep training. This also explains
+why re-selecting at 100k against the frozen 75k pick came back null (χ²=1.36, p=0.24) — both sit
+near the minimum.
+
+It also answers the question the controller-dependence result raises: handoff quality *does*
+emerge incidentally from an attitude-only objective, but only up to a point, after which the
+objective actively trades it away.
+
 ## A methodological finding worth carrying into the paper
 
 **Ranking controllers on flip rate selects the worse composition.** Observed in three
