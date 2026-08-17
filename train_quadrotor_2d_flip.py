@@ -29,6 +29,8 @@ from safe_control_gym.utils.utils import set_seed
 
 
 _MAX_INIT_TILT = None
+_RATE_BOUND = None
+_VEL_BOUND = None
 
 
 def env_func(seed=None, **kwargs):
@@ -58,7 +60,15 @@ def env_func(seed=None, **kwargs):
     SAC_CONFIG sets `eval_interval: 0` and the eval env is never stepped.
     '''
     env = make('quadrotor', seed=seed, **ENV_CONFIG)
-    for idx, (lo, hi) in TERMINATION.items():
+    bounds = dict(TERMINATION)
+    # env order [x, x_dot, z, z_dot, theta, theta_dot]; overrides change the
+    # SYSTEM, so runs using them are not comparable to the shipped baseline.
+    if _VEL_BOUND is not None:
+        bounds[1] = (-_VEL_BOUND, _VEL_BOUND)
+        bounds[3] = (-_VEL_BOUND, _VEL_BOUND)
+    if _RATE_BOUND is not None:
+        bounds[5] = (-_RATE_BOUND, _RATE_BOUND)
+    for idx, (lo, hi) in bounds.items():
         env.state_space.low[idx] = lo
         env.state_space.high[idx] = hi
     return FlipTrainingEnv(env, G_NOM, seed=seed if seed is not None else 0,
@@ -66,7 +76,7 @@ def env_func(seed=None, **kwargs):
 
 
 def main():
-    global _MAX_INIT_TILT
+    global _MAX_INIT_TILT, _RATE_BOUND, _VEL_BOUND
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output_dir', required=True)
     parser.add_argument('--max_env_steps', type=int, default=1000000)
@@ -86,6 +96,15 @@ def main():
                         help='Steps between evaluations (0 disables).')
     parser.add_argument('--eval_batch_size', type=int, default=5,
                         help='Episodes per evaluation.')
+    parser.add_argument('--rate_bound', type=float, default=None,
+                        help='Override the |theta_dot| termination bound (default 8.0). '
+                             'CHANGES THE SYSTEM -- runs using it are NOT comparable to the '
+                             'shipped quadrotor2D_rl baseline. Measured: no single relaxed '
+                             'limit permits inversion recovery, but rate 24 together with '
+                             '|v| 3.0 (the values the 3D system uses) reaches 0.150.')
+    parser.add_argument('--vel_bound', type=float, default=None,
+                        help='Override the |x_dot| and |z_dot| termination bounds (default 1.0). '
+                             'CHANGES THE SYSTEM -- see --rate_bound.')
     parser.add_argument('--max_init_tilt_deg', type=float, default=None,
                         help='Cap the INITIAL |theta| sampled during training, in degrees. '
                              'Recovery above ~90 deg is not achievable in this system (a '
@@ -102,6 +121,8 @@ def main():
 
     _MAX_INIT_TILT = (np.radians(args.max_init_tilt_deg)
                       if args.max_init_tilt_deg is not None else None)
+    _RATE_BOUND = args.rate_bound
+    _VEL_BOUND = args.vel_bound
 
     os.makedirs(args.output_dir, exist_ok=True)
 
