@@ -56,8 +56,13 @@ CONFIGS = [
     ('uniform_high', None, None, 18.0),
 ]
 
-DET_PUB = ('/common/users/shared/pracsys/genMoPlan/data_trajectories/stochastic/'
-           'cartpole/noisy_torque/archive/sigma_0/eval_success_prob.npz')
+# Amarel cannot see the iLab filesystem, so both inputs must be overridable.
+# CP_DET_DIR (read by cp_collect) supplies eval_states.txt; CP_SIGMA0 supplies
+# the deterministic labels. Copy both to the cluster before running there.
+DET_PUB = os.environ.get(
+    'CP_SIGMA0',
+    '/common/users/shared/pracsys/genMoPlan/data_trajectories/stochastic/'
+    'cartpole/noisy_torque/archive/sigma_0/eval_success_prob.npz')
 
 
 def cell_index(det):
