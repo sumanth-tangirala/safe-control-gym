@@ -1,0 +1,33 @@
+{
+  "category": "S1",
+  "index": 0,
+  "init_state": [
+    1.7070599284613293,
+    1.1971204145635168,
+    2.201363081727223,
+    0.15668736105945422,
+    0.722435664464334,
+    0.6731392211156899,
+    -0.020478539741952483,
+    -0.9478238002225376,
+    -2.1749701950440996,
+    0.7590828375409044,
+    5.837639673217922,
+    22.21621158241338,
+    -4.364219963019707
+  ],
+  "handoff_index": 80,
+  "initial_tilt_deg": 161.81603043019192,
+  "flip_success": true,
+  "ctrl2_success": true,
+  "num_recorded_states": 81,
+  "num_full_trajectory_states": 467,
+  "num_video_frames": 108,
+  "capture_fps": 100,
+  "playback_fps": 27,
+  "hold_seconds": 1.0,
+  "video_seconds": 4.0,
+  "real_time_seconds": 0.8,
+  "video": "rollout_000.mp4",
+  "plot": "rollout_000_tilt.png"
+}
