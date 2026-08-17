@@ -210,14 +210,18 @@ def main(argv=None):
     validate_labels(comp[:, 12], comp[:, 13])
 
     n = min(len(comp), len(base))
+    # non_subsumption is a property of the composite dataset alone (it never
+    # touches baseline) -- compute it over the FULL composite array, not a
+    # subset shrunk to match a possibly-shorter baseline (e.g. a smaller
+    # --limit smoke run). Only composed_gain needs the paired/truncated rows.
+    point, lo, hi = non_subsumption(comp[:, 12], comp[:, 13])
+
     if len(comp) != len(base):
         print(f'NOTE: composite has {len(comp)} rows, baseline has {len(base)} -- '
-              f'comparing the shared first {n}.')
-    comp, base = comp[:n], base[:n]
-    assert_paired_initial_states(base[:, :6], comp[:, :6])
-
-    point, lo, hi = non_subsumption(comp[:, 12], comp[:, 13])
-    gain = composed_gain(base[:, 12], comp[:, 13])
+              f'composed_gain (a paired comparison) uses the shared first {n}.')
+    paired_comp, paired_base = comp[:n], base[:n]
+    assert_paired_initial_states(paired_base[:, :6], paired_comp[:, :6])
+    gain = composed_gain(paired_base[:, 12], paired_comp[:, 13])
 
     result = {
         'non_subsumption': {'point': point, 'ci95': [lo, hi],

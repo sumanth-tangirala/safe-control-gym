@@ -287,6 +287,41 @@ def test_main_end_to_end_with_synthetic_fixtures(scratch_dir):
     assert result['composed_gain']['composed_rate'] == pytest.approx(0.4)
 
 
+def test_main_non_subsumption_uses_full_composite_even_when_baseline_is_shorter(scratch_dir):
+    '''non_subsumption is a property of the composite dataset alone. If the
+    baseline happens to be shorter (e.g. a smaller smoke-test --limit), that
+    must not shrink the sample non_subsumption is measured over -- only
+    composed_gain (which needs pairing) should be restricted to the shared
+    prefix.
+    '''
+    from analyze_quad2d_composition import main
+
+    comp_rows = [
+        _composite_row(0, 1, 1),
+        _composite_row(1, 1, 0),
+        _composite_row(2, 1, 0),
+        _composite_row(3, 1, 1),
+        _composite_row(4, 1, 0),
+    ]
+    # Baseline is a strict prefix -- only 2 rows -- of composite's init states.
+    base_rows = [_baseline_row(0, 1), _baseline_row(1, 0)]
+
+    comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), comp_rows, COMPOSITE_DESC)
+    base_dir = _write_dir(os.path.join(scratch_dir, 'baseline'), base_rows, BASELINE_DESC)
+    out_path = os.path.join(scratch_dir, 'result.json')
+
+    main(['--composite_dir', comp_dir, '--baseline_dir', base_dir, '--output', out_path])
+
+    with open(out_path) as fh:
+        result = json.load(fh)
+
+    # All 5 composite rows are handoffs; non_subsumption must see all 5, not
+    # just the 2 that overlap with the shorter baseline.
+    assert result['non_subsumption']['n_handoffs'] == 5
+    assert result['non_subsumption']['point'] == pytest.approx(3 / 5)
+    assert result['n_paired'] == 2
+
+
 def test_main_refuses_shipped_style_baseline_dir(scratch_dir):
     from analyze_quad2d_composition import main
     comp_dir = _write_dir(os.path.join(scratch_dir, 'composite'), [_composite_row(0, 1, 1)],
