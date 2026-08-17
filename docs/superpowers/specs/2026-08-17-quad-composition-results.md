@@ -52,6 +52,70 @@ SO(3) sampling essentially never starts inside it.
 
 Reproduce: `analyze_quad3d_composition.py`; result in `results/quad3d_composition.json`.
 
+### Replicated on an independent seed
+
+The headline initially rested on one seed. Re-drawn:
+
+| seed | non-subsumption | 95% CI | n |
+|---|---|---|---|
+| 7 | 0.1950 | [0.1690, 0.2239] | 800 |
+| 20260817 | 0.1873 | [0.1618, 0.2158] | 801 |
+
+Each sits inside the other's interval. The **mechanism** replicates too — on both seeds
+independently, every G1-free variable has a larger spread than *both* G1-constrained ones
+(seed 7: min free 0.200 > max constrained 0.188; seed 2: 0.232 > 0.107). The explanation is
+not a seed artifact.
+
+---
+
+## Secondary result: the composition more than doubles the ROA
+
+Paired over 40,000 identical initial states (the shipped `quadrotor3D_lqr` eval states):
+
+```
+baseline (LQR alone)   21.20%
+composed               46.36%       +25.16 points,  2.19x
+won 11116 | lost 1051 | both 7429 | neither 20404        (10.6 : 1)
+```
+
+Non-subsumption implied here is `1 - 18545/22432 = 0.173`, consistent with the two
+uniform-SO(3) measurements on a different state distribution.
+
+Datasets: `quadrotor3D_lqr_regenerated`, `quadrotor3D_flip`, `quadrotor3D_flip_to_lqr` under
+`data_trajectories/deterministic/`, 40k states each. Full 1M extrapolates to ~10 h.
+
+---
+
+## A guard does not help — and the reason is structural
+
+The composition always runs controller 1 first, so 1051 of the above are states LQR alone
+would have solved. The obvious fix is the supervisory guard the design called for: run LQR
+where it works, flip elsewhere. It was built, fitted and measured. It makes things **worse**.
+
+```
+baseline                 8.00%      (uniform SO(3) sample, n=8000)
+unguarded composition   31.46%
+guarded composition     31.20%      <- worse
+oracle guard            33.45%      <- upper bound for ANY guard
+```
+
+The guard is a competent classifier — held-out accuracy 0.839 against a 0.785 majority floor,
+precision 0.721, recall 0.412 — and still recovers only 2 of 159 losses while causing 23 new
+ones, capturing **−13.2%** of the achievable gain. A threshold sweep across two model families
+never turned positive. Cross-checked on in-distribution held-out rows (27/225 recovered,
+167/2198 wrongly regressed, net −140), so this is not distribution shift.
+
+**Why:** the population a guard must protect (2.6% recoverable) is outnumbered **~10.6:1** by
+the population it can damage (27.8% genuinely needing the flip). At that ratio a guard needs
+near-perfect precision *and* recall to break even, and no scalar attitude/velocity feature
+separates the two populations that sharply.
+
+Note the trap this closes: a guard with imperfect *recall* declines to intervene on states
+that needed the flip, and each is a lost success. It is not a free safety net. The `guard=`
+parameter remains as opt-in infrastructure (default `None`, zero behaviour change) for a
+better-featured attempt — e.g. one using a learned ROA estimate rather than hand-picked
+scalars — but the 1051 losses are a genuine cost of composition, not a bug to engineer away.
+
 ---
 
 ## A methodological finding worth carrying into the paper
