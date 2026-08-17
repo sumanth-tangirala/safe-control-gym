@@ -753,16 +753,18 @@ def test_sample_and_classify_prefers_the_highest_initial_tilt():
     assert picked == pytest.approx([120.0, 170.0], abs=1e-6)
 
 
-def test_sample_and_classify_prefers_the_longest_clip_over_higher_tilt():
-    '''Length must dominate tilt, not the other way around. Passing the
-    `min_clip_states` floor only gates entry to the pool -- among survivors,
-    picking by tilt alone can select a clip that barely cleared the floor
-    over one comfortably clear of it, which is exactly how an F1 clip landed
-    under a frame floor despite the floor being enforced at admission
+def test_sample_and_classify_prefers_the_highest_tilt_over_a_longer_clip():
+    '''Tilt must dominate length, not the other way around. Passing the
+    `min_clip_states` floor still gates entry to the pool -- a clip too short
+    to watch never wins regardless of tilt -- but among survivors the
+    dramatic (high-tilt) clip wins even when a much longer, shallower-tilt
+    clip is also available: a near-full-inversion recovery is the point of
+    the deliverable, and re-ranking by length alone (an earlier revision)
+    silently dropped typical selected tilts from ~138-176 deg to ~35-156 deg
     (see visualize_quad3d_composition.py's module docstring). Two candidates
-    here have the highest tilts (170, 120 deg) but are short (45, 41 states);
-    two others are much longer (200, 150 states) with low tilt (10, 30 deg).
-    The longest two must win.
+    here have the highest tilts (170, 120 deg) but are short (45, 41 states,
+    both above the 40-state floor); two others are much longer (200, 150
+    states) with low tilt (10, 30 deg). The highest-tilt two must win.
     '''
     from visualize_quad3d_composition import sample_and_classify
 
@@ -783,8 +785,46 @@ def test_sample_and_classify_prefers_the_longest_clip_over_higher_tilt():
         sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
         prefer_high_tilt=True, pool_per_category=5, min_clip_states={'F1': 40})
 
+    from quad_composition.rollout3d import QUAT_SLICE, tilt_from_quat_wxyz
+
     picked = sorted(len(r.trajectory) for _, r in recorded['F1'])
-    assert picked == [150, 200], 'the two longest clips must win, not the two highest-tilt ones'
+    assert picked == [45, 41] or picked == [41, 45], \
+        'the two highest-tilt clips must win, not the two longest ones'
+    picked_tilts = sorted(float(np.degrees(tilt_from_quat_wxyz(np.asarray(r.trajectory[0])[QUAT_SLICE])))
+                          for _, r in recorded['F1'])
+    assert picked_tilts == pytest.approx([120.0, 170.0], abs=1e-6)
+
+
+def test_sample_and_classify_breaks_equal_tilt_ties_by_clip_length():
+    '''When candidates tie on initial tilt, the longer clip is the tie-break
+    -- so tilt dominance (see the test above) does not degrade into ignoring
+    length entirely.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    # Two candidates share the highest tilt (170 deg): one long (200), one
+    # short (45). A third candidate has lower tilt (120) and would lose
+    # either way. With num_per_category=1, the longer of the tied pair must
+    # be the one selected.
+    lengths = [45, 200, 60]
+    tilts = [170.0, 170.0, 120.0]
+    calls = {'n': 0}
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        i = calls['n'] % len(lengths)
+        tilt = np.radians(tilts[i])
+        calls['n'] += 1
+        return make_result(False, False, handoff_index=-1,
+                           trajectory=[_tilted_row(j, tilt) for j in range(lengths[i])])
+
+    recorded, _ = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['F1'], num_per_category=1, max_steps=10, max_attempts=3,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
+        prefer_high_tilt=True, pool_per_category=3, min_clip_states={'F1': 40})
+
+    picked = [len(r.trajectory) for _, r in recorded['F1']]
+    assert picked == [200], 'of the tied-tilt candidates, the longer clip must win'
 
 
 def test_sample_and_classify_defaults_still_stream_and_share_rollouts():

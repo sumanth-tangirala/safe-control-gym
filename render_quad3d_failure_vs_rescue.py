@@ -290,25 +290,33 @@ def main(argv=None):
     parser.add_argument('--output_dir', default=os.path.join(
         REPO_ROOT, 'rollout_visualizations', 'quad3d_failure_vs_rescue'))
     parser.add_argument('--flip_model', default=CTRL1_MODEL)
+    parser.add_argument('--pair_index', type=int, default=None,
+                        help='Render only this one CANDIDATES index (0-based) instead of all '
+                             'of them, merging its sidecar into any existing summary.json rather '
+                             'than overwriting it. Lets a slow (shadowed, textured-floor) render '
+                             'be split across several invocations that each fit a wall-clock '
+                             'budget. Default: render every candidate in one call (old behaviour).')
     args = parser.parse_args(argv)
 
     os.makedirs(args.output_dir, exist_ok=True)
+    indices = [args.pair_index] if args.pair_index is not None else list(range(len(CANDIDATES)))
 
     tmp = tempfile.mkdtemp(dir='/tmp', prefix='quad3d_failure_vs_rescue_')
     env = ctrl1 = ctrl2 = None
-    sidecars = []
+    new_sidecars = {}
     try:
         env, ctrl2 = make_env_and_ctrl2(tmp)
         ctrl1 = load_ctrl1(args.flip_model, env, tmp)
         g1 = G_NOM_3D
         urdf_path = env.URDF_PATH
 
-        for idx, candidate in enumerate(CANDIDATES):
+        for idx in indices:
+            candidate = CANDIDATES[idx]
             print(f'Pair {idx}: dataset_row={candidate["dataset_row"]} '
                  f'tilt={candidate["initial_tilt_deg"]:.2f} deg')
             sidecar = render_pair(env, ctrl1, ctrl2, g1, candidate, idx, len(CANDIDATES),
                                   args.output_dir, urdf_path)
-            sidecars.append(sidecar)
+            new_sidecars[idx] = sidecar
             print(f'  -> {sidecar["video"]["path"]} '
                  f'({sidecar["video"]["num_frames"]} frames, '
                  f'{sidecar["video"]["video_seconds"]:.1f}s)')
@@ -318,9 +326,22 @@ def main(argv=None):
                 obj.close()
         shutil.rmtree(tmp, ignore_errors=True)
 
-    with open(os.path.join(args.output_dir, 'summary.json'), 'w') as fh:
-        json.dump(sidecars, fh, indent=2)
-    print(f'\nWrote {len(sidecars)} pair(s) to {args.output_dir}')
+    # Merge with whatever summary.json already exists (from an earlier
+    # --pair_index call) rather than clobbering it, keyed by dataset_row so
+    # re-rendering a pair replaces its own entry, not another one's.
+    summary_path = os.path.join(args.output_dir, 'summary.json')
+    by_row = {}
+    if os.path.exists(summary_path):
+        with open(summary_path) as fh:
+            for entry in json.load(fh):
+                by_row[entry['dataset_row']] = entry
+    for sidecar in new_sidecars.values():
+        by_row[sidecar['dataset_row']] = sidecar
+    ordered = [by_row[c['dataset_row']] for c in CANDIDATES if c['dataset_row'] in by_row]
+    with open(summary_path, 'w') as fh:
+        json.dump(ordered, fh, indent=2)
+    print(f'\nWrote {len(new_sidecars)} pair(s) this run '
+         f'({len(ordered)}/{len(CANDIDATES)} total in {summary_path})')
 
 
 if __name__ == '__main__':

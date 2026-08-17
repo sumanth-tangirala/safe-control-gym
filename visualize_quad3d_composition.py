@@ -38,17 +38,20 @@ what the first cut did (its three S1 clips were the opening seconds of its
 three S1_to_F2 clips). `assign_rollouts` gives each rollout to at most one set
 (`DISJOINT_SETS`), and `disjointness_report` re-checks the result.
 
-CLIPS MUST BE LONG ENOUGH TO WATCH. Selection filters on the length of the
-clip a category actually RENDERS (`clip_for_category`, `MIN_CLIP_STATES`) --
-not on the rollout's total length, which for 'S1' overstates it by a factor of
-30 -- and among what survives the filter prefers the LONGEST clip first,
-highest initial tilt as tie-break (`assign_rollouts`). Passing the length
-floor only gates entry to the pool; without preferring the longest among
-survivors, a barely-qualifying-but-high-tilt clip could still be selected
-over one comfortably clear of the floor. Categories that cannot reach the
-`MIN_CLIP_SECONDS` floor at real time (F1 ends when the drone leaves the box,
-often within a handful of ticks) are captured at the full simulation rate and
-played back slower; `playback_plan` decides that and summary.json records it.
+CLIPS MUST BE LONG ENOUGH TO WATCH, BUT DRAMATIC TILT IS THE POINT. Selection
+filters on the length of the clip a category actually RENDERS
+(`clip_for_category`, `MIN_CLIP_STATES`) -- not on the rollout's total length,
+which for 'S1' overstates it by a factor of 30 -- and among what survives that
+floor prefers the HIGHEST INITIAL TILT first, clip length only as a tie-break
+between equal-tilt candidates (`assign_rollouts`). The length floor still
+gates entry to the pool -- a clip too short to watch never wins regardless of
+tilt -- but it does not otherwise compete with tilt: a short-but-still-watchable
+high-tilt clip beats a much longer low-tilt one, because a near-full-inversion
+recovery is the dramatic case this whole exercise exists to show. Categories
+that cannot reach the `MIN_CLIP_SECONDS` floor at real time (F1 ends when the
+drone leaves the box, often within a handful of ticks) are captured at the
+full simulation rate and played back slower rather than selected away from
+high tilt; `playback_plan` decides that and summary.json records it.
 
 CONTROLLER 2 IS ANALYTIC (LQR): unlike the 2D branch there is no
 `--ctrl2_model` -- `quad_composition.rollout3d.make_env_and_ctrl2` builds LQR
@@ -100,15 +103,31 @@ CATEGORIES = ['S1', 'F1', 'S1_to_S2', 'S1_to_F2']
 RENDER_WIDTH = 1920
 RENDER_HEIGHT = 1080
 FPS = 30
-DRONE_VISUAL_SCALE = 5.0
+# The real cf2x body -- no exaggeration. At 5.0 (the old value) the rendered
+# drone was 5x its true ~0.09-0.15 m span, which reads as a toy, not the
+# vehicle the numbers are about.
+DRONE_VISUAL_SCALE = 1.0
 
 # Tracking camera (requirement 6): the drone can be anywhere in the closed
 # state-space box (3.6 x 3.6 x 2.9 m) and is often tumbling under controller
 # 1. A FIXED camera (as in visualize_quadrotor_3d_rollout.py) risks losing it;
 # re-targeting the camera at the drone's current position every frame cannot.
-CAMERA_DISTANCE = 1.6
+#
+# Tuned empirically at DRONE_VISUAL_SCALE=1.0 against real tumbling/near-goal
+# poses (see plans/close-state-space.md era session): CAMERA_DISTANCE=0.5 m is
+# close enough that the arm/prop silhouette (and therefore the vehicle's
+# attitude, the whole point of these clips) reads clearly, while
+# CAMERA_PITCH=-15 deg puts the horizon roughly a third of the way down the
+# frame -- floor fills the lower two-thirds (a fixed reference for altitude
+# and motion) without crowding out the sky. The floor's horizon position in
+# frame is a function of pitch and CAMERA_FOV alone (an infinite plane has no
+# depth cue from distance), so this framing holds at every altitude in the
+# 0.1-3.0 m z-range, not just near the ground -- verified by rendering probes
+# at z=0.15, 1.5 and 2.9 m.
+CAMERA_DISTANCE = 0.5
 CAMERA_YAW = 45.0
-CAMERA_PITCH = -30.0
+CAMERA_PITCH = -15.0
+CAMERA_FOV = 60.0
 
 # Handoff visual cue (requirement 4): the drone's own body colour changes at
 # the handoff frame, plus a marker bead is left at the handoff position.
@@ -246,16 +265,20 @@ def assign_rollouts(pool, categories, num_per_category, disjoint_sets=None,
     one had.  Ties are broken by the caller's category order, so the assignment
     is deterministic.
 
-    `prefer_high_tilt` takes the LONGEST clip first (per-category clip length,
-    `clip_lengths[category]` -- the same quantity `min_clip_states` filters
-    on, not the whole rollout), with the highest initial tilt as a tie-break.
-    This is what makes selection length-aware rather than merely
-    length-filtered: passing the `min_clip_states` floor only gates entry to
-    the pool, so without this a barely-qualifying-but-high-tilt clip could
-    beat a much longer one that also qualified -- exactly how an F1 clip
-    landed under a frame floor despite the floor being enforced at admission.
-    Without `prefer_high_tilt`, pool order (i.e. sampling order) wins, which
-    is the historical behaviour.
+    `prefer_high_tilt` takes the HIGHEST INITIAL TILT first -- a bigger flip
+    is both more dramatic and (per `MIN_CLIP_STATES`) already guaranteed a
+    watchable clip, so tilt is what the deliverable is actually about and
+    dominates the ranking -- with per-category clip length
+    (`clip_lengths[category]`, the same quantity `min_clip_states` filters on)
+    as a tie-break between equal-tilt candidates only. Passing the
+    `min_clip_states` floor still gates entry to the pool -- a clip too short
+    to watch never competes regardless of tilt -- but among survivors tilt
+    wins first. (An earlier revision inverted this, sorting by length first
+    and tilt only as a tie-break, which is length-aware but defeats the
+    purpose: it dropped typical selected tilts from ~138-176 deg to
+    ~35-156 deg because plenty of long, shallow-tilt clips outrank short,
+    dramatic ones on length alone.) Without `prefer_high_tilt`, pool order
+    (i.e. sampling order) wins, which is the historical behaviour.
     '''
     group_of = {}
     for index, group in enumerate(disjoint_sets or []):
@@ -275,8 +298,8 @@ def assign_rollouts(pool, categories, num_per_category, disjoint_sets=None,
         candidates = [i for i, e in enumerate(pool)
                       if category in e['categories'] and claimed.get(i, group) == group]
         if prefer_high_tilt:
-            candidates.sort(key=lambda i: (pool[i]['clip_lengths'][category],
-                                           pool[i]['initial_tilt_deg']),
+            candidates.sort(key=lambda i: (pool[i]['initial_tilt_deg'],
+                                           pool[i]['clip_lengths'][category]),
                             reverse=True)
         for i in candidates[:num_per_category]:
             claimed[i] = group
@@ -463,13 +486,17 @@ def _draw_handoff_marker(client, position, color=HANDOFF_MARKER_COLOR, radius=0.
 
 def render_frames(poses, handoff_frame_index, ctrl_freq=CTRL_FREQ, fps=FPS,
                   width=RENDER_WIDTH, height=RENDER_HEIGHT, urdf_path=None):
-    '''Replay `poses` with a scaled drone and capture TRACKING-camera frames.
+    '''Replay `poses` with a true-scale drone over a ground plane and capture
+    TRACKING-camera frames.
 
     Lifted from visualize_quadrotor_3d_rollout.py's Phase 2 (DIRECT-mode
     client, scaled URDF, ER_TINY_RENDERER), except the camera's target is
     recomputed every frame to the drone's CURRENT position (requirement 6),
     so the drone stays framed however far it drifts within the 3.6 x 3.6 x
-    2.9 m box or however it tumbles.
+    2.9 m box or however it tumbles. Also loads `plane.urdf` at
+    `GROUND_PLANE_Z` (-0.05), matching what `base_aviary.py` loads for the
+    live env -- the earlier version of this function loaded only the drone,
+    so playback had no floor and rendered as flat white.
 
     If `handoff_frame_index` is not None, the drone's body colour switches
     from PRE_HANDOFF_COLOR to POST_HANDOFF_COLOR starting at that pose index,
@@ -490,6 +517,7 @@ def render_frames(poses, handoff_frame_index, ctrl_freq=CTRL_FREQ, fps=FPS,
             urdf_path = probe_env.URDF_PATH
             probe_env.close()
 
+        p.loadURDF('plane.urdf', [0, 0, -0.05], physicsClientId=client)
         drone_id = p.loadURDF(urdf_path, poses[0][0], poses[0][1],
                               globalScaling=DRONE_VISUAL_SCALE, physicsClientId=client)
         p.changeVisualShape(drone_id, -1, rgbaColor=PRE_HANDOFF_COLOR, physicsClientId=client)
@@ -499,7 +527,7 @@ def render_frames(poses, handoff_frame_index, ctrl_freq=CTRL_FREQ, fps=FPS,
             _draw_handoff_marker(client, poses[handoff_frame_index][0])
 
         cam_pro = p.computeProjectionMatrixFOV(
-            fov=60.0, aspect=float(width) / height, nearVal=0.01, farVal=1000.0)
+            fov=CAMERA_FOV, aspect=float(width) / height, nearVal=0.01, farVal=1000.0)
 
         frames = []
         colored = False
@@ -844,7 +872,7 @@ def parse_args(argv=None):
                              'Default: 12 * num_per_category.')
     parser.add_argument('--no_prefer_high_tilt', action='store_true',
                         help='Take candidates in sampling order instead of preferring the '
-                             'longest clip (highest initial tilt as tie-break) among candidates '
+                             'highest initial tilt (longest clip as tie-break) among candidates '
                              'that already pass --min_clip_states.')
     parser.add_argument('--no_disjoint_sets', action='store_true',
                         help='Allow the {S1, F1} and {S1_to_S2, S1_to_F2} video sets to reuse '

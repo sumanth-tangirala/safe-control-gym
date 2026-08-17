@@ -1,5 +1,30 @@
 # Quadrotor-3D: baseline failure vs. composition rescue
 
+## Rendering fix in this cut (scale, floor, camera)
+
+Every earlier cut of this directory (and of `quad3d_composition/`, which
+shares the same `render_frames` helper) rendered the drone at **5x its true
+size** and with **no ground plane** -- the playback DIRECT client loaded only
+the drone, so the background was flat white. Both are now fixed in
+`visualize_quad3d_composition.render_frames` (reused here, not
+reimplemented):
+
+- `DRONE_VISUAL_SCALE = 1.0` -- the real `cf2x.urdf` body.
+- `plane.urdf` is now loaded at `GROUND_PLANE_Z = -0.05`, matching what the
+  live env loads, giving a floor and a fixed reference for altitude/motion.
+
+Camera retuned empirically for the true-scale body (rendered and inspected by
+eye at several distance/pitch/fov combinations first): `CAMERA_DISTANCE =
+0.5 m`, `CAMERA_PITCH = -15 deg` (horizon roughly a third of the way down the
+frame), `CAMERA_YAW = 45 deg` (unchanged), `CAMERA_FOV = 60 deg` (unchanged).
+Full rationale in `quad3d_composition/README.md`'s matching section and in
+`visualize_quad3d_composition.py`'s `CAMERA_*` constant comments.
+
+**Only rendering changed.** The physics, the three candidate initial states,
+and every simulated outcome (crash ticks, handoff ticks, goal-reached frame)
+below are unchanged from the previous cut -- confirmed by the frame/duration
+counts matching exactly (572/607/613 frames, 19.1 s/20.2 s/20.4 s).
+
 Three paired videos, each showing the SAME dramatic initial state (166-180
 deg initial tilt, i.e. near-full inversion) played through two arms
 side-by-side in a single MP4:
@@ -55,7 +80,8 @@ the full breakdown.)
    bound violation, not just a goal-tolerance miss), and the composition must
    still reach `G1` and then the goal. The top 3 candidates by tilt (rows
    31023, 12931, 9579; 178.7 deg, 177.6 deg, 176.9 deg) all reproduced on the
-   first try -- no candidates had to be discarded.
+   first try -- no candidates had to be discarded, and reproduced again for
+   this cut (rendering-only change, same re-verification at render time).
 
 G1 used throughout: `flip_env3d.G_NOM_3D` (tilt_c = 0.175 rad / 10.0 deg,
 w_c = 4.0 rad/s) -- the same region controller 1 was trained to reach, fixed
@@ -136,11 +162,14 @@ bead left at the handoff position in space.
 ## Verification
 
 - `ffprobe` on all three: valid h264, 1920x1088, 30 fps, 572/607/613 frames
-  (19.1 s / 20.2 s / 20.4 s), non-zero duration.
+  (19.1 s / 20.2 s / 20.4 s), non-zero duration -- identical frame/duration
+  counts to the previous (5x-scale, no-floor) cut, confirming only rendering
+  changed.
 - Frames extracted at start / mid / handoff / end for each pair and inspected
-  visually (see above) -- baseline visibly crashes and freezes tumbled and
-  off-target; composition visibly changes colour at handoff, tracks to the
-  goal ring, and freezes upright on it.
+  visually -- floor now visible with checkerboard perspective, drone reads at
+  true scale; baseline visibly crashes and freezes tumbled and off-target;
+  composition visibly changes colour at handoff, tracks to the goal ring, and
+  freezes upright on it.
 - Each candidate's baseline-fails / composition-succeeds outcome was
   re-produced at render time against the SHIPPED controller (the render
   script re-runs both arms and raises if either outcome no longer holds,
@@ -157,3 +186,11 @@ The 3 candidate initial states are embedded in `CANDIDATES` at the top of
 that script (with provenance comments), so this is self-contained and does
 not depend on the `/tmp` scratch files the selection/verification passes
 used.
+
+**`--pair_index N`** renders only `CANDIDATES[N]`, merging its sidecar into
+any existing `summary.json` rather than overwriting it. Added in this cut
+because the floor+shadow render is ~10x more expensive per frame than the
+old floor-less render (measured: ~33 ms/frame -> ~330 ms/frame at
+1920x1080-per-panel with shadows), which pushed a full 3-pair run past a
+single foreground call's wall-clock budget on a contended host -- each pair
+was rendered in its own `--pair_index` invocation instead.
