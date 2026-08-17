@@ -7,67 +7,98 @@ python3 visualize_quad3d_composition.py \
   --controller sac --flip_model models/quad3d_ctrl1_selected.pt \
   --output_dir rollout_visualizations/quad3d_composition \
   --num_per_category 3 --seed 2026 --width 1920 --height 1080 \
-  --max_attempts 6000 --pool_per_category 20
+  --max_attempts 12000 --pool_per_category 20
 ```
 
-1149 of 6000 sampled rollouts used; every category filled. Verified with
+12000 of 12000 sampled rollouts used (budget exhausted -- the faster-converging
+300k controller below produces fewer long pre-handoff trajectories, so filling
+the 'S1' pool takes the whole budget); every category filled 3/3. Verified with
 `verify_quad3d_composition_videos.py` (see [Verification](#verification)).
 
-## Controller 1: SAC, chosen by measurement
+## Controller 1: SAC `quad3d_s5_tfull`, promoted from 75k to 300k steps
 
-Two candidates existed. They were compared **paired** -- both rolled out from
-the identical 900 initial states (`compare_ctrl1_3d.py --seed 42
---num_per_bucket 150`), so the difference between the rows is the controller
-and nothing else.
+**Checkpoint used: `models/quad3d_ctrl1_selected.pt`, a frozen copy of
+`models/quad3d_s5_tfull/checkpoints/model_300000.pt` (`total_steps = 300000`).**
+This supersedes the 75k-step checkpoint used by every earlier cut of this
+directory.
 
-| Controller 1 | S1 (reached G1) | F1 | **S1->S2** | S1->F2 |
-| --- | --- | --- | --- | --- |
-| **SAC `quad3d_s5_tfull` @ 75k steps (WINNER)** | 42.1% (379/900) | 57.9% | **33.7% (303/900)** | 8.4% (76/900) |
-| `geometric_flip3d.GeometricFlipController3D` | 50.9% (458/900) | 49.1% | 18.9% (170/900) | 32.0% (288/900) |
+### Why 300k over 75k
 
-The decision rule was end-to-end success (S1->S2), with S1 as tiebreak. SAC
-wins it outright and by a wide margin: on the same 900 states, 166 were solved
-end-to-end by SAC only versus 33 by the geometric controller only (paired
-McNemar chi-squared = 87.6, i.e. far beyond any sampling noise at this N).
+A paired test on an **independent seed** (n=1500, `G1 = flip_env3d.G_NOM_3D`)
+compared the incumbent 75k checkpoint against the 300k checkpoint directly:
 
-**The geometric controller reaches G1 more often and finishes less often.**
-That is not a contradiction -- it is the whole point of the comparison. It
-enters G1 fast (median handoff 13-21 ticks) but arrives with position and
-translational velocity that LQR cannot recover from, so 63% of its handoffs go
-on to fail (S1->F2 32.0% of 50.9%). SAC takes longer to converge (median
-handoff 28-46 ticks) and hands off in a state LQR can actually finish from:
-only 20% of its handoffs fail.
+```
+incumbent  models/quad3d_ctrl1_selected.pt (75k, old)               S1->S2 31.47%
+challenger models/quad3d_s5_tfull/checkpoints/model_300000.pt (300k) S1->S2 36.93%
+discordant 70/152, McNemar chi2 = 29.55 (Bonferroni .01 threshold 6.63) -- +5.46 points
+```
 
-S1 by initial-tilt bucket, same 900 paired states, 150 per bucket:
+Comfortably beyond chance at this N. This is the largest available improvement
+to the composition (see `docs/superpowers/specs/2026-08-17-quad-composition-results.md`,
+"Training controller 1 longer stops helping the composition", for the full
+100k-500k ladder this promotion is drawn from).
 
-| Tilt bucket | SAC S1 | geometric S1 | SAC S1->S2 | geometric S1->S2 |
-| --- | --- | --- | --- | --- |
-| 0-30 deg | 57.3% | 68.7% | 42.7% | 24.0% |
-| 30-60 deg | 52.7% | 66.0% | 38.7% | 20.7% |
-| 60-90 deg | 44.0% | 52.7% | 34.0% | 20.0% |
-| 90-120 deg | 36.7% | 38.0% | 30.0% | 12.0% |
-| 120-150 deg | 30.7% | 40.0% | 28.7% | 15.3% |
-| 150-180 deg | 31.3% | 40.0% | 28.0% | 21.3% |
-| **all** | **42.1%** | **50.9%** | **33.7%** | **18.9%** |
+**Non-subsumption moves up with it, as expected, not as a regression:**
 
-SAC wins S1->S2 in every bucket, including full inversion.
+```
+non_subsumption (300k, shipped)     = 0.2593   95% CI [0.2330, 0.2874]   n = 995 handoffs
+non_subsumption (75k,  previous)    = 0.1950   95% CI [0.1690, 0.2239]   n = 800 handoffs
+```
 
-### Which checkpoint, and how it was picked
+The documented ladder already shows non-subsumption rising with training steps
+independently of this promotion (0.157 at 100k to 0.282 at 500k) while S1->S2
+keeps improving -- the two numbers are expected to travel together, and both
+moving up here is exactly that behaviour, not a wrinkle specific to this
+checkpoint.
+
+### First promotion attempt: rolled back; this cut is the successful retry
+
+A first attempt to promote to 300k regenerated this directory at the recorded
+75k-era settings (`--max_attempts 6000`) and could not clear verification: the
+300k controller reaches the `G1` handoff faster on average, so the `S1`
+category's pool of pre-handoff-trajectory candidates fills more slowly, and
+even after doubling the budget to 12000 the deliverable scored **11/12** --
+`F1/rollout_001.mp4` landed at 56 frames against the 60-frame verification
+floor. Per protocol that regeneration was rolled back rather than shipped
+partially verified (see `models/quad3d_ctrl1_selected_prev2.pt` and
+`.superpowers/sdd/2026-08-16-quad2d-composition/promote300k-report.md`).
+
+The root cause was not the sampling budget -- it was that selection
+(`assign_rollouts`) picked by **initial tilt alone** among candidates that
+merely passed the `MIN_CLIP_STATES` floor, so a clip that barely cleared the
+floor could still be chosen over a much longer one that also cleared it. This
+cut fixes that: `assign_rollouts` now sorts candidates by **clip length
+first** (tilt as a tie-break only) among survivors of the same length filter,
+so the longest available clips are the ones taken, not merely the first
+acceptable ones. See [Playback treatment](#playback-treatment----which-categories-are-slow-motion-and-why)
+below for the resulting margins -- every F1 clip in this cut runs 56+ states,
+comfortably clear of the 60-frame floor that failed the first attempt.
+
+### Which checkpoint, and how 75k was originally picked
 
 16 SAC runs were training concurrently. All 16 `model_best.pt` were screened on
 an identical cheap draw (60 rollouts each, seed 11), the top six re-run at 300
 rollouts (seed 23), and the top three at 900 (seed 42) -- each stage on a fresh
 seed, so the winner is not being scored on the data that selected it.
-`quad3d_s5_tfull` came first at both 300 and 900 rollouts.
+`quad3d_s5_tfull` came first at both 300 and 900 rollouts, was frozen at 75k
+while training was still running, and was superseded by the 300k checkpoint
+above once training had run further and a paired comparison confirmed it.
 
-- **Checkpoint used**: `models/quad3d_ctrl1_selected.pt`, a frozen copy of
-  `models/quad3d_s5_tfull/model_best.pt` at `total_steps = 75000`
-  (snapshotted 2026-08-17 00:37, while training was still running).
-- The same run's later 100k-step checkpoint was measured on the same 900
-  states and is a statistical tie (S1->S2 32.6% vs 33.7%, S1 42.1% for both),
-  so nothing is lost by the freeze. Runner-up seeds were also close:
-  `s4_tfull` 31.4%, `s0_tfull` 30.2%, `s12_t60` 27.9% -- every SAC seed
-  measured beat the geometric controller's 18.9%.
+| Controller 1 | S1 (reached G1) | F1 | **S1->S2** | S1->F2 |
+| --- | --- | --- | --- | --- |
+| **SAC `quad3d_s5_tfull` @ 300k steps (SHIPPED)** | -- | -- | **36.93% (n=1500, paired vs 75k)** | -- |
+| SAC `quad3d_s5_tfull` @ 75k steps (previous) | 42.1% (379/900) | 57.9% | 31.47% (n=1500) / 33.7% (n=900) | 8.4% (76/900) |
+| `geometric_flip3d.GeometricFlipController3D` | 50.9% (458/900) | 49.1% | 18.9% (170/900) | 32.0% (288/900) |
+
+(75k vs geometric was measured on a different 900-state paired draw than the
+75k-vs-300k comparison above; the two S1->S2 numbers for 75k, 33.7% and
+31.47%, are both real, just on different samples -- see
+`docs/superpowers/specs/2026-08-17-quad-composition-results.md` for both in
+full.) The decision rule throughout has been end-to-end success (S1->S2), not
+flip rate: the geometric controller reaches `G1` more often and finishes far
+less often (63% of its handoffs fail, against SAC's ~20%), which is why flip
+rate alone would have picked the worse composition.
+
 - Observation is the 18-dim Euler-free view (spec D6): the native 12-dim obs
   with `[phi, theta, psi]` replaced by the nine entries of the body->world
   rotation matrix.
@@ -125,10 +156,10 @@ and played back slower. Only S1->S2 runs at real time.
 
 | Category | Treatment | Capture | Playback | Slowdown | Shortest clip |
 | --- | --- | --- | --- | --- | --- |
-| S1 | **slow motion** | 100 Hz | 27 fps | 3.7x | 81 states = 0.80 s real |
-| F1 | **slow motion** | 100 Hz | 17 fps | 5.9x | 51 states = 0.50 s real |
-| S1->S2 | none (real time) | 30 Hz | 30 fps | 1.0x | 494 states = 4.93 s real |
-| S1->F2 | **slow motion** | 100 Hz | 30 fps | 3.3x | 134 states = 1.33 s real |
+| S1 | **slow motion** | 100 Hz | 27 fps | 3.7x | 83 states = 0.82 s real |
+| F1 | **slow motion** | 100 Hz | 18 fps | 5.6x | 56 states = 0.55 s real |
+| S1->S2 | none (real time) | 30 Hz | 30 fps | 1.0x | 604 states = 6.03 s real |
+| S1->F2 | **slow motion** | 100 Hz | 30 fps | 3.3x | 169 states = 1.68 s real |
 
 On top of that, S1 and F1 hold their **final** frame for 1.0 s (that *is*
 padding, and is why it is stated here) so the handoff colour change and the
@@ -138,11 +169,14 @@ have no hold.
 Selection also enforces a minimum on the length of the clip each category
 actually renders -- `MIN_CLIP_STATES = {S1: 80, F1: 40, S1_to_S2: 300,
 S1_to_F2: 120}` -- measured against the *rendered* clip
-(`clip_for_category`), not the whole rollout. Filtering on rollout length is
-what produced the earlier 10-16 frame S1 clips: a 500-state S1->S2 rollout
-whose handoff fires at step 11 yields a 12-state S1 video. Among clips that
-pass, the **highest initial tilt** wins, which is why every clip below starts
-between 138 deg and 176 deg -- near or at full inversion.
+(`clip_for_category`), not the whole rollout. Among clips that pass that
+floor, **the longest clip wins, with the highest initial tilt only as a
+tie-break** (`assign_rollouts`) -- this cut's fix over every earlier one,
+which preferred tilt outright and let a barely-qualifying clip beat a much
+longer one. Because length now dominates, the selected clips in this cut do
+*not* all sit at extreme tilt the way the 75k cut's did (138-176 deg there);
+here they range 34.8-156.0 deg, whichever rollouts in the pool happened to run
+longest.
 
 ## Per-video index
 
@@ -153,33 +187,33 @@ Handoff step is in controller ticks (100 Hz); "--" means no handoff fired.
 
 | File | Initial tilt | Handoff step | Clip states | Frames | Video | Real |
 | --- | --- | --- | --- | --- | --- | --- |
-| `S1/rollout_000.mp4` | 161.8 deg | 80 | 81 | 108 | 4.00 s | 0.80 s |
-| `S1/rollout_001.mp4` | 145.5 deg | 80 | 81 | 108 | 4.00 s | 0.80 s |
-| `S1/rollout_002.mp4` | 138.3 deg | 86 | 87 | 114 | 4.22 s | 0.86 s |
+| `S1/rollout_000.mp4` | 92.3 deg | 105 | 106 | 133 | 4.93 s | 1.05 s |
+| `S1/rollout_001.mp4` | 58.1 deg | 83 | 84 | 111 | 4.11 s | 0.83 s |
+| `S1/rollout_002.mp4` | 97.3 deg | 82 | 83 | 110 | 4.07 s | 0.82 s |
 
-### F1 -- flip failed (5.9x slow motion, 17 fps)
+### F1 -- flip failed (5.6x slow motion, 18 fps)
 
 | File | Initial tilt | Handoff step | Clip states | Frames | Video | Real |
 | --- | --- | --- | --- | --- | --- | --- |
-| `F1/rollout_000.mp4` | 176.3 deg | -- | 51 | 68 | 4.00 s | 0.50 s |
-| `F1/rollout_001.mp4` | 161.0 deg | -- | 56 | 73 | 4.29 s | 0.55 s |
-| `F1/rollout_002.mp4` | 151.4 deg | -- | 60 | 77 | 4.53 s | 0.59 s |
+| `F1/rollout_000.mp4` | 156.0 deg | -- | 69 | 87 | 4.83 s | 0.68 s |
+| `F1/rollout_001.mp4` | 55.5 deg | -- | 58 | 76 | 4.22 s | 0.57 s |
+| `F1/rollout_002.mp4` | 48.0 deg | -- | 56 | 74 | 4.11 s | 0.55 s |
 
 ### S1->S2 -- handoff fired, LQR reached the goal (real time, 30 fps)
 
 | File | Initial tilt | Handoff step | Clip states | Frames | Video | Real |
 | --- | --- | --- | --- | --- | --- | --- |
-| `S1_to_S2/rollout_000.mp4` | 175.7 deg | 35 | 494 | 166 | 5.53 s | 4.93 s |
-| `S1_to_S2/rollout_001.mp4` | 174.4 deg | 34 | 508 | 170 | 5.67 s | 5.07 s |
-| `S1_to_S2/rollout_002.mp4` | 171.1 deg | 72 | 507 | 170 | 5.67 s | 5.06 s |
+| `S1_to_S2/rollout_000.mp4` | 34.8 deg | 81 | 629 | 211 | 7.03 s | 6.28 s |
+| `S1_to_S2/rollout_001.mp4` | 52.0 deg | 31 | 605 | 203 | 6.77 s | 6.04 s |
+| `S1_to_S2/rollout_002.mp4` | 134.3 deg | 43 | 604 | 202 | 6.73 s | 6.03 s |
 
 ### S1->F2 -- handoff fired, LQR did not reach the goal (3.3x slow motion, 30 fps)
 
 | File | Initial tilt | Handoff step | Clip states | Frames | Video | Real |
 | --- | --- | --- | --- | --- | --- | --- |
-| `S1_to_F2/rollout_000.mp4` | 175.9 deg | 119 | 175 | 175 | 5.83 s | 1.74 s |
-| `S1_to_F2/rollout_001.mp4` | 173.4 deg | 84 | 139 | 139 | 4.63 s | 1.38 s |
-| `S1_to_F2/rollout_002.mp4` | 166.1 deg | 45 | 134 | 134 | 4.47 s | 1.33 s |
+| `S1_to_F2/rollout_000.mp4` | 47.7 deg | 9 | 183 | 183 | 6.10 s | 1.82 s |
+| `S1_to_F2/rollout_001.mp4` | 133.8 deg | 33 | 178 | 178 | 5.93 s | 1.77 s |
+| `S1_to_F2/rollout_002.mp4` | 51.8 deg | 31 | 169 | 169 | 5.63 s | 1.68 s |
 
 ## Verification
 
@@ -198,16 +232,17 @@ frame of every clip and checks
 - **F1 negative check**: F1 clips must show *neither* the post-handoff colour
   nor a marker bead.
 
-The same tool run against the previous cut of this directory FAILS 9 of its 12
-clips (S1 at 12 frames / 0.40 s, F1 at 13-16 frames, S1->F2 at 10-37 frames),
-which is the defect this regeneration fixes -- so the check is known to be able
-to fail.
+The same tool, run against the earlier retry of this cut that used the
+identical 300k checkpoint but tilt-first (not length-first) selection, failed
+1 of 12 clips (`F1/rollout_001.mp4`, 56 frames against the 60-frame floor).
+This cut's F1 clips run 74-87 frames -- the length-first selection fix leaves
+real margin above the floor rather than landing on it by luck.
 
 Frames were additionally extracted and inspected by eye from all four
 categories: the drone stays centred throughout, the black -> orange change is
 obvious, and the magenta bead is clearly visible in the S1->S2 and S1->F2
 clips.
 
-File sizes 122 KB - 271 KB; each `<category>/rollout_NNN.json` sidecar and the
+File sizes 93 KB - 326 KB; each `<category>/rollout_NNN.json` sidecar and the
 top-level `summary.json` record the full initial state, handoff index, initial
 tilt, frame count, capture/playback rates and success flags for every clip.
