@@ -130,7 +130,8 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
     from quad_composition import flip_env2d
 
     fixed_init = np.array([0.1, 0.9, 0.2, 0.05, -0.05, 0.3])
-    monkeypatch.setattr(flip_env2d, 'sample_uniform_state', lambda rng: fixed_init)
+    monkeypatch.setattr(flip_env2d, 'sample_uniform_state',
+                        lambda rng, max_init_tilt=None: fixed_init)
 
     # env order [x, x_dot, z, z_dot, theta, theta_dot]
     fake_obs = np.array([0.1, 0.05, 0.9, -0.05, 0.2, 0.3])
@@ -394,3 +395,33 @@ def test_flip_training_env_smoke_runs_a_real_episode():
         assert saw_done
     finally:
         env.close()
+
+
+def test_sample_uniform_state_caps_initial_tilt_when_asked():
+    '''--max_init_tilt_deg narrows TRAINING starts only.
+
+    Recovery above ~90 deg is unachievable in this system (a hand-coded
+    bang-bang flip scores 0.000 there), so sampling the full +-180 range
+    spends most episodes on impossible tasks.
+    '''
+    from quad_composition.flip_env2d import sample_uniform_state
+    rng = np.random.default_rng(0)
+    uncapped = np.array([sample_uniform_state(rng)[2] for _ in range(2000)])
+    capped = np.array([sample_uniform_state(rng, np.radians(90))[2] for _ in range(2000)])
+    assert np.abs(uncapped).max() > np.radians(150), 'default must keep full attitude coverage'
+    assert np.abs(capped).max() <= np.radians(90) + 1e-9
+    assert np.abs(capped).max() > np.radians(80), 'cap should still span most of its range'
+
+
+def test_capping_tilt_leaves_every_other_dimension_untouched():
+    '''The cap must narrow theta ONLY -- position and velocity ranges are the
+    closed state space and must not be quietly shrunk with it.'''
+    from quad_composition.flip_env2d import STATE_HIGH, STATE_LOW, sample_uniform_state
+    rng = np.random.default_rng(1)
+    capped = np.array([sample_uniform_state(rng, np.radians(45)) for _ in range(3000)])
+    for idx in (0, 1, 3, 4, 5):
+        assert capped[:, idx].min() >= STATE_LOW[idx] - 1e-9
+        assert capped[:, idx].max() <= STATE_HIGH[idx] + 1e-9
+        spread = capped[:, idx].max() - capped[:, idx].min()
+        full = STATE_HIGH[idx] - STATE_LOW[idx]
+        assert spread > 0.9 * full, f'dimension {idx} was narrowed along with theta'

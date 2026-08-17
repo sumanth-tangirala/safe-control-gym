@@ -20,10 +20,15 @@ multi-hour job):
 import argparse
 import os
 
+import numpy as np
+
 from quad_composition.flip_env2d import G_NOM, FlipTrainingEnv
 from quad_composition.rollout2d import ENV_CONFIG, SAC_CONFIG, TERMINATION
 from safe_control_gym.utils.registration import make
 from safe_control_gym.utils.utils import set_seed
+
+
+_MAX_INIT_TILT = None
 
 
 def env_func(seed=None, **kwargs):
@@ -56,10 +61,12 @@ def env_func(seed=None, **kwargs):
     for idx, (lo, hi) in TERMINATION.items():
         env.state_space.low[idx] = lo
         env.state_space.high[idx] = hi
-    return FlipTrainingEnv(env, G_NOM, seed=seed if seed is not None else 0)
+    return FlipTrainingEnv(env, G_NOM, seed=seed if seed is not None else 0,
+                           max_init_tilt=_MAX_INIT_TILT)
 
 
 def main():
+    global _MAX_INIT_TILT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output_dir', required=True)
     parser.add_argument('--max_env_steps', type=int, default=1000000)
@@ -79,12 +86,22 @@ def main():
                         help='Steps between evaluations (0 disables).')
     parser.add_argument('--eval_batch_size', type=int, default=5,
                         help='Episodes per evaluation.')
+    parser.add_argument('--max_init_tilt_deg', type=float, default=None,
+                        help='Cap the INITIAL |theta| sampled during training, in degrees. '
+                             'Recovery above ~90 deg is not achievable in this system (a '
+                             'hand-coded bang-bang flip scores 0.000 there, matching the RL '
+                             'baseline cliff and the analytic ~107 deg ceiling), so sampling '
+                             'the full +-180 range spends most episodes on impossible tasks. '
+                             'Training only -- evaluation and dataset generation are unaffected.')
     args = parser.parse_args()
 
     for name in ('log_interval', 'save_interval', 'eval_interval'):
         value = getattr(args, name)
         if value and value % 4 != 0:
             parser.error(f'--{name} must be a multiple of 4 (rollout_batch_size); got {value}')
+
+    _MAX_INIT_TILT = (np.radians(args.max_init_tilt_deg)
+                      if args.max_init_tilt_deg is not None else None)
 
     os.makedirs(args.output_dir, exist_ok=True)
 

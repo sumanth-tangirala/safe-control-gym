@@ -67,9 +67,25 @@ def shaped_reward(state, next_state, in_g_nom):
     return reward
 
 
-def sample_uniform_state(rng):
-    '''Uniform over the closed state space (spec: training distribution).'''
-    return rng.uniform(STATE_LOW, STATE_HIGH)
+def sample_uniform_state(rng, max_init_tilt=None):
+    '''Uniform over the closed state space (spec: training distribution).
+
+    `max_init_tilt` (radians) optionally narrows the INITIAL theta range only.
+    It exists because recovery above ~90 deg is not achievable in this system:
+    a hand-coded bang-bang flip reaches G_nom on 0.593 / 0.194 / 0.061 of starts
+    at |theta| of 0-30 / 30-60 / 60-90 deg, and 0.000 above 90 deg -- the same
+    cliff the safe_explorer_ppo baseline shows, and consistent with the analytic
+    budget's ~107 deg ceiling at zdot=0. Sampling the full +-pi range therefore
+    spends about two thirds of every episode on physically impossible tasks and
+    dilutes the learning signal by the same factor.
+
+    This narrows TRAINING only. Evaluation, calibration and dataset generation
+    keep the full closed state space, so nothing downstream is affected.
+    '''
+    state = rng.uniform(STATE_LOW, STATE_HIGH)
+    if max_init_tilt is not None:
+        state[2] = rng.uniform(-max_init_tilt, max_init_tilt)
+    return state
 
 
 class FlipTrainingEnv(gym.Wrapper):
@@ -124,9 +140,10 @@ class FlipTrainingEnv(gym.Wrapper):
     `obs, info = env.reset()` and `obs, reward, done, info = env.step(action)`.
     '''
 
-    def __init__(self, env, g_nom, seed=0):
+    def __init__(self, env, g_nom, seed=0, max_init_tilt=None):
         super().__init__(env)
         self.g_nom = g_nom
+        self.max_init_tilt = max_init_tilt
         self.rng = np.random.default_rng(seed)
         self._state = None
         # 7-dim (spec D6): the env's native observation_space has the folded
@@ -135,7 +152,7 @@ class FlipTrainingEnv(gym.Wrapper):
         self.observation_space = ctrl1_observation_space(env)
 
     def reset(self, **kwargs):
-        init = sample_uniform_state(self.rng)
+        init = sample_uniform_state(self.rng, self.max_init_tilt)
         obs, info = set_initial_state(self.env, init)
         # state_from_env reads TRUE attitude for the reward/termination state
         # (Finding C1); ctrl1_observation is the SEPARATE 7-dim transform
