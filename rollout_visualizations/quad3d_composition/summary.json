@@ -1,0 +1,551 @@
+{
+  "seed": "multiple (per-category resumable search; see per-category README/log notes)",
+  "max_steps": 1200,
+  "num_per_category": 3,
+  "categories_requested": [
+    "S1",
+    "F1",
+    "S1_to_S2",
+    "S1_to_F2"
+  ],
+  "total_attempts_sampled": "per-category, tracked in /tmp checkpoints; see report",
+  "categories": {
+    "S1": {
+      "requested": 3,
+      "found": 3,
+      "filled": true,
+      "handoff_indices": [
+        83,
+        80,
+        82
+      ],
+      "initial_tilts_deg": [
+        160.07876147488628,
+        108.00303196959429,
+        97.31223449181876
+      ],
+      "rollouts": [
+        {
+          "category": "S1",
+          "index": 0,
+          "init_state": [
+            -0.7524504476488676,
+            0.3915088417414112,
+            1.1326127273621485,
+            0.17199662790717418,
+            0.687388130351387,
+            0.7053924461884542,
+            -0.018336169197909813,
+            1.034279937756315,
+            -1.476116202828351,
+            0.9697923597306861,
+            6.319035628020295,
+            -14.16832969474258,
+            1.3302444178559298
+          ],
+          "handoff_index": 83,
+          "initial_tilt_deg": 160.07876147488628,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 84,
+          "num_full_trajectory_states": 489,
+          "num_video_frames": 111,
+          "capture_fps": 100,
+          "playback_fps": 27,
+          "hold_seconds": 1.0,
+          "video_seconds": 4.111111111111111,
+          "real_time_seconds": 0.83,
+          "video": "rollout_000.mp4",
+          "plot": "rollout_000_tilt.png"
+        },
+        {
+          "category": "S1",
+          "index": 1,
+          "init_state": [
+            0.599253899782791,
+            0.5033238192738438,
+            2.9688019001282906,
+            0.2974206059558294,
+            0.4946890030396658,
+            -0.6401690801474633,
+            0.5069588960139071,
+            1.445297657333846,
+            0.30156231773351916,
+            -0.6074679301101522,
+            -11.938707401428895,
+            -19.902259918382747,
+            13.412623862171031
+          ],
+          "handoff_index": 80,
+          "initial_tilt_deg": 108.00303196959429,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 81,
+          "num_full_trajectory_states": 529,
+          "num_video_frames": 108,
+          "capture_fps": 100,
+          "playback_fps": 27,
+          "hold_seconds": 1.0,
+          "video_seconds": 4.0,
+          "real_time_seconds": 0.8,
+          "video": "rollout_001.mp4",
+          "plot": "rollout_001_tilt.png"
+        },
+        {
+          "category": "S1",
+          "index": 2,
+          "init_state": [
+            0.936498649729399,
+            0.2631247166489734,
+            0.4203762887315432,
+            0.5604723404350875,
+            -0.725428469330556,
+            -0.19336943765717324,
+            0.3496177227660097,
+            0.9431564529057468,
+            -2.3069354635662744,
+            -0.42876000512895285,
+            -16.137398953145127,
+            3.668148682626189,
+            23.121962973736814
+          ],
+          "handoff_index": 82,
+          "initial_tilt_deg": 97.31223449181876,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 83,
+          "num_full_trajectory_states": 464,
+          "num_video_frames": 110,
+          "capture_fps": 100,
+          "playback_fps": 27,
+          "hold_seconds": 1.0,
+          "video_seconds": 4.074074074074074,
+          "real_time_seconds": 0.82,
+          "video": "rollout_002.mp4",
+          "plot": "rollout_002_tilt.png"
+        }
+      ]
+    },
+    "F1": {
+      "requested": 3,
+      "found": 3,
+      "filled": true,
+      "handoff_indices": [
+        -1,
+        -1,
+        -1
+      ],
+      "initial_tilts_deg": [
+        140.1572781941341,
+        138.17328874140512,
+        87.95623100227219
+      ],
+      "rollouts": [
+        {
+          "category": "F1",
+          "index": 0,
+          "init_state": [
+            0.8215802361782822,
+            -0.8540937053207719,
+            1.4233954503621986,
+            0.26465037782186984,
+            -0.9347931604459266,
+            -0.10032326620599495,
+            -0.21460933567768872,
+            2.4758309034075747,
+            0.28373606439411647,
+            -1.580913251841244,
+            5.239571829373446,
+            9.367330976053651,
+            -9.115558647894858
+          ],
+          "handoff_index": -1,
+          "initial_tilt_deg": 140.1572781941341,
+          "flip_success": false,
+          "ctrl2_success": false,
+          "num_recorded_states": 42,
+          "num_full_trajectory_states": 42,
+          "num_video_frames": 57,
+          "capture_fps": 100,
+          "playback_fps": 15,
+          "hold_seconds": 1.0,
+          "video_seconds": 3.8,
+          "real_time_seconds": 0.41,
+          "video": "rollout_000.mp4",
+          "plot": "rollout_000_tilt.png"
+        },
+        {
+          "category": "F1",
+          "index": 1,
+          "init_state": [
+            -1.1107905000660319,
+            -0.8640438062670596,
+            0.7233009576794536,
+            0.1726707707765378,
+            0.6722722458104228,
+            -0.6485619618295138,
+            -0.3124135305973468,
+            -0.03741035569271567,
+            -2.7870437658176574,
+            -1.1559791238764987,
+            18.833474686620775,
+            5.7723710249855955,
+            4.379605266719189
+          ],
+          "handoff_index": -1,
+          "initial_tilt_deg": 138.17328874140512,
+          "flip_success": false,
+          "ctrl2_success": false,
+          "num_recorded_states": 43,
+          "num_full_trajectory_states": 43,
+          "num_video_frames": 58,
+          "capture_fps": 100,
+          "playback_fps": 15,
+          "hold_seconds": 1.0,
+          "video_seconds": 3.8666666666666667,
+          "real_time_seconds": 0.42,
+          "video": "rollout_001.mp4",
+          "plot": "rollout_001_tilt.png"
+        },
+        {
+          "category": "F1",
+          "index": 2,
+          "init_state": [
+            0.8975887429861742,
+            -1.6925092487614508,
+            0.3406269001855049,
+            0.6440425879678168,
+            0.6942461144923008,
+            -0.013815404700097188,
+            0.32099939562097735,
+            2.523166768001504,
+            2.141779424398063,
+            0.8102625531579379,
+            11.893243874395154,
+            -9.203998463556829,
+            -16.356784101677093
+          ],
+          "handoff_index": -1,
+          "initial_tilt_deg": 87.95623100227219,
+          "flip_success": false,
+          "ctrl2_success": false,
+          "num_recorded_states": 43,
+          "num_full_trajectory_states": 43,
+          "num_video_frames": 58,
+          "capture_fps": 100,
+          "playback_fps": 15,
+          "hold_seconds": 1.0,
+          "video_seconds": 3.8666666666666667,
+          "real_time_seconds": 0.42,
+          "video": "rollout_002.mp4",
+          "plot": "rollout_002_tilt.png"
+        }
+      ]
+    },
+    "S1_to_S2": {
+      "requested": 3,
+      "found": 3,
+      "filled": true,
+      "handoff_indices": [
+        22,
+        25,
+        28
+      ],
+      "initial_tilts_deg": [
+        140.49751801223937,
+        125.48961796377485,
+        94.16159490349108
+      ],
+      "rollouts": [
+        {
+          "category": "S1_to_S2",
+          "index": 0,
+          "init_state": [
+            -1.7333189792958623,
+            0.3369466165221926,
+            0.3428441581069707,
+            0.3358529914470678,
+            -0.9156578077284316,
+            0.21764487907288477,
+            0.03747337582027474,
+            1.363606040954413,
+            1.2062842678095844,
+            -0.05667635948825689,
+            20.32551080997427,
+            2.15856799527527,
+            23.2822301025964
+          ],
+          "handoff_index": 22,
+          "initial_tilt_deg": 140.49751801223937,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 499,
+          "num_full_trajectory_states": 499,
+          "num_video_frames": 167,
+          "capture_fps": 30,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 5.566666666666666,
+          "real_time_seconds": 4.98,
+          "video": "rollout_000.mp4",
+          "plot": "rollout_000_tilt.png"
+        },
+        {
+          "category": "S1_to_S2",
+          "index": 1,
+          "init_state": [
+            -0.764679518210561,
+            -0.8519834001563218,
+            2.3221464878098126,
+            0.45472788514448087,
+            0.8613841026595382,
+            -0.21976155627759905,
+            -0.054266348134894185,
+            0.8401902469639921,
+            2.3331356895771656,
+            -0.0027154891434162387,
+            17.162139048977238,
+            4.616090587297325,
+            -7.56782462607449
+          ],
+          "handoff_index": 25,
+          "initial_tilt_deg": 125.48961796377485,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 458,
+          "num_full_trajectory_states": 458,
+          "num_video_frames": 154,
+          "capture_fps": 30,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 5.133333333333334,
+          "real_time_seconds": 4.57,
+          "video": "rollout_001.mp4",
+          "plot": "rollout_001_tilt.png"
+        },
+        {
+          "category": "S1_to_S2",
+          "index": 2,
+          "init_state": [
+            1.0170356730534125,
+            0.11271435864035695,
+            1.391541587612437,
+            0.2758172740275913,
+            -0.09854724767481979,
+            0.7256536933641995,
+            -0.6226074113200089,
+            -2.368987604526555,
+            2.739390217586796,
+            0.06140409721378237,
+            -9.613044992048474,
+            7.610484844986573,
+            20.723471968385397
+          ],
+          "handoff_index": 28,
+          "initial_tilt_deg": 94.16159490349108,
+          "flip_success": true,
+          "ctrl2_success": true,
+          "num_recorded_states": 448,
+          "num_full_trajectory_states": 448,
+          "num_video_frames": 150,
+          "capture_fps": 30,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 5.0,
+          "real_time_seconds": 4.47,
+          "video": "rollout_002.mp4",
+          "plot": "rollout_002_tilt.png"
+        }
+      ]
+    },
+    "S1_to_F2": {
+      "requested": 3,
+      "found": 3,
+      "filled": true,
+      "handoff_indices": [
+        25,
+        17,
+        25
+      ],
+      "initial_tilts_deg": [
+        105.8010510629048,
+        91.78352621862179,
+        88.45897455589945
+      ],
+      "rollouts": [
+        {
+          "category": "S1_to_F2",
+          "index": 0,
+          "init_state": [
+            1.1687899929605958,
+            1.2262990012860677,
+            1.6157481354330656,
+            0.45230285118856356,
+            -0.4762009454002747,
+            -0.6398293591304364,
+            0.39909044288396056,
+            0.057826546416346325,
+            -0.925507029317516,
+            -0.6638587336030053,
+            -18.65362177507649,
+            6.321094175314833,
+            -17.65906695983857
+          ],
+          "handoff_index": 25,
+          "initial_tilt_deg": 105.8010510629048,
+          "flip_success": true,
+          "ctrl2_success": false,
+          "num_recorded_states": 166,
+          "num_full_trajectory_states": 166,
+          "num_video_frames": 166,
+          "capture_fps": 100,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 5.533333333333333,
+          "real_time_seconds": 1.65,
+          "video": "rollout_000.mp4",
+          "plot": "rollout_000_tilt.png"
+        },
+        {
+          "category": "S1_to_F2",
+          "index": 1,
+          "init_state": [
+            0.5842160855690945,
+            -1.4335036730540973,
+            2.1960577122069265,
+            0.26880737391217413,
+            -0.4353335130179795,
+            0.5710047472744447,
+            0.6420131671265885,
+            -0.7999966442140307,
+            -0.7041903203884621,
+            -1.767618179335237,
+            4.495932902523023,
+            23.84622892585871,
+            3.914000653336437
+          ],
+          "handoff_index": 17,
+          "initial_tilt_deg": 91.78352621862179,
+          "flip_success": true,
+          "ctrl2_success": false,
+          "num_recorded_states": 121,
+          "num_full_trajectory_states": 121,
+          "num_video_frames": 121,
+          "capture_fps": 100,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 4.033333333333333,
+          "real_time_seconds": 1.2,
+          "video": "rollout_001.mp4",
+          "plot": "rollout_001_tilt.png"
+        },
+        {
+          "category": "S1_to_F2",
+          "index": 2,
+          "init_state": [
+            0.2180047945611534,
+            -0.129252751582265,
+            1.1187713475492225,
+            0.35112326196908483,
+            -0.6881276712915826,
+            -0.11416630579553833,
+            0.624626942685002,
+            2.346127985596322,
+            -1.979731958109805,
+            -1.0565947573005343,
+            -12.301343007625269,
+            -3.8075409954399717,
+            -0.5977156339935945
+          ],
+          "handoff_index": 25,
+          "initial_tilt_deg": 88.45897455589945,
+          "flip_success": true,
+          "ctrl2_success": false,
+          "num_recorded_states": 135,
+          "num_full_trajectory_states": 135,
+          "num_video_frames": 135,
+          "capture_fps": 100,
+          "playback_fps": 30,
+          "hold_seconds": 0.0,
+          "video_seconds": 4.5,
+          "real_time_seconds": 1.34,
+          "video": "rollout_002.mp4",
+          "plot": "rollout_002_tilt.png"
+        }
+      ]
+    }
+  },
+  "unfilled_categories": [],
+  "controller": "sac",
+  "g1_source": "G_NOM_3D",
+  "min_clip_states": {
+    "S1": 80,
+    "F1": 40,
+    "S1_to_S2": 300,
+    "S1_to_F2": 120
+  },
+  "playback_plans": {
+    "S1": {
+      "category": "S1",
+      "treated": true,
+      "capture_fps": 100,
+      "playback_fps": 27,
+      "slowdown": 3.7037037037037037,
+      "shortest_clip_states": 81,
+      "reason": "re-timed to slow motion; see per-clip real_time_seconds vs video_seconds"
+    },
+    "F1": {
+      "category": "F1",
+      "treated": true,
+      "capture_fps": 100,
+      "playback_fps": 15,
+      "slowdown": 6.666666666666667,
+      "shortest_clip_states": 42,
+      "reason": "re-timed to slow motion; see per-clip real_time_seconds vs video_seconds"
+    },
+    "S1_to_S2": {
+      "category": "S1_to_S2",
+      "treated": false,
+      "capture_fps": 30,
+      "playback_fps": 30,
+      "slowdown": 1.0,
+      "shortest_clip_states": 448,
+      "reason": null
+    },
+    "S1_to_F2": {
+      "category": "S1_to_F2",
+      "treated": true,
+      "capture_fps": 100,
+      "playback_fps": 30,
+      "slowdown": 3.3333333333333335,
+      "shortest_clip_states": 121,
+      "reason": "re-timed to slow motion; see per-clip real_time_seconds vs video_seconds"
+    }
+  },
+  "playback_treated_categories": [
+    "F1",
+    "S1",
+    "S1_to_F2"
+  ],
+  "disjointness": {
+    "sets": [
+      {
+        "categories": [
+          "S1",
+          "F1"
+        ],
+        "num_rollouts": 6
+      },
+      {
+        "categories": [
+          "S1_to_S2",
+          "S1_to_F2"
+        ],
+        "num_rollouts": 6
+      }
+    ],
+    "overlaps": [],
+    "disjoint": true,
+    "note": "Categories were searched in separate process invocations (per-category resumable checkpointed search, see resumable_category.py) rather than one shared sample_and_classify() pool, because filling each pool took far longer than fits in one foreground call on this machine (single contended CPU core; measured ~220-250ms/rollout). Disjointness between the {S1,F1} and {S1_to_S2,S1_to_F2} sets was therefore verified EMPIRICALLY after the fact by comparing every recorded init_state pairwise across the two sets -- zero matches found (see report)."
+  }
+}

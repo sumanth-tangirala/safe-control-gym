@@ -1,0 +1,128 @@
+[
+  {
+    "dataset_row": 31023,
+    "initial_tilt_deg": 178.66072053840003,
+    "init_state": [
+      1.121586,
+      0.087067,
+      0.677027,
+      0.0027,
+      0.553665,
+      0.832658,
+      -0.011371,
+      -0.890958,
+      0.277192,
+      1.211701,
+      2.657883,
+      -13.195398,
+      6.149283
+    ],
+    "baseline": {
+      "ctrl2_success": false,
+      "num_states": 27,
+      "real_time_seconds": 0.26
+    },
+    "composite": {
+      "flip_success": true,
+      "ctrl2_success": true,
+      "handoff_index": 21,
+      "num_states": 461,
+      "real_time_seconds": 4.6
+    },
+    "video": {
+      "path": "/common/home/st1122/Projects/safe-control-gym/rollout_visualizations/quad3d_failure_vs_rescue/pair_00/side_by_side.mp4",
+      "num_frames": 572,
+      "playback_fps": 30,
+      "video_seconds": 19.066666666666666,
+      "intro_hold_seconds": 1.2,
+      "outro_hold_seconds": 2.5,
+      "left_crash_frame": 62,
+      "right_handoff_frame": 57,
+      "right_success_frame": 496
+    }
+  },
+  {
+    "dataset_row": 12931,
+    "initial_tilt_deg": 177.58482067832813,
+    "init_state": [
+      1.098764,
+      -1.094421,
+      2.830047,
+      0.020691,
+      -0.193266,
+      -0.98092,
+      0.004004,
+      1.292781,
+      -1.469455,
+      0.087698,
+      -9.939236,
+      -1.220909,
+      -14.703852
+    ],
+    "baseline": {
+      "ctrl2_success": false,
+      "num_states": 50,
+      "real_time_seconds": 0.49
+    },
+    "composite": {
+      "flip_success": true,
+      "ctrl2_success": true,
+      "handoff_index": 25,
+      "num_states": 496,
+      "real_time_seconds": 4.95
+    },
+    "video": {
+      "path": "/common/home/st1122/Projects/safe-control-gym/rollout_visualizations/quad3d_failure_vs_rescue/pair_01/side_by_side.mp4",
+      "num_frames": 607,
+      "playback_fps": 30,
+      "video_seconds": 20.233333333333334,
+      "intro_hold_seconds": 1.2,
+      "outro_hold_seconds": 2.5,
+      "left_crash_frame": 85,
+      "right_handoff_frame": 61,
+      "right_success_frame": 531
+    }
+  },
+  {
+    "dataset_row": 9579,
+    "initial_tilt_deg": 176.86890577241687,
+    "init_state": [
+      1.454324,
+      1.540585,
+      0.806257,
+      0.022255,
+      -0.884155,
+      0.466394,
+      -0.015847,
+      0.645705,
+      -1.680427,
+      0.597,
+      23.486769,
+      -12.158788,
+      11.910695
+    ],
+    "baseline": {
+      "ctrl2_success": false,
+      "num_states": 43,
+      "real_time_seconds": 0.42
+    },
+    "composite": {
+      "flip_success": true,
+      "ctrl2_success": true,
+      "handoff_index": 21,
+      "num_states": 502,
+      "real_time_seconds": 5.01
+    },
+    "video": {
+      "path": "/common/home/st1122/Projects/safe-control-gym/rollout_visualizations/quad3d_failure_vs_rescue/pair_02/side_by_side.mp4",
+      "num_frames": 613,
+      "playback_fps": 30,
+      "video_seconds": 20.433333333333334,
+      "intro_hold_seconds": 1.2,
+      "outro_hold_seconds": 2.5,
+      "left_crash_frame": 78,
+      "right_handoff_frame": 57,
+      "right_success_frame": 537
+    }
+  }
+]

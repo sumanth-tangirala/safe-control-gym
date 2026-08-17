@@ -12,6 +12,46 @@ from gymnasium.spaces import Box
 from safe_control_gym.math_and_models.distributions import Categorical, Normal
 from safe_control_gym.math_and_models.neural_networks import MLP
 
+
+def _tensor_to_numpy(tensor):
+    '''Tensor -> ndarray; torch<2 raises on .numpy() when built against numpy 1.x
+    but running under numpy 2.x, so fall back to going through Python lists.
+    Same issue and same fix as safe_ppo_utils._tensor_to_numpy.'''
+    try:
+        return tensor.cpu().numpy()
+    except RuntimeError:
+        return np.asarray(tensor.cpu().tolist())
+
+
+# Only the dtypes SACBuffer actually allocates (float32 for every field) plus
+# the obvious neighbours, so an unexpected dtype fails loudly rather than being
+# silently coerced.
+_NUMPY_TO_TORCH_DTYPE = {
+    np.dtype(np.float32): torch.float32,
+    np.dtype(np.float64): torch.float64,
+    np.dtype(np.int32): torch.int32,
+    np.dtype(np.int64): torch.int64,
+    np.dtype(np.uint8): torch.uint8,
+    np.dtype(bool): torch.bool,
+}
+
+
+def _numpy_to_tensor(array, device=None):
+    '''ndarray -> Tensor; the same numpy 1.x/2.x ABI break as _tensor_to_numpy,
+    from the other direction. `torch.as_tensor`/`torch.from_numpy` both go
+    through torch's (dead) numpy bridge, so as_tensor falls back to treating the
+    array as a nested sequence and raises `RuntimeError: Could not infer dtype
+    of numpy.float32`. Round-trip through Python lists instead, mirroring
+    _tensor_to_numpy, carrying the source dtype across explicitly since a
+    Python list of floats would otherwise infer float64.'''
+    try:
+        return torch.as_tensor(array, device=device)
+    except RuntimeError:
+        array = np.asarray(array)
+        dtype = _NUMPY_TO_TORCH_DTYPE[array.dtype]
+        return torch.as_tensor(array.tolist(), dtype=dtype, device=device)
+
+
 # -----------------------------------------------------------------------------------
 #                   Agent
 # -----------------------------------------------------------------------------------
@@ -290,7 +330,7 @@ class MLPActorCritic(nn.Module):
 
     def act(self, obs, deterministic=False):
         a, _ = self.actor(obs, deterministic, False)
-        return a.cpu().numpy().astype(np.float32)
+        return _tensor_to_numpy(a).astype(np.float32)
 
 
 # -----------------------------------------------------------------------------------
@@ -407,9 +447,9 @@ class SACBuffer(object):
             shape = info['vshape'][1:]
             v = self.__dict__[k].reshape(-1, *shape)[indices]
             if device is None:
-                batch[k] = torch.as_tensor(v)
+                batch[k] = _numpy_to_tensor(v)
             else:
-                batch[k] = torch.as_tensor(v, device=device)
+                batch[k] = _numpy_to_tensor(v, device=device)
         return batch
 
 

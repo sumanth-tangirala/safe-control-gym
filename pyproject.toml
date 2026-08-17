@@ -35,6 +35,11 @@ pymysql = "1.1.1"
 
 [tool.poetry.dev-dependencies]
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests that boot PyBullet and load checkpoints",
+]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
