@@ -44,7 +44,9 @@ NCPU=$($PY -c 'import os; print(len(os.sched_getaffinity(0)))')
 
 # Name carries BOTH constants -- the earlier tree named levels beta_<b> with
 # alpha implicit, which silently misleads the moment alpha varies.
-NAME=$($PY -c "print(f'a{float('$ALPHA'):.3f}_b{float('$BETA'):.3f}')")
+# printf, not python: an f-string with nested single quotes is a syntax error
+# before python 3.12, and this ran on 3.10.
+NAME=$(printf 'a%.3f_b%.3f' "$ALPHA" "$BETA")
 OUT=$ROOT/$NAME
 SHARDS=20
 BATCHES_PER_SHARD=5
