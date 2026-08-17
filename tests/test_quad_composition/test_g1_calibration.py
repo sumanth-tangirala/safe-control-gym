@@ -195,28 +195,103 @@ def test_collect_exit_attitudes_drops_a_rollout_that_takes_zero_steps(monkeypatc
     assert len(tilts) == 0 and len(omegas) == 0
 
 
-def test_calibration_script_never_imports_controller_2_or_roa2():
-    '''Guards spec D1's ordering property at the source level: the script's
-    actual `import` statements -- not its prose, which is free to explain in
-    words why controller 2's loader is avoided -- must not name it.
+_RUINS_THE_ORDERING_PROPERTY = (
+    'would let calibrate_quad2d_g1.py consult RoA2 (controller 2, its checkpoint, or the '
+    "shipped quadrotor2D_rl labels). G1 must be calibrated ONLY from controller 1's measured "
+    'exits (spec D1) -- if RoA2 leaks into calibration, G1 gets fitted to the answer, and the '
+    "experiment's headline result becomes a construction instead of a discovery. Do not delete "
+    'or weaken this check to get past it; fix the script instead.'
+)
+
+
+def _docstring_constant_ids(tree):
+    '''Node ids of every module/function/class docstring's Constant node.
+
+    Docstrings are prose and are allowed to name `make_env_and_ctrl2` or
+    `quadrotor2D_rl` to explain why they are avoided (this file's own module
+    docstring does exactly that) -- only actual imports, attribute accesses,
+    and non-docstring string literals are evidence of a real reference.
+    '''
+    ids = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if not node.body:
+            continue
+        first = node.body[0]
+        is_docstring = isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str)
+        if is_docstring:
+            ids.add(id(first.value))
+    return ids
+
+
+def test_calibration_script_never_imports_or_references_controller_2_or_roa2():
+    '''Guards spec D1's ordering property at the source level, against three
+    routes a routine-looking edit could reintroduce it by:
+
+    1. Importing `make_env_and_ctrl2` / `ALGO_CONFIG` by name (the original
+       check), OR importing `quad_composition.rollout2d` as a whole module
+       (under any alias) -- a whole-module import is the vector that makes
+       route 2 possible even when no forbidden name is imported directly.
+    2. Reaching either forbidden name through attribute access instead of
+       import, e.g. `import quad_composition.rollout2d as r2d; ...
+       r2d.make_env_and_ctrl2(...)` -- a routine-looking refactor that the
+       import-name check alone does not see.
+    3. Hardcoding a path to controller 2's checkpoint or the shipped RoA2
+       labels as a string literal (`quadrotor2D_rl`, `safe_explorer_ppo`,
+       `eval_states.txt`), bypassing the loader helpers entirely.
 
     AST-parsed rather than a raw substring search over the source, because
-    the module's own docstring explains this ruling and names
-    `make_env_and_ctrl2` and `quadrotor2D_rl` to do so; a substring check
-    would flag its own documentation as a violation.
+    the module's own docstring explains this ruling in prose and legitimately
+    names `make_env_and_ctrl2` and `quadrotor2D_rl` to do so; a substring
+    search over the whole source (or an unfiltered string-literal scan) would
+    flag the script's own documentation as a violation. `_docstring_constant_ids`
+    excludes exactly those prose nodes from the string-literal check (route 3)
+    without weakening it against a real hardcoded reference anywhere else.
     '''
     import calibrate_quad2d_g1 as cal
 
     tree = ast.parse(inspect.getsource(cal))
+    docstring_ids = _docstring_constant_ids(tree)
+
+    forbidden_names = {'make_env_and_ctrl2', 'ALGO_CONFIG'}
+    forbidden_substrings = ('quadrotor2D_rl', 'safe_explorer_ppo', 'eval_states.txt')
+
     imported_names = set()
+    whole_module_rollout2d_imports = set()
+    forbidden_attr_accesses = set()
+    forbidden_string_literals = set()
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             imported_names.update(alias.name for alias in node.names)
+            if node.module == 'quad_composition':
+                whole_module_rollout2d_imports.update(
+                    alias.name for alias in node.names if alias.name == 'rollout2d')
         elif isinstance(node, ast.Import):
             imported_names.update(alias.name for alias in node.names)
+            whole_module_rollout2d_imports.update(
+                alias.name for alias in node.names
+                if alias.name == 'rollout2d' or alias.name.endswith('.rollout2d'))
+        elif isinstance(node, ast.Attribute) and node.attr in forbidden_names:
+            forbidden_attr_accesses.add(node.attr)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstring_ids:
+            hit = next((s for s in forbidden_substrings if s in node.value), None)
+            if hit is not None:
+                forbidden_string_literals.add(node.value)
 
-    forbidden = {'make_env_and_ctrl2', 'ALGO_CONFIG'}
-    assert not (imported_names & forbidden), \
-        f'calibrate_quad2d_g1.py must not import {imported_names & forbidden}'
+    bad_imports = imported_names & forbidden_names
+    assert not bad_imports, (
+        f'calibrate_quad2d_g1.py imports {bad_imports}, which {_RUINS_THE_ORDERING_PROPERTY}')
+    assert not whole_module_rollout2d_imports, (
+        'calibrate_quad2d_g1.py imports the whole rollout2d module '
+        f'({whole_module_rollout2d_imports}), which opens attribute access to '
+        f'make_env_and_ctrl2 and {_RUINS_THE_ORDERING_PROPERTY}')
+    assert not forbidden_attr_accesses, (
+        f'calibrate_quad2d_g1.py accesses .{forbidden_attr_accesses} as an attribute, which '
+        f'{_RUINS_THE_ORDERING_PROPERTY}')
+    assert not forbidden_string_literals, (
+        f'calibrate_quad2d_g1.py hardcodes {forbidden_string_literals} in a string literal, '
+        f'which {_RUINS_THE_ORDERING_PROPERTY}')
     assert not hasattr(cal, 'make_env_and_ctrl2')
     assert not hasattr(cal, 'ALGO_CONFIG')
