@@ -64,7 +64,27 @@ def main():
     parser.add_argument('--output_dir', required=True)
     parser.add_argument('--max_env_steps', type=int, default=1000000)
     parser.add_argument('--seed', type=int, default=0)
+    # sac.yaml sets all three of these to 0, which disables logging, periodic
+    # checkpointing and eval entirely -- so a run that is killed before
+    # max_env_steps leaves NO usable policy behind, and there is no way to
+    # observe throughput while it runs. Both matter for any long run.
+    # Intervals must divide evenly by rollout_batch_size (4), since
+    # total_steps advances in steps of that size and SAC tests
+    # `total_steps % interval == 0`.
+    parser.add_argument('--log_interval', type=int, default=5000,
+                        help='Steps between progress log lines (0 disables).')
+    parser.add_argument('--save_interval', type=int, default=20000,
+                        help='Steps between periodic checkpoints (0 disables).')
+    parser.add_argument('--eval_interval', type=int, default=25000,
+                        help='Steps between evaluations (0 disables).')
+    parser.add_argument('--eval_batch_size', type=int, default=5,
+                        help='Episodes per evaluation.')
     args = parser.parse_args()
+
+    for name in ('log_interval', 'save_interval', 'eval_interval'):
+        value = getattr(args, name)
+        if value and value % 4 != 0:
+            parser.error(f'--{name} must be a multiple of 4 (rollout_batch_size); got {value}')
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -94,7 +114,10 @@ def main():
     # would crash on construction without. rollout2d.SAC_CONFIG carries
     # training=False (it is built there for eval-only use); override to
     # True for this training run.
-    config = dict(SAC_CONFIG, max_env_steps=args.max_env_steps, seed=args.seed, training=True)
+    config = dict(SAC_CONFIG, max_env_steps=args.max_env_steps, seed=args.seed, training=True,
+                  log_interval=args.log_interval, save_interval=args.save_interval,
+                  eval_interval=args.eval_interval, eval_batch_size=args.eval_batch_size,
+                  eval_save_best=bool(args.eval_interval))
 
     # checkpoint_path must be given explicitly: SAC's own default
     # ('model_latest.pt', no directory component) makes `learn()`'s final
