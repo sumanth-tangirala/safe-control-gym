@@ -91,12 +91,13 @@ thresholds rather than timing out.
 
 ## Inputs a cluster cannot see
 
-Amarel has its own filesystem and cannot read `/common/users/shared`, where the
+A cluster with its own filesystem cannot read the shared dataset root where the
 deterministic reference sets live. Any collector that compares against them must
 take a path override, and the files must be copied across first — quad3d needed
 this, and cartpole needs `CP_DET_DIR` plus `CP_SIGMA0`. The failure is loud
 (`eval_states.txt not found`) but identical on every array task, so it reads like
-a cluster fault rather than a missing input.
+a cluster fault rather than a missing input. Which clusters share a filesystem
+with the dataset root is site-specific and belongs in `CLAUDE.local.md`.
 
 ## A job that runs the wrong code
 
