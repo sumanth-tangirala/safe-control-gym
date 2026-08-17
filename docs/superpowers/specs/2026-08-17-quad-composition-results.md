@@ -222,6 +222,56 @@ It also answers the question the controller-dependence result raises: handoff qu
 emerge incidentally from an attitude-only objective, but only up to a point, after which the
 objective actively trades it away.
 
+### Promotion to the 300k checkpoint: evidence holds, shipped checkpoint unchanged (2026-08-17 ~07:30)
+
+The ladder above motivated a promotion attempt: `models/quad3d_ctrl1_selected.pt` was frozen
+at 75k while training was still running, and 300k looked better on S1→S2. A paired test on an
+**independent seed** (n=1500, `G1 = flip_env3d.G_NOM_3D`, not the 700-state ladder sample above)
+confirmed it directly:
+
+```
+incumbent  models/quad3d_ctrl1_selected.pt (75k)                    S1->S2 31.47%
+challenger models/quad3d_s5_tfull/checkpoints/model_300000.pt (300k) S1->S2 36.93%
+discordant 70/152, McNemar chi2 = 29.55 (Bonferroni .01 threshold 6.63) -- +5.46 points
+```
+
+That evidence stands. The promotion itself was **attempted and then rolled back**, not for
+any problem with the checkpoint, but because the video deliverable could not be regenerated
+to spec:
+
+- Regenerating `rollout_visualizations/quad3d_composition/` at the exact recorded settings
+  (`--max_attempts 6000`) hit the sampling budget with the S1 category unfilled (1/3) — the
+  300k controller reaches the `G1` handoff faster on average, so fewer of its trajectories
+  clear the S1 clip's 80-tick pre-handoff minimum before being claimed by the disjoint
+  `S1_to_S2`/`S1_to_F2` sets.
+- Doubling the budget (`--max_attempts 12000`) did fill all four categories, but
+  `verify_quad3d_composition_videos.py` came back **11/12**: `F1/rollout_001.mp4` landed at
+  56 frames against the 60-frame minimum.
+- Per protocol, a broken regeneration is strictly worse than the banked deliverable, so both
+  `models/quad3d_ctrl1_selected.pt` and `rollout_visualizations/quad3d_composition/` were
+  restored from the pre-promotion backups rather than shipped in a partially-verified state.
+  Re-verification of the restored deliverable confirms **12/12 PASS**.
+
+**Shipped checkpoint is still `models/quad3d_ctrl1_selected.pt` = `quad3d_s5_tfull` @ 75k.**
+The 300k promotion is deferred, not withdrawn — it needs a video regeneration that clears
+verification (likely either a larger search budget than 12000 or a revisit of the S1 clip's
+`MIN_CLIP_STATES` threshold, since a controller that converges faster will structurally
+produce fewer long pre-handoff trajectories) before it can ship.
+
+Non-subsumption was re-measured directly against the 300k checkpoint file for the record
+(`results/quad3d_composition_300k_candidate.json`, 2000 states, seed 7 — same protocol as the
+shipped headline, not the 700-state ladder sample):
+
+```
+non_subsumption (300k, not shipped) = 0.2593   95% CI [0.2330, 0.2874]   n = 995 handoffs
+non_subsumption (75k,  shipped)     = 0.1950   95% CI [0.1690, 0.2239]   n = 800 handoffs
+```
+
+Higher, as expected from the trend already documented above (0.157 at 100k rising to 0.282 at
+500k) — not a regression, since non-subsumption depends on controller 1 and was never expected
+to be flat across the ladder. Reported here for completeness; it does not describe the shipped
+policy, since the shipped policy is still 75k.
+
 ## A methodological finding worth carrying into the paper
 
 **Ranking controllers on flip rate selects the worse composition.** Observed in three
@@ -329,3 +379,7 @@ Test suite: 232 passing.
   following the existing `safe_ppo_utils` precedent, but `ddpg_utils.py:174` and likely
   PPO/RARL remain broken. The honest fix is aligning the conda env.
 - **2D composition datasets** were never generated; 2D is an impossibility result now.
+- **300k promotion deferred, not withdrawn** — see "Promotion to the 300k checkpoint" above.
+  The paired-test evidence for promoting past 75k is solid; what's missing is a video
+  regeneration of `rollout_visualizations/quad3d_composition/` that clears
+  `verify_quad3d_composition_videos.py` 12/12 for the faster-converging checkpoint.
