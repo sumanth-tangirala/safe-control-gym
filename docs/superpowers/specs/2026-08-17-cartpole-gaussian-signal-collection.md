@@ -1,13 +1,45 @@
 # Cartpole gaussian_signal: design and Amarel runbook
 
 **Date:** 2026-08-17
-**Status:** ready to run
+**Status:** ready to run — levels chosen, see "Collect these three"
 **Scope:** `cp_collect.py`, `cp_gauss_sweep.py`, `scripts/sbatch_cartpole_gauss_sweep.sh`,
 `safe_control_gym/envs/gym_control/cartpole.py`
 
 A cartpole stochastic family whose noise scale grows with the commanded force,
 the counterpart to the pendulum's `gaussian_signal`. Intended to be run on Amarel
 by someone with the full 6720-core allocation.
+
+## Collect these three
+
+```
+level   alpha    beta    delivered std
+low     2.413    0.635      4.62 N
+med     3.317    0.873      6.35 N
+high    5.428    1.429     10.39 N
+```
+
+Matched in **delivered standard deviation** to the published uniform cartpole
+levels (sigma 8 / 11 / 18). Derived from the measured command distribution, not
+guessed, and all three are smoke-tested — see "What the smoke test already
+showed". The sweep in the runbook is **optional confirmation**, not a
+prerequisite: go straight to collection unless you want the matched-*difficulty*
+numbers instead, which are a different set (`k ~ 0.9 / 1.1 / 1.8`, estimated
+rather than measured).
+
+Why matched variance rather than matched difficulty: it makes the comparison
+against the uniform family answer a clean question — does *when* the noise
+arrives matter, holding how much constant? The smoke test says yes, emphatically
+(24-77% more success at the same variance). Matched difficulty is the better
+choice only if these are meant as drop-in replacements for a downstream model,
+in which case run the sweep and read the levels off it.
+
+Command form:
+
+```
+--alpha 2.413 --beta 0.635      # low
+--alpha 3.317 --beta 0.873      # med
+--alpha 5.428 --beta 1.429      # high
+```
 
 ## The noise
 
@@ -109,19 +141,46 @@ the table. K = 10 is too small to measure `gained` at all.
 
 ## Runbook (Amarel)
 
+**Use the whole allocation.** The QOS allows 6720 CPUs and 500 submitted jobs;
+the sizings below deliberately spend most of that, and there is no reason to be
+modest. Every stage here is embarrassingly parallel — shards are independent,
+`rollout_seed` is a pure function of its coordinates, so the same rollouts happen
+whichever node runs them and a shard can be re-run without changing a result.
+
+Practically that means: prefer more array tasks over more cores per task
+(`--nodes=1 --exclusive --cpus-per-task=64` per task, then as many tasks as the
+work divides into), raise `NSHARDS` rather than waiting, and resubmit stragglers
+instead of letting one slow shard hold the campaign. 80 tasks is 5,120 cores and
+still leaves headroom; a full collection can go to 105 tasks (6,720 cores) before
+hitting the cap. If a stage looks like it will take an hour, shard it further —
+the only real cost of another shard is one more file to merge.
+
+Two caveats on going wide. The 500-job submit cap is per user and counts array
+elements, so a single array of 105 is fine but several large arrays at once will
+be rejected — submit them in sequence or use a deferred launcher. And exclude the
+`halk*` nodes (below); adding nodes that produce nothing makes a campaign slower,
+not faster, because the work silently never happens.
+
 ### 0. Inputs the cluster cannot see
 
 Amarel has no access to the iLab filesystem. Two files must be copied across,
-and both are read through environment variables:
+and both are read through environment variables.
+
+Run this **from an iLab machine** (arrakis, ilab*, rlab*) — Amarel cannot see
+`/common/users/shared`, which is the whole reason the copy is needed.
 
 ```bash
-# on a machine that can see /common/users/shared:
 D=/common/users/shared/pracsys/genMoPlan/data_trajectories
+ssh amarel mkdir -p '~/cpdet'
 scp $D/deterministic/cartpole_pybullet/eval_states.txt \
-    amarel:~/cpdet/eval_states.txt
+    amarel:cpdet/eval_states.txt
 scp $D/stochastic/cartpole/noisy_torque/archive/sigma_0/eval_success_prob.npz \
-    amarel:~/cpdet/sigma_0.npz
+    amarel:cpdet/sigma_0.npz
 ```
+
+`eval_states.txt` is 8.7 MB (116,242 rows), `sigma_0.npz` 5.4 MB. Verify with
+`ssh amarel 'ls -l ~/cpdet'` before submitting — a missing file fails every
+array task identically and looks like a cluster problem.
 
 Then on Amarel, for every job:
 
@@ -158,7 +217,23 @@ neither.
 
 ### 2. Collect
 
-`cp_collect.py` takes `--alpha/--beta` in place of `--level`. Per level:
+One array, all three levels, the whole allocation:
+
+```bash
+sbatch --exclude="$(sinfo -p main-redhat -h -o '%n' | grep '^halk' | sort -u | paste -sd, -)" \
+       --export=ALL,CP_DET_DIR=$HOME/cpdet,CP_SIGMA0=$HOME/cpdet/sigma_0.npz,\
+CP_GAUSS_OUT=/scratch/$USER/cartpole_gaussian_signal \
+       scripts/sbatch_cartpole_gauss_collect.sh
+```
+
+105 tasks x 64 cores = **6,720 cores**, the full QOS. Per level 5 train shards
+and 30 eval shards; eval is sharded far harder because it is 99% of the work.
+The alpha/beta values are baked into the script — edit `ALPHAS`/`BETAS` there if
+the sweep is run and different levels are wanted.
+
+Shards are idempotent, so a partial run resubmits verbatim.
+
+The underlying calls, if a shard needs running by hand:
 
 ```bash
 python cp_collect.py --split train --alpha A --beta B \
@@ -183,6 +258,12 @@ The collection figure is an **upper bound**: it assumes every rollout runs the
 full horizon, whereas noiseless ones average 94 steps and heavily-noised ones
 often die early on the out-of-bounds thresholds. The expensive case is the
 middle.
+
+Those wall-clock figures assume the allocation is actually used. At 64 cores on
+one node the same collection is ~160 hours, so the difference between spreading
+across the cluster and not is the difference between an afternoon and a week.
+Shard the eval split by at least 20 ways per level, and run levels concurrently
+rather than in sequence.
 
 ### 4. Operational notes
 
