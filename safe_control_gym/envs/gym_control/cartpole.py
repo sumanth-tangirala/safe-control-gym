@@ -136,6 +136,8 @@ class CartPole(BenchmarkEnv):
                  x_dot_limit=None,
                  theta_dot_limit=None,
                  action_scale=10.0,
+                 shaped_dmc_velocity_weight=0.0,
+                 shaped_dmc_goal_reward=0.0,
                  **kwargs
                  ):
         '''Initialize a cartpole environment.
@@ -154,6 +156,10 @@ class CartPole(BenchmarkEnv):
             x_dot_limit (float, optional): Maximum absolute velocity for cart (x_dot will be clipped to [-limit, +limit]).
             theta_dot_limit (float, optional): Maximum absolute angular velocity for pole (theta_dot will be clipped to [-limit, +limit]).
             action_scale (float): Maximum control force in Newtons, actions clipped to [-action_scale, +action_scale] (default: 10.0).
+            shaped_dmc_velocity_weight (float): LQR-style additive velocity penalty on Cost.SHAPED_DMC:
+                reward -= weight * (x_dot^2 + theta_dot^2) per step. 0 (default) keeps the faithful port.
+            shaped_dmc_goal_reward (float): additive bonus paid on Cost.SHAPED_DMC for every step spent
+                inside the goal ball. 0 (default) keeps the faithful port.
         '''
         self.obs_goal_horizon = obs_goal_horizon
         self.obs_wrap_angle = obs_wrap_angle
@@ -166,6 +172,8 @@ class CartPole(BenchmarkEnv):
         self.x_dot_limit = x_dot_limit
         self.theta_dot_limit = theta_dot_limit
         self.action_scale = action_scale
+        self.shaped_dmc_velocity_weight = float(shaped_dmc_velocity_weight)
+        self.shaped_dmc_goal_reward = float(shaped_dmc_goal_reward)
 
         if info_mse_metric_state_weight is None:
             self.info_mse_metric_state_weight = np.array([1, 0, 1, 0], ndmin=1, dtype=float)
@@ -185,8 +193,13 @@ class CartPole(BenchmarkEnv):
             self.PYB_CLIENT = p.connect(p.GUI)
         else:
             self.PYB_CLIENT = p.connect(p.DIRECT)
-        # disable urdf caching for randomization via reloading urdf
-        p.setPhysicsEngineParameter(enableFileCaching=0)
+        # URDF caching is disabled ONLY when the inertial properties actually
+        # change per episode. With randomization off, the file written on every
+        # reset is byte-identical to the template, so re-reading it from disk
+        # each time buys nothing and costs a filesystem round trip per rollout
+        # -- on the order of 2.3 million of them in one cartpole collection.
+        p.setPhysicsEngineParameter(
+            enableFileCaching=0 if self.RANDOMIZED_INERTIAL_PROP else 1)
 
         # Set GUI and rendering constants.
         self.RENDER_HEIGHT = int(200)
@@ -253,7 +266,8 @@ class CartPole(BenchmarkEnv):
         Returns:
             obs (ndarray): The state of the environment after the step.
             reward (float): The scalar reward/cost of the step.
-            done (bool): Whether the conditions for the end of an episode are met in the step.
+            terminated (bool): Whether the MDP has reached a terminal state in the step.
+            truncated (bool): Whether the episode was truncated by the time limit.
             info (dict): A dictionary with information about the constraints evaluations and violations.
         '''
 
@@ -292,19 +306,27 @@ class CartPole(BenchmarkEnv):
                 physicsClientId=self.PYB_CLIENT)
         # Standard Gym return.
         obs = self._get_observation()
+        # _get_done BEFORE _get_reward: it is what sets goal_reached and
+        # out_of_bounds, and Cost.SPARSE reads both. Run the other way round
+        # they are a step stale. Behaviour-neutral for rl_reward and quadratic,
+        # neither of which reads those flags -- the golden rollout fixtures and
+        # the dataset-slice oracles pin that.
+        terminated = self._get_done()
         rew = self._get_reward()
-        done = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         '''(Re-)initializes the environment to start an episode.
 
         Mandatory to call at least once after __init__().
 
         Args:
             seed (int): An optional seed to reseed the environment.
+            options (dict): Unused. Accepted for gymnasium 1.x compatibility.
 
         Returns:
             obs (ndarray): The initial state of the environment.
@@ -312,6 +334,13 @@ class CartPole(BenchmarkEnv):
         '''
 
         super().before_reset(seed=seed)
+
+        # Initialize episode state flags (needed for _get_info() before first step).
+        # _get_done() returns early when the goal is reached, so out_of_bounds is
+        # not always assigned before _get_info() reads it.
+        self.out_of_bounds = False
+        self.goal_reached = False
+
         # PyBullet simulation reset.
         p.resetSimulation(physicsClientId=self.PYB_CLIENT)
         p.setGravity(0, 0, -self.GRAVITY_ACC, physicsClientId=self.PYB_CLIENT)
@@ -330,15 +359,27 @@ class CartPole(BenchmarkEnv):
         # See `slender rod`, https://en.wikipedia.org/wiki/List_of_moments_of_inertia.
         OVERRIDDEN_POLE_INERTIA = (1 / 12) * self.OVERRIDDEN_POLE_MASS * (2 * self.OVERRIDDEN_EFFECTIVE_POLE_LENGTH)**2
         # Load the cartpole with new urdf.
-        override_urdf_tree = self._create_urdf(self.URDF_PATH, length=self.OVERRIDDEN_EFFECTIVE_POLE_LENGTH, inertia=OVERRIDDEN_POLE_INERTIA)
-        self.override_path = os.path.join(self.output_dir, f'pid-{os.getpid()}_id-{self.idx}_cartpole.urdf')
-        override_urdf_tree.write(self.override_path)
+        #
+        # The rewrite is needed only when the properties change. With
+        # randomization off it produced the same bytes every reset, so the file
+        # is written once and kept; PyBullet then serves it from its own cache
+        # (enableFileCaching above). Write-read-delete per reset was three
+        # filesystem operations per rollout for a model that never changes.
+        self.override_path = os.path.join(
+            self.output_dir, f'pid-{os.getpid()}_id-{self.idx}_cartpole.urdf')
+        if self.RANDOMIZED_INERTIAL_PROP or not os.path.exists(self.override_path):
+            override_urdf_tree = self._create_urdf(
+                self.URDF_PATH, length=self.OVERRIDDEN_EFFECTIVE_POLE_LENGTH,
+                inertia=OVERRIDDEN_POLE_INERTIA)
+            override_urdf_tree.write(self.override_path)
         self.CARTPOLE_ID = p.loadURDF(
             self.override_path,
             basePosition=[0, 0, 0],
             physicsClientId=self.PYB_CLIENT)
-        # Remove cache file after loading it into PyBullet.
-        os.remove(self.override_path)
+        # Remove the cache file only when it will differ next time; otherwise it
+        # is reused. close() cleans it up.
+        if self.RANDOMIZED_INERTIAL_PROP:
+            os.remove(self.override_path)
         # Cartpole settings.
         for i in [-1, 0, 1]:  # Slider, cart, and pole.
             p.changeDynamics(self.CARTPOLE_ID, linkIndex=i, linearDamping=0, angularDamping=0, physicsClientId=self.PYB_CLIENT)
@@ -421,6 +462,14 @@ class CartPole(BenchmarkEnv):
         if self.PYB_CLIENT >= 0:
             p.disconnect(physicsClientId=self.PYB_CLIENT)
         self.PYB_CLIENT = -1
+        # The per-reset URDF is kept across resets when randomization is off, so
+        # it is this method's job to remove it rather than reset()'s.
+        path = getattr(self, 'override_path', None)
+        if path and os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def _setup_symbolic(self, prior_prop={}, **kwargs):
         '''Creates symbolic (CasADi) models for dynamics, observation, and cost.
@@ -505,7 +554,7 @@ class CartPole(BenchmarkEnv):
             obs_bound = np.concatenate([obs_bound] * 2)
         # Define obs space exposed to the controller
         # Note obs space is often different to state space for RL (with additional task info)
-        self.observation_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float32)
+        self.observation_space = spaces.Box(low=-obs_bound, high=obs_bound, dtype=np.float64)
 
         # Define obs/state labels and units.
         self.STATE_LABELS = ['x', 'x_dot', 'theta', 'theta_dot']
@@ -649,6 +698,10 @@ class CartPole(BenchmarkEnv):
         Returns:
             reward (float): The evaluated reward/cost.
         '''
+        if self.COST == Cost.SHAPED_DMC:
+            return self._shaped_dmc_reward()
+        if self.COST == Cost.SPARSE:
+            return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
             # negative quadratic reward with angle wrapped around
             state = deepcopy(self.state)
@@ -686,28 +739,113 @@ class CartPole(BenchmarkEnv):
                                             Q=self.Q,
                                             R=self.R)['l'])
 
+    def _shaped_dmc_reward(self):
+        """dm_control's cartpole swingup reward, ported constant-for-constant.
+
+        The generic Cost.SHAPED trains a policy that orbits without ever
+        touching the goal ball -- measured after 300k steps: shaped return
+        237.6, ball entries 0 in 100 episodes. Its proximity term saturates
+        across a region far wider than the ball, so parking never pays. This is
+        the upstream reward it was loosely copied from, restored exactly:
+
+            upright        = (1 + cos theta) / 2
+            centered       = (1 + tolerance(x, margin=6.67)) / 2
+            small_control  = (4 + tolerance(u, margin=1, quadratic)) / 5
+            small_velocity = (1 + tolerance(theta_dot, margin=5)) / 2
+            reward = upright * centered * small_control * small_velocity
+
+        Every constant is dm_control's except the centered margin, scaled
+        proportionally to the rail (their 2 on +/-1.8 -> 6.67 on +/-6). The
+        gaussian tolerance uses their value_at_margin=0.1; small_control uses
+        their quadratic sigmoid with value_at_margin=0. The per-factor floors
+        (0.5, 0.8) keep the product from collapsing far from the goal.
+
+        No goal bonus, as upstream. The out-of-bounds penalty stays because
+        this env terminates at the rail where dm_control cannot terminate at
+        all -- without it, exiting at x=6 would end the episode at a per-step
+        reward the survivor keeps collecting, paying the crash.
+        """
+        x, x_dot, theta, theta_dot = self.state
+
+        def gaussian_tol(value, margin):
+            # dm_control tolerance, gaussian sigmoid, value_at_margin=0.1.
+            scale = np.sqrt(-2.0 * np.log(0.1))
+            return float(np.exp(-0.5 * (value * scale / margin) ** 2))
+
+        upright = (1.0 + np.cos(theta)) / 2.0
+        centered = (1.0 + gaussian_tol(x, 2.0 * self.x_threshold / 1.8)) / 2.0
+        action = float(np.asarray(self.current_noisy_physical_action).ravel()[0]) / self.action_scale
+        quad = max(0.0, 1.0 - (action / 1.0) ** 2)
+        small_control = (4.0 + quad) / 5.0
+        small_velocity = (1.0 + gaussian_tol(theta_dot, 5.0)) / 2.0
+
+        reward = float(upright * centered * small_control * small_velocity)
+        # LQR-style additive velocity pricing, off by default. The product
+        # cannot charge for transport speed -- any factor multiplies a near-zero
+        # upright during the swing, and arriving 200 steps sooner pays ~+200 --
+        # so a slam is optimal under the pure port at 2000 N (measured: first
+        # action ~1850 N, x_dot 18 m/s). An additive quadratic is the term LQR
+        # has and this product lacks: unconditional, proportional, everywhere.
+        if self.shaped_dmc_velocity_weight:
+            reward -= self.shaped_dmc_velocity_weight * float(x_dot**2 + theta_dot**2)
+        # Position income, off by default. dm_control's `centered` factor is a
+        # Gaussian with margin 6.67 -- standing 0.8 m off-centre costs ~0.017 of
+        # a ~0.95 step reward, 1.8% of return, which is too weak to specify WHERE
+        # to balance. Measured: the 50 N and 10 N arms swing up and balance
+        # perfectly, then hold x = -0.77 and -1.41 as exact fixed points
+        # (x_dot = 0.000 at 20,000 steps), scoring 0.000 reach. This pays for
+        # occupancy of the goal ball -- dm_control's own sparse-variant idiom,
+        # +1 per step in the region -- so standing at the goal dominates instead
+        # of rounding to nothing. goal_reached is set by _get_done every step
+        # under terminate_on_goal False, so the bonus is a hold, not an event.
+        if self.shaped_dmc_goal_reward and self.goal_reached:
+            reward += self.shaped_dmc_goal_reward
+        if getattr(self, 'out_of_bounds', False):
+            reward += self.sparse_oob_reward
+        return reward
+
     def _get_done(self):
         '''Computes the conditions for termination of an episode.
 
         Returns:
             done (bool): Whether an episode is over.
         '''
-        # Done if goal reached for stabilization task with quadratic cost.
+        # Goal termination is the reach/stabilization distinction.
+        # terminate_on_goal True ends the episode on first entering the ball
+        # (reach); False lets it run, so holding position there is required
+        # (stabilization). goal_reached is set either way -- Cost.SPARSE reads
+        # it every step, which is what pays +1 per step held under
+        # stabilization and +1 once under reach.
         if self.TASK == Task.STABILIZATION:
-            self.goal_reached = bool(np.linalg.norm(self.state - self.X_GOAL) < self.TASK_INFO['stabilization_goal_tolerance'])
-            if self.goal_reached:
+            self.goal_reached = bool(self.goal_error() < self.TASK_INFO['stabilization_goal_tolerance'])
+            if self.goal_reached and self.terminate_on_goal:
                 return True
         # Done if state is out-of-bounds.
         if self.done_on_out_of_bound:
             x, x_dot, theta, theta_dot = self.state
-            if (x <= -self.x_threshold or x >= self.x_threshold or
-                x_dot <= -self.x_dot_threshold or x_dot >= self.x_dot_threshold or
-                theta <= -self.theta_threshold_radians or theta >= self.theta_threshold_radians or
-                theta_dot <= -self.theta_dot_threshold or theta_dot >= self.theta_dot_threshold):
+            out_of_bounds = (
+                x <= -self.x_threshold or x >= self.x_threshold or x_dot <= -self.x_dot_threshold or x_dot >= self.x_dot_threshold or theta <= -self.theta_threshold_radians or theta >= self.theta_threshold_radians or theta_dot <= -self.theta_dot_threshold or theta_dot >= self.theta_dot_threshold
+            )
+            if out_of_bounds:
                 self.out_of_bounds = True
                 return True
         self.out_of_bounds = False
         return False
+
+    def goal_error(self, state=None):
+        '''Distance to the goal with the pole angle wrapped to [-pi, pi].
+
+        theta is a continuous joint and the physical regime lets it wind, so a
+        swing-up that arrives at theta = 2*pi is at the goal. The raw norm
+        called it 6.28 away: measured on a trained swing-up policy, 43% of
+        full-box episodes parked within 0.2 of upright *wrapped* while the
+        unwrapped norm scored 0.000 -- the metric was billing the winding
+        number, not the control. Success, sparse reward and reach termination
+        all route through here so they agree.
+        '''
+        error = np.asarray(self.state if state is None else state, dtype=float) - self.X_GOAL
+        error[2] = (error[2] + np.pi) % (2 * np.pi) - np.pi
+        return float(np.linalg.norm(error))
 
     def _get_info(self):
         '''Generates the info dictionary returned by every call to .step().

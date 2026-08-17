@@ -8,18 +8,19 @@ State: [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p_body, q_body, r_body]
 
 import argparse
 import os
-import numpy as np
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
-import pybullet as p  # Import at module level to avoid multiprocessing issues
 
-from safe_control_gym.utils.registration import make
+import numpy as np
+import pybullet as p  # Import at module level to avoid multiprocessing issues
+from tqdm import tqdm
+
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 # Pre-import scipy to avoid multiprocessing import errors
 try:
-    import scipy.linalg
+    import scipy.linalg  # noqa: F401 (side-effecting pre-import, not referenced directly)
 except ImportError:
     pass
 
@@ -68,7 +69,7 @@ def count_existing_trajectories(trajectories_dir):
     if not os.path.exists(trajectories_dir):
         return 0, 0
 
-    traj_files = glob.glob(os.path.join(trajectories_dir, "sequence_*.txt"))
+    traj_files = glob.glob(os.path.join(trajectories_dir, 'sequence_*.txt'))
 
     if not traj_files:
         return 0, 0
@@ -76,7 +77,7 @@ def count_existing_trajectories(trajectories_dir):
     # Extract indices from filenames and find the maximum
     indices = []
     for f in traj_files:
-        match = re.search(r"sequence_(\d+)\.txt$", f)
+        match = re.search(r'sequence_(\d+)\.txt$', f)
         if match:
             indices.append(int(match.group(1)))
 
@@ -132,20 +133,20 @@ def generate_discretized_initial_states(
 
     # Create discretized ranges for each dimension
     # Positions: x and y are symmetric, z is altitude (positive)
-    x_vals = np.arange(-bounds["x"], bounds["x"] + resolution, resolution)
-    y_vals = np.arange(-bounds["y"], bounds["y"] + resolution, resolution)
-    z_vals = np.arange(bounds["z_min"], bounds["z_max"] + resolution, resolution)
+    x_vals = np.arange(-bounds['x'], bounds['x'] + resolution, resolution)
+    y_vals = np.arange(-bounds['y'], bounds['y'] + resolution, resolution)
+    z_vals = np.arange(bounds['z_min'], bounds['z_max'] + resolution, resolution)
     # Angles are symmetric
-    phi_vals = np.arange(-bounds["phi"], bounds["phi"] + resolution, resolution)
-    theta_vals = np.arange(-bounds["theta"], bounds["theta"] + resolution, resolution)
-    psi_vals = np.arange(-bounds["psi"], bounds["psi"] + resolution, resolution)
+    phi_vals = np.arange(-bounds['phi'], bounds['phi'] + resolution, resolution)
+    theta_vals = np.arange(-bounds['theta'], bounds['theta'] + resolution, resolution)
+    psi_vals = np.arange(-bounds['psi'], bounds['psi'] + resolution, resolution)
     # Velocities are symmetric
-    x_dot_vals = np.arange(-bounds["x_dot"], bounds["x_dot"] + resolution, resolution)
-    y_dot_vals = np.arange(-bounds["y_dot"], bounds["y_dot"] + resolution, resolution)
-    z_dot_vals = np.arange(-bounds["z_dot"], bounds["z_dot"] + resolution, resolution)
-    p_vals = np.arange(-bounds["p_body"], bounds["p_body"] + resolution, resolution)
-    q_vals = np.arange(-bounds["q_body"], bounds["q_body"] + resolution, resolution)
-    r_vals = np.arange(-bounds["r_body"], bounds["r_body"] + resolution, resolution)
+    x_dot_vals = np.arange(-bounds['x_dot'], bounds['x_dot'] + resolution, resolution)
+    y_dot_vals = np.arange(-bounds['y_dot'], bounds['y_dot'] + resolution, resolution)
+    z_dot_vals = np.arange(-bounds['z_dot'], bounds['z_dot'] + resolution, resolution)
+    p_vals = np.arange(-bounds['p_body'], bounds['p_body'] + resolution, resolution)
+    q_vals = np.arange(-bounds['q_body'], bounds['q_body'] + resolution, resolution)
+    r_vals = np.arange(-bounds['r_body'], bounds['r_body'] + resolution, resolution)
 
     # Generate all combinations in output order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     for x in x_vals:
@@ -169,55 +170,55 @@ def generate_discretized_initial_states(
                                                         if (
                                                             abs(x)
                                                             >= termination_thresholds[
-                                                                "x"
+                                                                'x'
                                                             ]
                                                             or abs(y)
                                                             >= termination_thresholds[
-                                                                "y"
+                                                                'y'
                                                             ]
                                                             or z
                                                             < termination_thresholds[
-                                                                "z_min"
+                                                                'z_min'
                                                             ]
                                                             or z
                                                             >= termination_thresholds[
-                                                                "z_max"
+                                                                'z_max'
                                                             ]
                                                             or abs(phi)
                                                             >= termination_thresholds[
-                                                                "phi"
+                                                                'phi'
                                                             ]
                                                             or abs(theta)
                                                             >= termination_thresholds[
-                                                                "theta"
+                                                                'theta'
                                                             ]
                                                             or abs(psi)
                                                             >= termination_thresholds[
-                                                                "psi"
+                                                                'psi'
                                                             ]
                                                             or abs(x_dot)
                                                             >= termination_thresholds[
-                                                                "x_dot"
+                                                                'x_dot'
                                                             ]
                                                             or abs(y_dot)
                                                             >= termination_thresholds[
-                                                                "y_dot"
+                                                                'y_dot'
                                                             ]
                                                             or abs(z_dot)
                                                             >= termination_thresholds[
-                                                                "z_dot"
+                                                                'z_dot'
                                                             ]
                                                             or abs(p)
                                                             >= termination_thresholds[
-                                                                "p_body"
+                                                                'p_body'
                                                             ]
                                                             or abs(q)
                                                             >= termination_thresholds[
-                                                                "q_body"
+                                                                'q_body'
                                                             ]
                                                             or abs(r)
                                                             >= termination_thresholds[
-                                                                "r_body"
+                                                                'r_body'
                                                             ]
                                                         ):
                                                             continue
@@ -276,37 +277,37 @@ def generate_random_initial_states(
 
         # Randomly sample each dimension from uniform distribution
         # Positions
-        x = np.random.uniform(-bounds["x"], bounds["x"])
-        y = np.random.uniform(-bounds["y"], bounds["y"])
-        z = np.random.uniform(bounds["z_min"], bounds["z_max"])
+        x = np.random.uniform(-bounds['x'], bounds['x'])
+        y = np.random.uniform(-bounds['y'], bounds['y'])
+        z = np.random.uniform(bounds['z_min'], bounds['z_max'])
         # Angles
-        phi = np.random.uniform(-bounds["phi"], bounds["phi"])
-        theta = np.random.uniform(-bounds["theta"], bounds["theta"])
-        psi = np.random.uniform(-bounds["psi"], bounds["psi"])
+        phi = np.random.uniform(-bounds['phi'], bounds['phi'])
+        theta = np.random.uniform(-bounds['theta'], bounds['theta'])
+        psi = np.random.uniform(-bounds['psi'], bounds['psi'])
         # Velocities
-        x_dot = np.random.uniform(-bounds["x_dot"], bounds["x_dot"])
-        y_dot = np.random.uniform(-bounds["y_dot"], bounds["y_dot"])
-        z_dot = np.random.uniform(-bounds["z_dot"], bounds["z_dot"])
-        p = np.random.uniform(-bounds["p_body"], bounds["p_body"])
-        q = np.random.uniform(-bounds["q_body"], bounds["q_body"])
-        r = np.random.uniform(-bounds["r_body"], bounds["r_body"])
+        x_dot = np.random.uniform(-bounds['x_dot'], bounds['x_dot'])
+        y_dot = np.random.uniform(-bounds['y_dot'], bounds['y_dot'])
+        z_dot = np.random.uniform(-bounds['z_dot'], bounds['z_dot'])
+        p = np.random.uniform(-bounds['p_body'], bounds['p_body'])
+        q = np.random.uniform(-bounds['q_body'], bounds['q_body'])
+        r = np.random.uniform(-bounds['r_body'], bounds['r_body'])
 
         # Check if state violates termination thresholds
         if termination_thresholds is not None:
             if (
-                abs(x) >= termination_thresholds["x"]
-                or abs(y) >= termination_thresholds["y"]
-                or z < termination_thresholds["z_min"]
-                or z >= termination_thresholds["z_max"]
-                or abs(phi) >= termination_thresholds["phi"]
-                or abs(theta) >= termination_thresholds["theta"]
-                or abs(psi) >= termination_thresholds["psi"]
-                or abs(x_dot) >= termination_thresholds["x_dot"]
-                or abs(y_dot) >= termination_thresholds["y_dot"]
-                or abs(z_dot) >= termination_thresholds["z_dot"]
-                or abs(p) >= termination_thresholds["p_body"]
-                or abs(q) >= termination_thresholds["q_body"]
-                or abs(r) >= termination_thresholds["r_body"]
+                abs(x) >= termination_thresholds['x']
+                or abs(y) >= termination_thresholds['y']
+                or z < termination_thresholds['z_min']
+                or z >= termination_thresholds['z_max']
+                or abs(phi) >= termination_thresholds['phi']
+                or abs(theta) >= termination_thresholds['theta']
+                or abs(psi) >= termination_thresholds['psi']
+                or abs(x_dot) >= termination_thresholds['x_dot']
+                or abs(y_dot) >= termination_thresholds['y_dot']
+                or abs(z_dot) >= termination_thresholds['z_dot']
+                or abs(p) >= termination_thresholds['p_body']
+                or abs(q) >= termination_thresholds['q_body']
+                or abs(r) >= termination_thresholds['r_body']
             ):
                 continue
 
@@ -314,7 +315,7 @@ def generate_random_initial_states(
 
     if len(states) < num_samples:
         print(
-            f"Warning: Could only generate {len(states)} valid states out of {num_samples} requested"
+            f'Warning: Could only generate {len(states)} valid states out of {num_samples} requested'
         )
 
     return states
@@ -392,8 +393,9 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000, invariant=False):
         # Get action from LQR controller
         action = ctrl.select_action(obs, info)
 
-        # Take step in environment (old Gym API returns 4 values)
-        obs, reward, done, info = env.step(action)
+        # Take step in environment
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         # Extract state (env obs order: x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p_body, q_body, r_body)
         x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p_body, q_body, r_body = obs[:12]
@@ -420,7 +422,7 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000, invariant=False):
         # only; the first OOB state is recorded as the terminal state.
         if done:
             full_horizon = False
-            success = info.get("goal_reached", False)
+            success = info.get('goal_reached', False)
             break
 
     terminal_v_over_c = None
@@ -448,11 +450,11 @@ def save_trajectory(trajectory, filepath):
         trajectory: List of states
         filepath: Path to save file
     """
-    with open(filepath, "w") as f:
+    with open(filepath, 'w') as f:
         for state in trajectory:
             # Format each state as comma-separated values (no spaces)
-            line = ",".join([f"{val:.6f}" for val in state])
-            f.write(line + "\n")
+            line = ','.join([f'{val:.6f}' for val in state])
+            f.write(line + '\n')
 
 
 def process_single_trajectory(args_tuple):
@@ -477,30 +479,30 @@ def process_single_trajectory(args_tuple):
     # Invariant mode: tolerance 0 disables goal termination (fixed horizon).
     # Default: 0.05 first-entry goal termination, as in the original datasets.
     task_info = {
-        "stabilization_goal": [0, 0, 1],  # Stabilize at x=0, y=0, z=1
-        "stabilization_goal_tolerance": 0.0 if env_config.get("invariant") else 0.05,
+        'stabilization_goal': [0, 0, 1],  # Stabilize at x=0, y=0, z=1
+        'stabilization_goal_tolerance': 0.0 if env_config.get('invariant') else 0.05,
     }
 
     env_func = partial(
         make,
-        "quadrotor",
+        'quadrotor',
         quad_type=QuadType.THREE_D,
-        task=env_config["task"],
+        task=env_config['task'],
         task_info=task_info,
-        ctrl_freq=env_config["ctrl_freq"],
-        pyb_freq=env_config["pyb_freq"],
-        episode_len_sec=env_config["episode_len_sec"],
-        done_on_out_of_bound=env_config["done_on_out_of_bound"],
-        cost=env_config["cost"],
+        ctrl_freq=env_config['ctrl_freq'],
+        pyb_freq=env_config['pyb_freq'],
+        episode_len_sec=env_config['episode_len_sec'],
+        done_on_out_of_bound=env_config['done_on_out_of_bound'],
+        cost=env_config['cost'],
         gui=False,
         randomized_init=False,
     )
 
     ctrl = make(
-        "lqr",
+        'lqr',
         env_func,
-        q_lqr=env_config["q_lqr"],
-        r_lqr=env_config["r_lqr"],
+        q_lqr=env_config['q_lqr'],
+        r_lqr=env_config['r_lqr'],
         discrete_dynamics=True,
     )
 
@@ -509,89 +511,89 @@ def process_single_trajectory(args_tuple):
     # Configure environment's state_space bounds to match termination thresholds
     # Env state order: [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]
     # Positions
-    env.state_space.low[0] = -env_config["x_termination"]
-    env.state_space.high[0] = env_config["x_termination"]
-    env.state_space.low[2] = -env_config["y_termination"]
-    env.state_space.high[2] = env_config["y_termination"]
-    env.state_space.low[4] = env_config["z_min_termination"]
-    env.state_space.high[4] = env_config["z_max_termination"]
+    env.state_space.low[0] = -env_config['x_termination']
+    env.state_space.high[0] = env_config['x_termination']
+    env.state_space.low[2] = -env_config['y_termination']
+    env.state_space.high[2] = env_config['y_termination']
+    env.state_space.low[4] = env_config['z_min_termination']
+    env.state_space.high[4] = env_config['z_max_termination']
     # Angles (periodic, will be masked out in termination check)
-    env.state_space.low[6] = -env_config["phi_termination"]
-    env.state_space.high[6] = env_config["phi_termination"]
-    env.state_space.low[7] = -env_config["theta_termination"]
-    env.state_space.high[7] = env_config["theta_termination"]
-    env.state_space.low[8] = -env_config["psi_termination"]
-    env.state_space.high[8] = env_config["psi_termination"]
+    env.state_space.low[6] = -env_config['phi_termination']
+    env.state_space.high[6] = env_config['phi_termination']
+    env.state_space.low[7] = -env_config['theta_termination']
+    env.state_space.high[7] = env_config['theta_termination']
+    env.state_space.low[8] = -env_config['psi_termination']
+    env.state_space.high[8] = env_config['psi_termination']
     # Linear velocities (for closed state space)
-    env.state_space.low[1] = -env_config["x_dot_termination"]
-    env.state_space.high[1] = env_config["x_dot_termination"]
-    env.state_space.low[3] = -env_config["y_dot_termination"]
-    env.state_space.high[3] = env_config["y_dot_termination"]
-    env.state_space.low[5] = -env_config["z_dot_termination"]
-    env.state_space.high[5] = env_config["z_dot_termination"]
+    env.state_space.low[1] = -env_config['x_dot_termination']
+    env.state_space.high[1] = env_config['x_dot_termination']
+    env.state_space.low[3] = -env_config['y_dot_termination']
+    env.state_space.high[3] = env_config['y_dot_termination']
+    env.state_space.low[5] = -env_config['z_dot_termination']
+    env.state_space.high[5] = env_config['z_dot_termination']
     # Angular velocities (for closed state space)
-    env.state_space.low[9] = -env_config["p_body_termination"]
-    env.state_space.high[9] = env_config["p_body_termination"]
-    env.state_space.low[10] = -env_config["q_body_termination"]
-    env.state_space.high[10] = env_config["q_body_termination"]
-    env.state_space.low[11] = -env_config["r_body_termination"]
-    env.state_space.high[11] = env_config["r_body_termination"]
+    env.state_space.low[9] = -env_config['p_body_termination']
+    env.state_space.high[9] = env_config['p_body_termination']
+    env.state_space.low[10] = -env_config['q_body_termination']
+    env.state_space.high[10] = env_config['q_body_termination']
+    env.state_space.low[11] = -env_config['r_body_termination']
+    env.state_space.high[11] = env_config['r_body_termination']
 
     # Initialize statistics for this trajectory
     # State order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     state_vars = [
-        "x",
-        "y",
-        "z",
-        "phi",
-        "theta",
-        "psi",
-        "x_dot",
-        "y_dot",
-        "z_dot",
-        "p_body",
-        "q_body",
-        "r_body",
+        'x',
+        'y',
+        'z',
+        'phi',
+        'theta',
+        'psi',
+        'x_dot',
+        'y_dot',
+        'z_dot',
+        'p_body',
+        'q_body',
+        'r_body',
     ]
     traj_stats = {
         var: {
-            "min": float("inf"),
-            "max": float("-inf"),
-            "prev_at_min": None,
-            "prev_at_max": None,
+            'min': float('inf'),
+            'max': float('-inf'),
+            'prev_at_min': None,
+            'prev_at_max': None,
         }
         for var in state_vars
     }
     traj_stats.update(
         {
-            "success_count": 0,
-            "total_count": 0,
-            "timeout_count": 0,
-            "max_traj_length": 0,
-            "roa_label": None,
-            "init_state": None,
+            'success_count': 0,
+            'total_count': 0,
+            'timeout_count': 0,
+            'max_traj_length': 0,
+            'roa_label': None,
+            'init_state': None,
         }
     )
 
     # Run trajectory
     trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
-        env, ctrl, init_state, env_config["max_steps"],
-        invariant=env_config.get("invariant", False)
+        env, ctrl, init_state, env_config['max_steps'],
+        invariant=env_config.get('invariant', False)
     )
 
     # Update success and full-horizon-without-success tracking
-    traj_stats["total_count"] = 1
+    traj_stats['total_count'] = 1
     if success:
-        traj_stats["success_count"] = 1
+        traj_stats['success_count'] = 1
     if full_horizon and not success:
-        traj_stats["timeout_count"] = 1
-    traj_stats["terminal_v_over_c"] = terminal_v_over_c if success else None
+        traj_stats['timeout_count'] = 1
+    traj_stats['terminal_v_over_c'] = terminal_v_over_c if success else None
 
     # Store ROA label: 1 iff terminal state in the invariant ellipsoid
     # Store initial state with normalized angles
     # Input order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r = init_state
-    traj_stats["init_state"] = [
+    traj_stats['init_state'] = [
         x,
         y,
         z,
@@ -605,10 +607,10 @@ def process_single_trajectory(args_tuple):
         q,
         r,
     ]
-    traj_stats["roa_label"] = 1 if success else 0
+    traj_stats['roa_label'] = 1 if success else 0
 
     # Update trajectory length tracking
-    traj_stats["max_traj_length"] = len(trajectory)
+    traj_stats['max_traj_length'] = len(trajectory)
 
     # Update statistics with previous state tracking
     traj_array = np.array(trajectory)
@@ -618,41 +620,41 @@ def process_single_trajectory(args_tuple):
     if len(traj_array) > 0:
         # For each state variable, track min/max and the previous state
         state_var_indices = [
-            ("x", 0),
-            ("y", 1),
-            ("z", 2),
-            ("phi", 3),
-            ("theta", 4),
-            ("psi", 5),
-            ("x_dot", 6),
-            ("y_dot", 7),
-            ("z_dot", 8),
-            ("p_body", 9),
-            ("q_body", 10),
-            ("r_body", 11),
+            ('x', 0),
+            ('y', 1),
+            ('z', 2),
+            ('phi', 3),
+            ('theta', 4),
+            ('psi', 5),
+            ('x_dot', 6),
+            ('y_dot', 7),
+            ('z_dot', 8),
+            ('p_body', 9),
+            ('q_body', 10),
+            ('r_body', 11),
         ]
         for var_name, col_idx in state_var_indices:
             # Find min value and its index
             traj_min = traj_array[:, col_idx].min()
-            traj_stats[var_name]["min"] = traj_min
+            traj_stats[var_name]['min'] = traj_min
             min_idx = traj_array[:, col_idx].argmin()
             # Store previous state (None if this is the initial state)
-            traj_stats[var_name]["prev_at_min"] = (
+            traj_stats[var_name]['prev_at_min'] = (
                 traj_array[min_idx - 1].tolist() if min_idx > 0 else None
             )
 
             # Find max value and its index
             traj_max = traj_array[:, col_idx].max()
-            traj_stats[var_name]["max"] = traj_max
+            traj_stats[var_name]['max'] = traj_max
             max_idx = traj_array[:, col_idx].argmax()
             # Store previous state (None if this is the initial state)
-            traj_stats[var_name]["prev_at_max"] = (
+            traj_stats[var_name]['prev_at_max'] = (
                 traj_array[max_idx - 1].tolist() if max_idx > 0 else None
             )
 
     # Save trajectory (only if skip_save is False)
     if not skip_save:
-        filepath = os.path.join(output_dir, f"sequence_{idx}.txt")
+        filepath = os.path.join(output_dir, f'sequence_{idx}.txt')
         save_trajectory(trajectory, filepath)
 
     # Clean up
@@ -679,25 +681,25 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, invaria
     import glob
 
     # Find all trajectory files
-    traj_files = sorted(glob.glob(os.path.join(trajectories_dir, "sequence_*.txt")))
+    traj_files = sorted(glob.glob(os.path.join(trajectories_dir, 'sequence_*.txt')))
 
     if not traj_files:
-        print(f"Warning: No trajectory files found in {trajectories_dir}")
+        print(f'Warning: No trajectory files found in {trajectories_dir}')
         return 0, 0, 0
 
     total_states = 0
     success_traj_count = 0
     failure_traj_count = 0
 
-    with open(output_path, "w") as f_out:
-        for traj_file in tqdm(traj_files, desc="Generating ROA labels"):
+    with open(output_path, 'w') as f_out:
+        for traj_file in tqdm(traj_files, desc='Generating ROA labels'):
             # Read trajectory
             states = []
-            with open(traj_file, "r") as f_in:
+            with open(traj_file, 'r') as f_in:
                 for line in f_in:
                     line = line.strip()
                     if line:
-                        values = [float(v) for v in line.split(",")]
+                        values = [float(v) for v in line.split(',')]
                         states.append(values)
 
             if len(states) < 2:
@@ -727,8 +729,8 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, invaria
 
             # Write all states except the termination state with the trajectory's label
             for state in states[:-1]:
-                line = ",".join([f"{val:.6f}" for val in state] + [str(label)])
-                f_out.write(line + "\n")
+                line = ','.join([f'{val:.6f}' for val in state] + [str(label)])
+                f_out.write(line + '\n')
                 total_states += 1
 
     return total_states, success_traj_count, failure_traj_count
@@ -736,254 +738,254 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, invaria
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate 3D quadrotor trajectory dataset"
+        description='Generate 3D quadrotor trajectory dataset'
     )
     parser.add_argument(
-        "--output_dir",
+        '--output_dir',
         type=str,
-        default="/common/users/shared/pracsys/genMoPlan/data_trajectories/quadrotor3D_lqr",
-        help="Directory to save trajectory files",
+        default='/common/users/shared/pracsys/genMoPlan/data_trajectories/quadrotor3D_lqr',
+        help='Directory to save trajectory files',
     )
     parser.add_argument(
-        "--resolution",
+        '--resolution',
         type=float,
         default=0.1,
-        help="Discretization resolution (default: 0.1)",
+        help='Discretization resolution (default: 0.1)',
     )
 
     # Position bounds (calibrated for ~10% success rate with LQR controller and full SO(3) coverage)
     parser.add_argument(
-        "--x_bound",
+        '--x_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for x position (default: 1.5)",
+        help='Symmetric bound for x position (default: 1.5)',
     )
     parser.add_argument(
-        "--y_bound",
+        '--y_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for y position (default: 1.5)",
+        help='Symmetric bound for y position (default: 1.5)',
     )
     parser.add_argument(
-        "--z_min",
+        '--z_min',
         type=float,
         default=0.1,
-        help="Minimum z (altitude) position (default: 0.1, above ground)",
+        help='Minimum z (altitude) position (default: 0.1, above ground)',
     )
     parser.add_argument(
-        "--z_max",
+        '--z_max',
         type=float,
         default=3.0,
-        help="Maximum z (altitude) position (default: 3.0)",
+        help='Maximum z (altitude) position (default: 3.0)',
     )
 
     # Orientation bounds (Euler angles - full SO(3) coverage by default)
     parser.add_argument(
-        "--phi_bound",
+        '--phi_bound',
         type=float,
         default=np.pi,
-        help="Symmetric bound for roll angle (default: pi)",
+        help='Symmetric bound for roll angle (default: pi)',
     )
     parser.add_argument(
-        "--theta_bound",
+        '--theta_bound',
         type=float,
         default=np.pi,
-        help="Symmetric bound for pitch angle (default: pi)",
+        help='Symmetric bound for pitch angle (default: pi)',
     )
     parser.add_argument(
-        "--psi_bound",
+        '--psi_bound',
         type=float,
         default=np.pi,
-        help="Symmetric bound for yaw angle (default: pi)",
+        help='Symmetric bound for yaw angle (default: pi)',
     )
 
     # Velocity bounds (calibrated for ~10% success rate with LQR controller and full SO(3) coverage)
     parser.add_argument(
-        "--x_dot_bound",
+        '--x_dot_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for x velocity (default: 1.5)",
+        help='Symmetric bound for x velocity (default: 1.5)',
     )
     parser.add_argument(
-        "--y_dot_bound",
+        '--y_dot_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for y velocity (default: 1.5)",
+        help='Symmetric bound for y velocity (default: 1.5)',
     )
     parser.add_argument(
-        "--z_dot_bound",
+        '--z_dot_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for z velocity (default: 1.5)",
+        help='Symmetric bound for z velocity (default: 1.5)',
     )
 
     # Angular velocity bounds (body frame, calibrated for ~10% success rate with full SO(3) coverage)
     parser.add_argument(
-        "--p_body_bound",
+        '--p_body_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for roll rate (default: 1.5 rad/s)",
+        help='Symmetric bound for roll rate (default: 1.5 rad/s)',
     )
     parser.add_argument(
-        "--q_body_bound",
+        '--q_body_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for pitch rate (default: 1.5 rad/s)",
+        help='Symmetric bound for pitch rate (default: 1.5 rad/s)',
     )
     parser.add_argument(
-        "--r_body_bound",
+        '--r_body_bound',
         type=float,
         default=1.5,
-        help="Symmetric bound for yaw rate (default: 1.5 rad/s)",
+        help='Symmetric bound for yaw rate (default: 1.5 rad/s)',
     )
 
     # Termination thresholds
     parser.add_argument(
-        "--x_termination",
+        '--x_termination',
         type=float,
         default=None,
-        help="Termination threshold for x (default: copies x_bound)",
+        help='Termination threshold for x (default: copies x_bound)',
     )
     parser.add_argument(
-        "--y_termination",
+        '--y_termination',
         type=float,
         default=None,
-        help="Termination threshold for y (default: copies y_bound)",
+        help='Termination threshold for y (default: copies y_bound)',
     )
     parser.add_argument(
-        "--z_min_termination",
+        '--z_min_termination',
         type=float,
         default=None,
-        help="Termination threshold for minimum z (default: copies z_min)",
+        help='Termination threshold for minimum z (default: copies z_min)',
     )
     parser.add_argument(
-        "--z_max_termination",
+        '--z_max_termination',
         type=float,
         default=None,
-        help="Termination threshold for maximum z (default: copies z_max)",
+        help='Termination threshold for maximum z (default: copies z_max)',
     )
     parser.add_argument(
-        "--phi_termination",
+        '--phi_termination',
         type=float,
-        default=float("inf"),
-        help="Termination threshold for roll (default: inf)",
+        default=float('inf'),
+        help='Termination threshold for roll (default: inf)',
     )
     parser.add_argument(
-        "--theta_termination",
+        '--theta_termination',
         type=float,
-        default=float("inf"),
-        help="Termination threshold for pitch (default: inf)",
+        default=float('inf'),
+        help='Termination threshold for pitch (default: inf)',
     )
     parser.add_argument(
-        "--psi_termination",
+        '--psi_termination',
         type=float,
-        default=float("inf"),
-        help="Termination threshold for yaw (default: inf)",
+        default=float('inf'),
+        help='Termination threshold for yaw (default: inf)',
     )
     parser.add_argument(
-        "--x_dot_termination",
-        type=float,
-        default=None,
-        help="Termination threshold for x velocity (default: copies x_dot_bound)",
-    )
-    parser.add_argument(
-        "--y_dot_termination",
+        '--x_dot_termination',
         type=float,
         default=None,
-        help="Termination threshold for y velocity (default: copies y_dot_bound)",
+        help='Termination threshold for x velocity (default: copies x_dot_bound)',
     )
     parser.add_argument(
-        "--z_dot_termination",
+        '--y_dot_termination',
         type=float,
         default=None,
-        help="Termination threshold for z velocity (default: copies z_dot_bound)",
+        help='Termination threshold for y velocity (default: copies y_dot_bound)',
     )
     parser.add_argument(
-        "--p_body_termination",
+        '--z_dot_termination',
         type=float,
         default=None,
-        help="Termination threshold for roll rate (default: copies p_body_bound)",
+        help='Termination threshold for z velocity (default: copies z_dot_bound)',
     )
     parser.add_argument(
-        "--q_body_termination",
+        '--p_body_termination',
         type=float,
         default=None,
-        help="Termination threshold for pitch rate (default: copies q_body_bound)",
+        help='Termination threshold for roll rate (default: copies p_body_bound)',
     )
     parser.add_argument(
-        "--r_body_termination",
+        '--q_body_termination',
         type=float,
         default=None,
-        help="Termination threshold for yaw rate (default: copies r_body_bound)",
+        help='Termination threshold for pitch rate (default: copies q_body_bound)',
+    )
+    parser.add_argument(
+        '--r_body_termination',
+        type=float,
+        default=None,
+        help='Termination threshold for yaw rate (default: copies r_body_bound)',
     )
 
     parser.add_argument(
-        "--max_steps",
+        '--max_steps',
         type=int,
         default=None,
-        help="Maximum steps per trajectory (default: 100000, effectively no timeout; "
-             "with --invariant_terminal_sets: 800 = old max success length 636 + "
-             "settle buffer, run in full unless out of bounds)",
+        help='Maximum steps per trajectory (default: 100000, effectively no timeout; '
+             'with --invariant_terminal_sets: 800 = old max success length 636 + '
+             'settle buffer, run in full unless out of bounds)',
     )
     parser.add_argument(
-        "--invariant_terminal_sets",
-        action="store_true",
-        help="Disable goal termination: run every non-OOB trajectory for the full "
-             "horizon and label by terminal-state membership in the invariant "
-             "ellipsoid (plans/invariant-terminal-sets-recollection.md). Default: "
-             "terminate at first entry into the 0.05 goal ball.",
+        '--invariant_terminal_sets',
+        action='store_true',
+        help='Disable goal termination: run every non-OOB trajectory for the full '
+             'horizon and label by terminal-state membership in the invariant '
+             'ellipsoid (plans/invariant-terminal-sets-recollection.md). Default: '
+             'terminate at first entry into the 0.05 goal ball.',
     )
     parser.add_argument(
-        "--episode_len_sec",
+        '--episode_len_sec',
         type=int,
         default=1000,
-        help="Episode length in seconds (default: 1000, effectively no timeout)",
+        help='Episode length in seconds (default: 1000, effectively no timeout)',
     )
     parser.add_argument(
-        "--parallel",
-        action="store_true",
-        help="Enable parallel processing using multiple CPU cores (default: False)",
+        '--parallel',
+        action='store_true',
+        help='Enable parallel processing using multiple CPU cores (default: False)',
     )
     parser.add_argument(
-        "--num_workers",
+        '--num_workers',
         type=int,
         default=None,
-        help="Number of worker processes for parallel execution (default: all available CPUs)",
+        help='Number of worker processes for parallel execution (default: all available CPUs)',
     )
     parser.add_argument(
-        "--save_freq",
+        '--save_freq',
         type=float,
         default=0.01,
-        help="Frequency in seconds at which to save trajectory states (default: 0.01 = 100 Hz)",
+        help='Frequency in seconds at which to save trajectory states (default: 0.01 = 100 Hz)',
     )
     parser.add_argument(
-        "--skip_save",
-        action="store_true",
-        help="Skip saving trajectory files to disk (default: False)",
+        '--skip_save',
+        action='store_true',
+        help='Skip saving trajectory files to disk (default: False)',
     )
     parser.add_argument(
-        "--random_init",
-        action="store_true",
-        help="Use random sampling instead of discretized grid for initial states (default: False)",
+        '--random_init',
+        action='store_true',
+        help='Use random sampling instead of discretized grid for initial states (default: False)',
     )
     parser.add_argument(
-        "--num_trajs",
+        '--num_trajs',
         type=int,
         default=1000,
-        help="Number of trajectories to generate when using --random_init (default: 1000)",
+        help='Number of trajectories to generate when using --random_init (default: 1000)',
     )
     parser.add_argument(
-        "--seed",
+        '--seed',
         type=int,
         default=None,
-        help="Random seed for reproducibility when using --random_init (default: None)",
+        help='Random seed for reproducibility when using --random_init (default: None)',
     )
     parser.add_argument(
-        "--generate_roa_only",
-        action="store_true",
-        help="Only generate ROA labels from existing trajectory files. "
-        "Skips trajectory generation. Use this after terminating a run early "
-        "or to regenerate ROA labels from all existing trajectories.",
+        '--generate_roa_only',
+        action='store_true',
+        help='Only generate ROA labels from existing trajectory files. '
+        'Skips trajectory generation. Use this after terminating a run early '
+        'or to regenerate ROA labels from all existing trajectories.',
     )
 
     args = parser.parse_args()
@@ -992,45 +994,45 @@ def main():
         args.max_steps = 800 if args.invariant_terminal_sets else 100000
 
     # Set up directories
-    trajectories_dir = os.path.join(args.output_dir, "trajectories")
-    roa_labels_path = os.path.join(args.output_dir, "roa_labels.txt")
+    trajectories_dir = os.path.join(args.output_dir, 'trajectories')
+    roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
 
     # Handle --generate_roa_only mode
     if args.generate_roa_only:
-        print(f"Generating ROA labels from existing trajectory files...")
-        print(f"Trajectories directory: {trajectories_dir}")
+        print('Generating ROA labels from existing trajectory files...')
+        print(f'Trajectories directory: {trajectories_dir}')
 
         total_states, success_trajs, failure_trajs = (
             generate_roa_labels_from_trajectories(trajectories_dir, roa_labels_path, invariant=args.invariant_terminal_sets)
         )
 
-        print(f"\nROA labels saved to: {roa_labels_path}")
-        print(f"  Total trajectories processed: {success_trajs + failure_trajs}")
-        print(f"  Successful trajectories: {success_trajs}")
-        print(f"  Failed trajectories: {failure_trajs}")
-        print(f"  Total state-label pairs: {total_states}")
+        print(f'\nROA labels saved to: {roa_labels_path}')
+        print(f'  Total trajectories processed: {success_trajs + failure_trajs}')
+        print(f'  Successful trajectories: {success_trajs}')
+        print(f'  Failed trajectories: {failure_trajs}')
+        print(f'  Total state-label pairs: {total_states}')
         return
 
     # Check existing trajectories and calculate how many more are needed
     existing_count, start_idx = count_existing_trajectories(trajectories_dir)
 
     if existing_count > 0:
-        print(f"Found {existing_count} existing trajectories in {trajectories_dir}")
-        print(f"Next trajectory index: {start_idx}")
+        print(f'Found {existing_count} existing trajectories in {trajectories_dir}')
+        print(f'Next trajectory index: {start_idx}')
 
     if args.random_init:
         # For random init, check if we already have enough trajectories
         if existing_count >= args.num_trajs:
             print(
-                f"Target of {args.num_trajs} trajectories already reached ({existing_count} exist)."
+                f'Target of {args.num_trajs} trajectories already reached ({existing_count} exist).'
             )
-            print(f"Nothing to do.")
+            print('Nothing to do.')
             return
 
         # Calculate how many more trajectories to generate
         num_to_generate = args.num_trajs - existing_count
         print(
-            f"Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}"
+            f'Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}'
         )
 
     # Set default termination thresholds
@@ -1059,7 +1061,7 @@ def main():
         args.r_body_termination = args.r_body_bound
 
     # Create output directory structure
-    trajectories_dir = os.path.join(args.output_dir, "trajectories")
+    trajectories_dir = os.path.join(args.output_dir, 'trajectories')
     if not args.skip_save:
         os.makedirs(trajectories_dir, exist_ok=True)
     else:
@@ -1068,54 +1070,54 @@ def main():
     # Define bounds
     # State order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     bounds = {
-        "x": args.x_bound,
-        "y": args.y_bound,
-        "z_min": args.z_min,
-        "z_max": args.z_max,
-        "phi": args.phi_bound,
-        "theta": args.theta_bound,
-        "psi": args.psi_bound,
-        "x_dot": args.x_dot_bound,
-        "y_dot": args.y_dot_bound,
-        "z_dot": args.z_dot_bound,
-        "p_body": args.p_body_bound,
-        "q_body": args.q_body_bound,
-        "r_body": args.r_body_bound,
+        'x': args.x_bound,
+        'y': args.y_bound,
+        'z_min': args.z_min,
+        'z_max': args.z_max,
+        'phi': args.phi_bound,
+        'theta': args.theta_bound,
+        'psi': args.psi_bound,
+        'x_dot': args.x_dot_bound,
+        'y_dot': args.y_dot_bound,
+        'z_dot': args.z_dot_bound,
+        'p_body': args.p_body_bound,
+        'q_body': args.q_body_bound,
+        'r_body': args.r_body_bound,
     }
 
     # Define termination thresholds
     termination_thresholds = {
-        "x": args.x_termination,
-        "y": args.y_termination,
-        "z_min": args.z_min_termination,
-        "z_max": args.z_max_termination,
-        "phi": args.phi_termination,
-        "theta": args.theta_termination,
-        "psi": args.psi_termination,
-        "x_dot": args.x_dot_termination,
-        "y_dot": args.y_dot_termination,
-        "z_dot": args.z_dot_termination,
-        "p_body": args.p_body_termination,
-        "q_body": args.q_body_termination,
-        "r_body": args.r_body_termination,
+        'x': args.x_termination,
+        'y': args.y_termination,
+        'z_min': args.z_min_termination,
+        'z_max': args.z_max_termination,
+        'phi': args.phi_termination,
+        'theta': args.theta_termination,
+        'psi': args.psi_termination,
+        'x_dot': args.x_dot_termination,
+        'y_dot': args.y_dot_termination,
+        'z_dot': args.z_dot_termination,
+        'p_body': args.p_body_termination,
+        'q_body': args.q_body_termination,
+        'r_body': args.r_body_termination,
     }
 
     # Generate initial states (either discretized or random)
     if args.random_init:
-        print(f"Generating {num_to_generate} random initial states...")
+        print(f'Generating {num_to_generate} random initial states...')
         initial_states = generate_random_initial_states(
             bounds, num_to_generate, termination_thresholds, args.seed
         )
         print(
-            f"Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)"
+            f'Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)'
         )
     else:
-        print("Generating discretized initial states...")
+        print('Generating discretized initial states...')
         initial_states = generate_discretized_initial_states(
             bounds, args.resolution, termination_thresholds
         )
         print(
-            f"Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)"
+            f'Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)'
         )
 
     # Calculate control frequency based on save_freq
@@ -1129,76 +1131,76 @@ def main():
 
     # Prepare environment configuration for workers
     env_config = {
-        "task": "stabilization",
-        "ctrl_freq": ctrl_freq,
-        "pyb_freq": pyb_freq,
-        "episode_len_sec": args.episode_len_sec,
-        "done_on_out_of_bound": True,
-        "cost": "quadratic",
-        "q_lqr": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  # 12 state dimensions
-        "r_lqr": [0.1, 0.1, 0.1, 0.1],  # 4 control dimensions (4 rotors)
-        "max_steps": args.max_steps,
-        "invariant": args.invariant_terminal_sets,
+        'task': 'stabilization',
+        'ctrl_freq': ctrl_freq,
+        'pyb_freq': pyb_freq,
+        'episode_len_sec': args.episode_len_sec,
+        'done_on_out_of_bound': True,
+        'cost': 'quadratic',
+        'q_lqr': [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  # 12 state dimensions
+        'r_lqr': [0.1, 0.1, 0.1, 0.1],  # 4 control dimensions (4 rotors)
+        'max_steps': args.max_steps,
+        'invariant': args.invariant_terminal_sets,
         # Termination thresholds for configuring environment state_space bounds
-        "x_termination": args.x_termination,
-        "y_termination": args.y_termination,
-        "z_min_termination": args.z_min_termination,
-        "z_max_termination": args.z_max_termination,
-        "phi_termination": args.phi_termination,
-        "theta_termination": args.theta_termination,
-        "psi_termination": args.psi_termination,
-        "x_dot_termination": args.x_dot_termination,
-        "y_dot_termination": args.y_dot_termination,
-        "z_dot_termination": args.z_dot_termination,
-        "p_body_termination": args.p_body_termination,
-        "q_body_termination": args.q_body_termination,
-        "r_body_termination": args.r_body_termination,
+        'x_termination': args.x_termination,
+        'y_termination': args.y_termination,
+        'z_min_termination': args.z_min_termination,
+        'z_max_termination': args.z_max_termination,
+        'phi_termination': args.phi_termination,
+        'theta_termination': args.theta_termination,
+        'psi_termination': args.psi_termination,
+        'x_dot_termination': args.x_dot_termination,
+        'y_dot_termination': args.y_dot_termination,
+        'z_dot_termination': args.z_dot_termination,
+        'p_body_termination': args.p_body_termination,
+        'q_body_termination': args.q_body_termination,
+        'r_body_termination': args.r_body_termination,
     }
 
-    print(f"Termination thresholds:")
+    print('Termination thresholds:')
     print(
-        f"  Position: x=±{args.x_termination}, y=±{args.y_termination}, z=[{args.z_min_termination}, {args.z_max_termination}]"
+        f'  Position: x=±{args.x_termination}, y=±{args.y_termination}, z=[{args.z_min_termination}, {args.z_max_termination}]'
     )
     print(
-        f"  Angles: phi=±{args.phi_termination}, theta=±{args.theta_termination}, psi=±{args.psi_termination}"
+        f'  Angles: phi=±{args.phi_termination}, theta=±{args.theta_termination}, psi=±{args.psi_termination}'
     )
     print(
-        f"  Velocity: x_dot=±{args.x_dot_termination}, y_dot=±{args.y_dot_termination}, z_dot=±{args.z_dot_termination}"
+        f'  Velocity: x_dot=±{args.x_dot_termination}, y_dot=±{args.y_dot_termination}, z_dot=±{args.z_dot_termination}'
     )
     print(
-        f"  Rates: p=±{args.p_body_termination}, q=±{args.q_body_termination}, r=±{args.r_body_termination}"
+        f'  Rates: p=±{args.p_body_termination}, q=±{args.q_body_termination}, r=±{args.r_body_termination}'
     )
-    print(f"Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)")
-    print(f"Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)")
-    print(f"Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)")
+    print(f'Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)')
+    print(f'Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)')
+    print(f'Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)')
 
     # Initialize statistics tracking
     # State order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     state_vars = [
-        "x",
-        "y",
-        "z",
-        "phi",
-        "theta",
-        "psi",
-        "x_dot",
-        "y_dot",
-        "z_dot",
-        "p_body",
-        "q_body",
-        "r_body",
+        'x',
+        'y',
+        'z',
+        'phi',
+        'theta',
+        'psi',
+        'x_dot',
+        'y_dot',
+        'z_dot',
+        'p_body',
+        'q_body',
+        'r_body',
     ]
     stats = {
         var: {
-            "min": float("inf"),
-            "max": float("-inf"),
-            "prev_at_min": None,
-            "prev_at_max": None,
+            'min': float('inf'),
+            'max': float('-inf'),
+            'prev_at_min': None,
+            'prev_at_max': None,
         }
         for var in state_vars
     }
     stats.update(
-        {"success_count": 0, "total_count": 0, "timeout_count": 0, "max_traj_length": 0}
+        {'success_count': 0, 'total_count': 0, 'timeout_count': 0, 'max_traj_length': 0}
     )
     terminal_v_ratios = []  # Terminal V/c of successful trajectories (margin diagnostic)
 
@@ -1206,7 +1208,7 @@ def main():
         # Parallel execution
         num_workers = args.num_workers if args.num_workers else get_available_cpus()
         print(
-            f"Generating trajectories using {num_workers} CPU cores (parallel mode)..."
+            f'Generating trajectories using {num_workers} CPU cores (parallel mode)...'
         )
 
         # Create arguments for each individual trajectory
@@ -1228,7 +1230,7 @@ def main():
                 tqdm(
                     pool.imap_unordered(process_single_trajectory, trajectory_args),
                     total=len(initial_states),
-                    desc="Generating trajectories",
+                    desc='Generating trajectories',
                 )
             )
 
@@ -1236,55 +1238,55 @@ def main():
         for traj_stats in traj_results:
             for key in state_vars:
                 # Update min and its previous state
-                if traj_stats[key]["min"] < stats[key]["min"]:
-                    stats[key]["min"] = traj_stats[key]["min"]
-                    stats[key]["prev_at_min"] = traj_stats[key]["prev_at_min"]
+                if traj_stats[key]['min'] < stats[key]['min']:
+                    stats[key]['min'] = traj_stats[key]['min']
+                    stats[key]['prev_at_min'] = traj_stats[key]['prev_at_min']
                 # Update max and its previous state
-                if traj_stats[key]["max"] > stats[key]["max"]:
-                    stats[key]["max"] = traj_stats[key]["max"]
-                    stats[key]["prev_at_max"] = traj_stats[key]["prev_at_max"]
+                if traj_stats[key]['max'] > stats[key]['max']:
+                    stats[key]['max'] = traj_stats[key]['max']
+                    stats[key]['prev_at_max'] = traj_stats[key]['prev_at_max']
 
             # Aggregate success and full-horizon counts
-            stats["success_count"] += traj_stats["success_count"]
-            stats["total_count"] += traj_stats["total_count"]
-            stats["timeout_count"] += traj_stats["timeout_count"]
-            stats["max_traj_length"] = max(
-                stats["max_traj_length"], traj_stats["max_traj_length"]
+            stats['success_count'] += traj_stats['success_count']
+            stats['total_count'] += traj_stats['total_count']
+            stats['timeout_count'] += traj_stats['timeout_count']
+            stats['max_traj_length'] = max(
+                stats['max_traj_length'], traj_stats['max_traj_length']
             )
-            if traj_stats["terminal_v_over_c"] is not None:
-                terminal_v_ratios.append(traj_stats["terminal_v_over_c"])
+            if traj_stats['terminal_v_over_c'] is not None:
+                terminal_v_ratios.append(traj_stats['terminal_v_over_c'])
 
     else:
         # Sequential execution
-        print(f"Generating trajectories sequentially (single core)...")
+        print('Generating trajectories sequentially (single core)...')
 
         # For 3D quadrotor, need to set stabilization_goal with 3 elements [x, y, z]
         task_info = {
-            "stabilization_goal": [0, 0, 1],  # Stabilize at x=0, y=0, z=1
-            "stabilization_goal_tolerance": 0.0 if args.invariant_terminal_sets else 0.05,
+            'stabilization_goal': [0, 0, 1],  # Stabilize at x=0, y=0, z=1
+            'stabilization_goal_tolerance': 0.0 if args.invariant_terminal_sets else 0.05,
         }
 
         # Create environment and controller once for sequential execution
         env_func = partial(
             make,
-            "quadrotor",
+            'quadrotor',
             quad_type=QuadType.THREE_D,
-            task=env_config["task"],
+            task=env_config['task'],
             task_info=task_info,
-            ctrl_freq=env_config["ctrl_freq"],
-            pyb_freq=env_config["pyb_freq"],
-            episode_len_sec=env_config["episode_len_sec"],
-            done_on_out_of_bound=env_config["done_on_out_of_bound"],
-            cost=env_config["cost"],
+            ctrl_freq=env_config['ctrl_freq'],
+            pyb_freq=env_config['pyb_freq'],
+            episode_len_sec=env_config['episode_len_sec'],
+            done_on_out_of_bound=env_config['done_on_out_of_bound'],
+            cost=env_config['cost'],
             gui=False,
             randomized_init=False,
         )
 
         ctrl = make(
-            "lqr",
+            'lqr',
             env_func,
-            q_lqr=env_config["q_lqr"],
-            r_lqr=env_config["r_lqr"],
+            q_lqr=env_config['q_lqr'],
+            r_lqr=env_config['r_lqr'],
             discrete_dynamics=True,
         )
 
@@ -1293,55 +1295,55 @@ def main():
         # Configure environment's state_space bounds to match termination thresholds
         # Env state order: [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]
         # Positions
-        env.state_space.low[0] = -env_config["x_termination"]
-        env.state_space.high[0] = env_config["x_termination"]
-        env.state_space.low[2] = -env_config["y_termination"]
-        env.state_space.high[2] = env_config["y_termination"]
-        env.state_space.low[4] = env_config["z_min_termination"]
-        env.state_space.high[4] = env_config["z_max_termination"]
+        env.state_space.low[0] = -env_config['x_termination']
+        env.state_space.high[0] = env_config['x_termination']
+        env.state_space.low[2] = -env_config['y_termination']
+        env.state_space.high[2] = env_config['y_termination']
+        env.state_space.low[4] = env_config['z_min_termination']
+        env.state_space.high[4] = env_config['z_max_termination']
         # Angles (periodic, will be masked out in termination check)
-        env.state_space.low[6] = -env_config["phi_termination"]
-        env.state_space.high[6] = env_config["phi_termination"]
-        env.state_space.low[7] = -env_config["theta_termination"]
-        env.state_space.high[7] = env_config["theta_termination"]
-        env.state_space.low[8] = -env_config["psi_termination"]
-        env.state_space.high[8] = env_config["psi_termination"]
+        env.state_space.low[6] = -env_config['phi_termination']
+        env.state_space.high[6] = env_config['phi_termination']
+        env.state_space.low[7] = -env_config['theta_termination']
+        env.state_space.high[7] = env_config['theta_termination']
+        env.state_space.low[8] = -env_config['psi_termination']
+        env.state_space.high[8] = env_config['psi_termination']
         # Linear velocities (for closed state space)
-        env.state_space.low[1] = -env_config["x_dot_termination"]
-        env.state_space.high[1] = env_config["x_dot_termination"]
-        env.state_space.low[3] = -env_config["y_dot_termination"]
-        env.state_space.high[3] = env_config["y_dot_termination"]
-        env.state_space.low[5] = -env_config["z_dot_termination"]
-        env.state_space.high[5] = env_config["z_dot_termination"]
+        env.state_space.low[1] = -env_config['x_dot_termination']
+        env.state_space.high[1] = env_config['x_dot_termination']
+        env.state_space.low[3] = -env_config['y_dot_termination']
+        env.state_space.high[3] = env_config['y_dot_termination']
+        env.state_space.low[5] = -env_config['z_dot_termination']
+        env.state_space.high[5] = env_config['z_dot_termination']
         # Angular velocities (for closed state space)
-        env.state_space.low[9] = -env_config["p_body_termination"]
-        env.state_space.high[9] = env_config["p_body_termination"]
-        env.state_space.low[10] = -env_config["q_body_termination"]
-        env.state_space.high[10] = env_config["q_body_termination"]
-        env.state_space.low[11] = -env_config["r_body_termination"]
-        env.state_space.high[11] = env_config["r_body_termination"]
+        env.state_space.low[9] = -env_config['p_body_termination']
+        env.state_space.high[9] = env_config['p_body_termination']
+        env.state_space.low[10] = -env_config['q_body_termination']
+        env.state_space.high[10] = env_config['q_body_termination']
+        env.state_space.low[11] = -env_config['r_body_termination']
+        env.state_space.high[11] = env_config['r_body_termination']
 
         # Process trajectories sequentially
         for i, init_state in enumerate(
-            tqdm(initial_states, desc="Generating trajectories")
+            tqdm(initial_states, desc='Generating trajectories')
         ):
             # Run trajectory
             trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
-                env, ctrl, init_state, env_config["max_steps"],
-                invariant=env_config.get("invariant", False)
+                env, ctrl, init_state, env_config['max_steps'],
+                invariant=env_config.get('invariant', False)
             )
 
             # Update success and full-horizon-without-success tracking
-            stats["total_count"] += 1
+            stats['total_count'] += 1
             if success:
-                stats["success_count"] += 1
+                stats['success_count'] += 1
                 if terminal_v_over_c is not None:
                     terminal_v_ratios.append(terminal_v_over_c)
             if full_horizon and not success:
-                stats["timeout_count"] += 1
+                stats['timeout_count'] += 1
 
             # Update trajectory length tracking
-            stats["max_traj_length"] = max(stats["max_traj_length"], len(trajectory))
+            stats['max_traj_length'] = max(stats['max_traj_length'], len(trajectory))
 
             # Update statistics with previous state tracking
             traj_array = np.array(trajectory)
@@ -1349,33 +1351,33 @@ def main():
             # Output state order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
             if len(traj_array) > 0:
                 state_var_indices = [
-                    ("x", 0),
-                    ("y", 1),
-                    ("z", 2),
-                    ("phi", 3),
-                    ("theta", 4),
-                    ("psi", 5),
-                    ("x_dot", 6),
-                    ("y_dot", 7),
-                    ("z_dot", 8),
-                    ("p_body", 9),
-                    ("q_body", 10),
-                    ("r_body", 11),
+                    ('x', 0),
+                    ('y', 1),
+                    ('z', 2),
+                    ('phi', 3),
+                    ('theta', 4),
+                    ('psi', 5),
+                    ('x_dot', 6),
+                    ('y_dot', 7),
+                    ('z_dot', 8),
+                    ('p_body', 9),
+                    ('q_body', 10),
+                    ('r_body', 11),
                 ]
                 for var_name, col_idx in state_var_indices:
                     traj_min = traj_array[:, col_idx].min()
-                    if traj_min < stats[var_name]["min"]:
-                        stats[var_name]["min"] = traj_min
+                    if traj_min < stats[var_name]['min']:
+                        stats[var_name]['min'] = traj_min
                         min_idx = traj_array[:, col_idx].argmin()
-                        stats[var_name]["prev_at_min"] = (
+                        stats[var_name]['prev_at_min'] = (
                             traj_array[min_idx - 1].tolist() if min_idx > 0 else None
                         )
 
                     traj_max = traj_array[:, col_idx].max()
-                    if traj_max > stats[var_name]["max"]:
-                        stats[var_name]["max"] = traj_max
+                    if traj_max > stats[var_name]['max']:
+                        stats[var_name]['max'] = traj_max
                         max_idx = traj_array[:, col_idx].argmax()
-                        stats[var_name]["prev_at_max"] = (
+                        stats[var_name]['prev_at_max'] = (
                             traj_array[max_idx - 1].tolist() if max_idx > 0 else None
                         )
 
@@ -1383,7 +1385,7 @@ def main():
             # Use start_idx to allow resuming from a previous run
             if not args.skip_save:
                 filepath = os.path.join(
-                    trajectories_dir, f"sequence_{start_idx + i}.txt"
+                    trajectories_dir, f'sequence_{start_idx + i}.txt'
                 )
                 save_trajectory(trajectory, filepath)
 
@@ -1393,101 +1395,101 @@ def main():
 
     if args.skip_save:
         print(
-            f"\nSuccessfully generated {len(initial_states)} trajectories (files not saved)"
+            f'\nSuccessfully generated {len(initial_states)} trajectories (files not saved)'
         )
-        print(f"Note: ROA labels cannot be generated when --skip_save is used")
+        print('Note: ROA labels cannot be generated when --skip_save is used')
     else:
         print(
-            f"\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}"
+            f'\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}'
         )
-        print(f"Each file contains states: x,y,z,phi,theta,psi,x_dot,y_dot,z_dot,p,q,r")
+        print('Each file contains states: x,y,z,phi,theta,psi,x_dot,y_dot,z_dot,p,q,r')
 
         # Generate ROA labels from saved trajectory files (post-processing)
         # Only generate ROA labels when using discretized grid (not random init)
         if not args.random_init:
-            print(f"\nGenerating ROA labels from saved trajectories...")
-            roa_labels_path = os.path.join(args.output_dir, "roa_labels.txt")
+            print('\nGenerating ROA labels from saved trajectories...')
+            roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
             total_states, success_trajs, failure_trajs = (
                 generate_roa_labels_from_trajectories(trajectories_dir, roa_labels_path, invariant=args.invariant_terminal_sets)
             )
-            print(f"ROA labels saved to: {roa_labels_path}")
-            print(f"  Total state-label pairs: {total_states}")
-            print(f"  From successful trajectories: {success_trajs}")
-            print(f"  From failed trajectories: {failure_trajs}")
+            print(f'ROA labels saved to: {roa_labels_path}')
+            print(f'  Total state-label pairs: {total_states}')
+            print(f'  From successful trajectories: {success_trajs}')
+            print(f'  From failed trajectories: {failure_trajs}')
 
     # Print success rate and trajectory statistics
     success_rate = (
-        (stats["success_count"] / stats["total_count"] * 100)
-        if stats["total_count"] > 0
+        (stats['success_count'] / stats['total_count'] * 100)
+        if stats['total_count'] > 0
         else 0
     )
     timeout_rate = (
-        (stats["timeout_count"] / stats["total_count"] * 100)
-        if stats["total_count"] > 0
+        (stats['timeout_count'] / stats['total_count'] * 100)
+        if stats['total_count'] > 0
         else 0
     )
     failed_count = (
-        stats["total_count"] - stats["success_count"] - stats["timeout_count"]
+        stats['total_count'] - stats['success_count'] - stats['timeout_count']
     )
     failed_rate = (
-        (failed_count / stats["total_count"] * 100) if stats["total_count"] > 0 else 0
+        (failed_count / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
     )
 
     print(f"\n{'='*80}")
-    print(f"Trajectory Statistics:")
+    print('Trajectory Statistics:')
     print(f"{'='*80}")
     print(f"  Total trajectories:       {stats['total_count']}")
     print(f"  Successful:               {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
+    print(f'  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)')
     print(f"  Timeout (no success):     {stats['timeout_count']} ({timeout_rate:.2f}%)")
     print(f"  Max trajectory length:    {stats['max_traj_length']} states")
     if terminal_v_ratios:
         v = np.array(terminal_v_ratios)
-        print(f"  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} "
-              f"p95={np.percentile(v, 95):.4f} max={v.max():.4f} "
-              f"(a tail near 1 = late arrivals; consider a larger --max_steps)")
+        print(f'  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} '
+              f'p95={np.percentile(v, 95):.4f} max={v.max():.4f} '
+              f'(a tail near 1 = late arrivals; consider a larger --max_steps)')
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")
-    print(f"Actual Achieved Bounds Across All Trajectories:")
+    print('Actual Achieved Bounds Across All Trajectories:')
     print(f"{'='*80}")
 
     # Helper function to format state
     # State order: [x, y, z, phi, theta, psi, x_dot, y_dot, z_dot, p, q, r]
     def format_state(state):
         if state is None:
-            return "N/A (initial state)"
+            return 'N/A (initial state)'
         return (
-            f"[x={state[0]:>7.3f}, y={state[1]:>7.3f}, z={state[2]:>7.3f}, "
-            f"φ={state[3]:>7.3f}, θ={state[4]:>7.3f}, ψ={state[5]:>7.3f}, "
-            f"ẋ={state[6]:>7.3f}, ẏ={state[7]:>7.3f}, ż={state[8]:>7.3f}, "
-            f"p={state[9]:>7.3f}, q={state[10]:>7.3f}, r={state[11]:>7.3f}]"
+            f'[x={state[0]:>7.3f}, y={state[1]:>7.3f}, z={state[2]:>7.3f}, '
+            f'φ={state[3]:>7.3f}, θ={state[4]:>7.3f}, ψ={state[5]:>7.3f}, '
+            f'ẋ={state[6]:>7.3f}, ẏ={state[7]:>7.3f}, ż={state[8]:>7.3f}, '
+            f'p={state[9]:>7.3f}, q={state[10]:>7.3f}, r={state[11]:>7.3f}]'
         )
 
     var_labels = [
-        ("x", "x (position)"),
-        ("y", "y (position)"),
-        ("z", "z (altitude)"),
-        ("phi", "phi (roll)"),
-        ("theta", "theta (pitch)"),
-        ("psi", "psi (yaw)"),
-        ("x_dot", "x_dot (velocity)"),
-        ("y_dot", "y_dot (velocity)"),
-        ("z_dot", "z_dot (velocity)"),
-        ("p_body", "p (roll rate)"),
-        ("q_body", "q (pitch rate)"),
-        ("r_body", "r (yaw rate)"),
+        ('x', 'x (position)'),
+        ('y', 'y (position)'),
+        ('z', 'z (altitude)'),
+        ('phi', 'phi (roll)'),
+        ('theta', 'theta (pitch)'),
+        ('psi', 'psi (yaw)'),
+        ('x_dot', 'x_dot (velocity)'),
+        ('y_dot', 'y_dot (velocity)'),
+        ('z_dot', 'z_dot (velocity)'),
+        ('p_body', 'p (roll rate)'),
+        ('q_body', 'q (pitch rate)'),
+        ('r_body', 'r (yaw rate)'),
     ]
 
     for var_name, var_label in var_labels:
-        print(f"\n  {var_label}:")
+        print(f'\n  {var_label}:')
         print(f"    Min: {stats[var_name]['min']:>10.6f}")
-        if stats[var_name]["prev_at_min"] is not None:
+        if stats[var_name]['prev_at_min'] is not None:
             print(
                 f"         Previous state: {format_state(stats[var_name]['prev_at_min'])}"
             )
         print(f"    Max: {stats[var_name]['max']:>10.6f}")
-        if stats[var_name]["prev_at_max"] is not None:
+        if stats[var_name]['prev_at_max'] is not None:
             print(
                 f"         Previous state: {format_state(stats[var_name]['prev_at_max'])}"
             )
@@ -1495,5 +1497,5 @@ def main():
     print(f"\n{'='*80}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

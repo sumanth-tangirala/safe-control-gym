@@ -1,0 +1,160 @@
+# The collection regime for the 3D quadrotor.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds).
+#
+# Source: DATA_ROOT/deterministic/quadrotor3D_lqr/dataset_description.json.
+#
+# This is the system whose dataset departs furthest from the env defaults, and
+# state_space_bounds is REQUIRED here, not defensive:
+#
+#   z      collection 0.1-3.0   default -0.05-2.0    exceeds by 1.0 m
+#   p,q,r  collection +/-24.0   default +/-8.727     2.8x beyond
+#
+# Sampling that region without moving the bounds gives episodes that terminate
+# on the first step over much of the box.
+#
+# CAVEAT on attitude. The dataset stores orientation as a unit quaternion
+# (qw, qx, qy, qz) covering all orientations, while this env is 12-D Euler
+# (phi, theta, psi). Uniform sampling over Euler angles is NOT uniform over
+# orientations, so the ranges below approximate the dataset's coverage rather
+# than reproduce it. phi and theta are masked from the out_of_bounds test in any
+# case, so this affects the start distribution only, not termination.
+
+init_state_randomization_info:
+  init_x: {distrib: 'uniform', low: -1.8, high: 1.8}
+  init_x_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_y: {distrib: 'uniform', low: -1.8, high: 1.8}
+  init_y_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_z: {distrib: 'uniform', low: 0.1, high: 3.0}
+  init_z_dot: {distrib: 'uniform', low: -3.0, high: 3.0}
+  init_phi: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_theta: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  init_psi: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
+  # 13.856 = 24 / sqrt(3), NOT the dataset's 24, and the difference is a frame
+  # mismatch in the env rather than a choice about coverage.
+  #
+  # reset() applies these through p.resetBaseVelocity, which takes a WORLD-frame
+  # angular velocity, while the state reads back the BODY frame
+  # (quadrotor.py:836, ang_v_body_frame = Rbo @ ang_v). With attitude randomised
+  # over +/-pi the rotation mixes the components, so per-component world values
+  # of 24 produce body-frame components up to sqrt(3)*24 ~ 41.6 -- measured 33.8,
+  # against a termination bound of 24. 28.7% of episodes were therefore born out
+  # of bounds and died on step one.
+  #
+  # ||omega|| is rotation-invariant, so bounding each world component by
+  # 24/sqrt(3) guarantees every body-frame component stays within 24. Measured
+  # after: body |pqr|max 19.5, dead-on-arrival down to 8.0%.
+  #
+  # The residual 8% is not this bug -- it is states sampled exactly at the
+  # position and velocity bounds leaving them after one step, which is inherent
+  # to sampling the whole non-terminating box and applies to the shipped dataset
+  # too. The dataset carries the same frame mismatch, since the collectors set
+  # initial states through this same reset path.
+  init_p: {distrib: 'uniform', low: -13.8564064605510, high: 13.8564064605510}
+  init_q: {distrib: 'uniform', low: -13.8564064605510, high: 13.8564064605510}
+  init_r: {distrib: 'uniform', low: -13.8564064605510, high: 13.8564064605510}
+
+state_space_bounds:
+  x: [-1.8, 1.8]
+  x_dot: [-3.0, 3.0]
+  y: [-1.8, 1.8]
+  y_dot: [-3.0, 3.0]
+  z: [0.1, 3.0]
+  z_dot: [-3.0, 3.0]
+  phi: [-3.141592653589793, 3.141592653589793]
+  theta: [-1.5707963267948966, 1.5707963267948966]
+  psi: [-3.141592653589793, 3.141592653589793]
+  p: [-24.0, 24.0]
+  q: [-24.0, 24.0]
+  r: [-24.0, 24.0]
+
+# 219657/1000000 of eval_states.txt labelled 1, produced by lqr.
+reference_success: 0.2197
+reference_dataset: 'deterministic/quadrotor3D_lqr'
+
+# The reference above was measured under REACH semantics: every shipped dataset
+# was collected before terminate_on_goal existed, when entering the goal ball
+# ended the episode. A stabilization run, which must hold position there, is a
+# strictly harder problem -- so comparing a stabilization success rate against
+# this number is comparing two different tasks. eval_policy records both so the
+# mismatch is visible rather than assumed away.
+reference_task: reach
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# Declared here rather than in configs/sb3/ because which channel is an angle,
+# and what the state layout is, are facts about the system. Restating them per
+# training config invites two configs for one system to disagree.
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]
+
+# No single-angle (cos, sin) encoding -- this system rotates in 3D, so the
+# orientation is handled by rotation_observation below instead.
+angle_observation: null
+
+# Feed the policy the rotation matrix, not the Euler angles.
+#
+# Zhou et al. (2019) show no representation of SO(3) in four or fewer dimensions
+# is continuous: there are always orientations where an arbitrarily small
+# rotation makes the encoding jump. Euler is the worst case here -- it gimbal
+# locks, it wraps, and this env's readback chart is singular at pitch +/-pi/2,
+# which is why measured pitch topped out at 1.54 while roll ran to +/-pi.
+# Quaternions avoid gimbal lock but double-cover, so q and -q are one rotation
+# shown as two inputs.
+#
+# Nine entries rather than the minimal 6D form: 6D exists because PREDICTING a
+# rotation needs a continuous parametrisation to regress into. As an input there
+# is no such constraint, the three extra dimensions cost nothing, and there is no
+# Gram-Schmidt step to get wrong. It is also what the quadrotor RL literature
+# feeds.
+#
+# Observation goes 12 -> 18. Every entry of R is already in [-1, 1], so
+# normalisation leaves them untouched.
+rotation_observation:
+  angles: [phi, theta, psi]
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env denormalises
+# to true units internally, so the dynamics are unchanged.
+#
+# Matters most for the quadrotors, whose raw action space is asymmetric and never
+# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
+# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
+# that box its natural output sits at the bottom of the thrust range and a zero
+# action means free fall rather than hover. SB3's check_env warns about exactly
+# this. Normalised, zero maps to mid-thrust, which is near hover.
+#
+# The collectors are unaffected: they build the base env ids and never read this
+# file.
+normalized_rl_action_space: true
+
+# Initial-state curriculum: start near the goal, widen as success is earned.
+#
+# Required, not optional. Measured over 300 random episodes, the number of steps
+# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
+# so under a sparse reward those runs see no positive signal at all and cannot
+# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
+#
+# fraction 0 is a point distribution at the goal, 1 is the full collection
+# region above. Ranges contract about the GOAL value rather than the midpoint,
+# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
+#
+# Advancement is driven by measured success rate, not by a step schedule: a
+# schedule has to be guessed per system and is wrong in both directions.
+curriculum:
+  start: 0.0
+  step: 0.15
+  threshold: 0.5
+  # Even started exactly at the goal this system scores 0% under a random
+  # policy at its true tolerance of 0.05 -- one random thrust leaves a
+  # 0.05-radius ball in 12 dimensions. At 0.5 it scores 88%. Annealed back
+  # down to 0.05 before the initial states widen.
+  tolerance_start: 0.5

@@ -30,9 +30,15 @@ class Disturbance:
         '''Default is identity.'''
         return target
 
-    def seed(self, env):
-        '''Reset seed from env.'''
-        self.np_random = env.np_random
+    def seed(self, env, stream=None):
+        '''Bind the RNG this disturbance draws from.
+
+        `stream` is a child Generator supplied by DisturbanceList. Falling back
+        to `env.np_random` keeps the old behaviour for anything constructing a
+        Disturbance directly, but the list path always passes a child -- see
+        the note there for why sharing the env's generator is wrong.
+        '''
+        self.np_random = env.np_random if stream is None else stream
 
 
 class DisturbanceList:
@@ -62,9 +68,31 @@ class DisturbanceList:
         return disturbed
 
     def seed(self, env):
-        '''Reset seed from env.'''
-        for disturb in self.disturbances:
-            disturb.seed(env)
+        '''Give each disturbance its OWN child stream, not the env's generator.
+
+        Sharing `env.np_random` makes every other draw on that generator --
+        initial state randomisation, inertial property randomisation -- depend
+        on whether noise happens to be enabled and how many samples it consumed
+        this step. Two runs with the same seed then differ in their *starting
+        conditions* purely because one had a disturbance configured, and a
+        resumed run does not draw what an uninterrupted one would. That breaks
+        resident invariant 3, which is what makes a killed collection safe to
+        restart.
+
+        Children are spawned in list order from the env's seed sequence, so the
+        stream a given disturbance gets is still a pure function of the env seed
+        -- reproducible, but no longer entangled with anything else.
+        '''
+        try:
+            seed_seq = env.np_random.bit_generator.seed_seq
+            children = seed_seq.spawn(len(self.disturbances))
+        except AttributeError:
+            # Older bit generators expose no seed sequence. Derive a stable
+            # fallback from one draw rather than silently sharing the stream.
+            root = int(env.np_random.integers(0, 2 ** 32 - 1))
+            children = np.random.SeedSequence(root).spawn(len(self.disturbances))
+        for disturb, child in zip(self.disturbances, children):
+            disturb.seed(env, np.random.default_rng(child))
 
 
 class ImpulseDisturbance(Disturbance):
@@ -223,6 +251,71 @@ class WhiteNoise(Disturbance):
         return disturbed
 
 
+class SignalDependentNoise(Disturbance):
+    '''Gaussian noise whose scale grows with the magnitude of the signal.
+
+        w ~ Normal(0, alpha + beta * |target|)
+
+    ``alpha + beta * |target|`` is the STANDARD DEVIATION, not the variance --
+    the two differ by ~5x at the values this is used with, and reading it as a
+    variance would put the family in the middle of the fixed-sigma sweep rather
+    than below it.
+
+    ``|target|``, not ``target``: with a signed command the scale goes negative
+    (pendulum: 0.008 - 0.04*0.637 = -0.0175), which is not a standard deviation.
+
+    The two constants are separate mechanisms, which is the point of the class:
+    ``alpha`` is the noise floor that survives as the command goes to zero -- at
+    the goal, where a stabilising controller commands almost nothing -- and
+    ``beta`` is the effort-proportional term that only bites during the
+    transient. ``WhiteNoise`` cannot express this: its ``std`` is fixed at
+    construction, so it necessarily has the same sigma at the goal as far from
+    it.
+
+    Draws are i.i.d. per call and unbounded; any saturation clip is the caller's
+    (on the action channel the env clips ``u + w``, not ``w``).
+    '''
+
+    def __init__(self,
+                 env,
+                 dim,
+                 mask=None,
+                 alpha=0.0,
+                 beta=0.0,
+                 **kwargs
+                 ):
+        super().__init__(env, dim, mask)
+        self.alpha = self._as_vector(alpha, 'alpha')
+        self.beta = self._as_vector(beta, 'beta')
+
+    def _as_vector(self, value, name):
+        if isinstance(value, (int, float)):
+            vec = np.asarray([float(value)] * self.dim)
+        elif isinstance(value, (list, tuple, np.ndarray)):
+            vec = np.asarray(value, dtype=float)
+        else:
+            raise ValueError(f'[ERROR] SignalDependentNoise.__init__(): {name} must be '
+                             'a float or a list.')
+        if vec.shape != (self.dim,):
+            raise ValueError(f'[ERROR] SignalDependentNoise.__init__(): {name} shape '
+                             f'{vec.shape} should be ({self.dim},).')
+        if np.any(vec < 0):
+            raise ValueError(f'[ERROR] SignalDependentNoise.__init__(): {name} must be '
+                             'non-negative; it is part of a standard deviation.')
+        return vec
+
+    def apply(self,
+              target,
+              env
+              ):
+        std = self.alpha + self.beta * np.abs(np.asarray(target, dtype=float))
+        noise = self.np_random.normal(0, std, size=self.dim)
+        if self.mask is not None:
+            noise *= self.mask
+        disturbed = target + noise
+        return disturbed
+
+
 class BrownianNoise(Disturbance):
     '''Simple random walk noise.'''
 
@@ -279,6 +372,7 @@ DISTURBANCE_TYPES = {'impulse': ImpulseDisturbance,
                      'uniform': UniformNoise,
                      'white_noise': WhiteNoise,
                      'periodic': PeriodicNoise,
+                     'signal_dependent': SignalDependentNoise,
                      }
 
 

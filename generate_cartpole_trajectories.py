@@ -6,10 +6,11 @@ Discretizes the initial state space with 0.05 resolution and saves trajectories.
 
 import argparse
 import os
-import numpy as np
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+
+import numpy as np
+from tqdm import tqdm
 
 from safe_control_gym.utils.registration import make
 
@@ -99,7 +100,7 @@ def generate_discretized_initial_states(bounds, resolution=0.05, termination_thr
                         if (abs(x) >= termination_thresholds['x'] or
                             abs(x_dot) >= termination_thresholds['x_dot'] or
                             abs(theta) >= termination_thresholds['theta'] or
-                            abs(theta_dot) >= termination_thresholds['theta_dot']):
+                                abs(theta_dot) >= termination_thresholds['theta_dot']):
                             continue
 
                     states.append([x, x_dot, theta, theta_dot])
@@ -168,8 +169,9 @@ def run_trajectory(env, ctrl, init_state, max_steps=1000, invariant=False):
         # Get action from LQR controller
         action = ctrl.select_action(obs, info)
 
-        # Take step in environment (old Gym API returns 4 values)
-        obs, reward, done, info = env.step(action)
+        # Take step in environment
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         # Extract state (internal order: x, x_dot, theta, theta_dot)
         x, x_dot, theta, theta_dot = obs[:4]
@@ -233,20 +235,20 @@ def process_single_trajectory(args_tuple):
 
     # Create environment and controller for this worker
     env_func = partial(make,
-                      'cartpole',
-                      task=env_config['task'],
-                      task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
-                      ctrl_freq=env_config['ctrl_freq'],
-                      pyb_freq=env_config['pyb_freq'],
-                      episode_len_sec=env_config['episode_len_sec'],
-                      done_on_out_of_bound=env_config['done_on_out_of_bound'],
-                      cost=env_config['cost'],
-                      gui=False,
-                      randomized_init=False,
-                      obs_wrap_angle=True,
-                      x_dot_limit=env_config['x_dot_limit'],
-                      theta_dot_limit=env_config['theta_dot_limit'],
-                      action_scale=env_config['action_scale'])
+                       'cartpole',
+                       task=env_config['task'],
+                       task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
+                       ctrl_freq=env_config['ctrl_freq'],
+                       pyb_freq=env_config['pyb_freq'],
+                       episode_len_sec=env_config['episode_len_sec'],
+                       done_on_out_of_bound=env_config['done_on_out_of_bound'],
+                       cost=env_config['cost'],
+                       gui=False,
+                       randomized_init=False,
+                       obs_wrap_angle=True,
+                       x_dot_limit=env_config['x_dot_limit'],
+                       theta_dot_limit=env_config['theta_dot_limit'],
+                       action_scale=env_config['action_scale'])
 
     ctrl = make('lqr',
                 env_func,
@@ -350,20 +352,20 @@ def process_trajectory_batch(args_tuple):
 
     # Create environment and controller for this worker
     env_func = partial(make,
-                      'cartpole',
-                      task=env_config['task'],
-                      task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
-                      ctrl_freq=env_config['ctrl_freq'],
-                      pyb_freq=env_config['pyb_freq'],
-                      episode_len_sec=env_config['episode_len_sec'],
-                      done_on_out_of_bound=env_config['done_on_out_of_bound'],
-                      cost=env_config['cost'],
-                      gui=False,
-                      randomized_init=False,
-                      obs_wrap_angle=True,
-                      x_dot_limit=env_config['x_dot_limit'],
-                      theta_dot_limit=env_config['theta_dot_limit'],
-                      action_scale=env_config['action_scale'])
+                       'cartpole',
+                       task=env_config['task'],
+                       task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
+                       ctrl_freq=env_config['ctrl_freq'],
+                       pyb_freq=env_config['pyb_freq'],
+                       episode_len_sec=env_config['episode_len_sec'],
+                       done_on_out_of_bound=env_config['done_on_out_of_bound'],
+                       cost=env_config['cost'],
+                       gui=False,
+                       randomized_init=False,
+                       obs_wrap_angle=True,
+                       x_dot_limit=env_config['x_dot_limit'],
+                       theta_dot_limit=env_config['theta_dot_limit'],
+                       action_scale=env_config['action_scale'])
 
     ctrl = make('lqr',
                 env_func,
@@ -397,7 +399,7 @@ def process_trajectory_batch(args_tuple):
         # Run trajectory
         trajectory, success, full_horizon, _ = run_trajectory(
             env, ctrl, init_state, env_config['max_steps'],
-        invariant=env_config.get('invariant', False))
+            invariant=env_config.get('invariant', False))
 
         # Update success and full-horizon-without-success tracking
         batch_stats['total_count'] += 1
@@ -514,7 +516,7 @@ def main():
     else:
         # Even if skip_save, we need the output dir for roa_labels.txt
         os.makedirs(args.output_dir, exist_ok=True)
-    
+
     # Define bounds (symmetric around zero)
     bounds = {
         'x': args.x_bound,
@@ -532,9 +534,9 @@ def main():
     }
 
     # Generate discretized initial states
-    print("Generating discretized initial states...")
+    print('Generating discretized initial states...')
     initial_states = generate_discretized_initial_states(bounds, args.resolution, termination_thresholds)
-    print(f"Generated {len(initial_states)} initial states (excluding those that violate termination bounds)")
+    print(f'Generated {len(initial_states)} initial states (excluding those that violate termination bounds)')
 
     # Calculate control frequency based on save_freq
     # Control frequency should be at least as high as save frequency to avoid duplicating states
@@ -574,13 +576,13 @@ def main():
         'invariant': args.invariant_terminal_sets
     }
 
-    print(f"Termination thresholds: x=±{args.x_termination}, x_dot=±{args.x_dot_termination}, "
-          f"theta=±{args.theta_termination}, theta_dot=±{args.theta_dot_termination}")
-    print(f"Velocity limits (clipping dynamics): x_dot=±{args.x_dot_bound}, theta_dot=±{args.theta_dot_bound}")
-    print(f"Control bounds: u=±{args.control_bound} N")
-    print(f"Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)")
-    print(f"Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)")
-    print(f"Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)")
+    print(f'Termination thresholds: x=±{args.x_termination}, x_dot=±{args.x_dot_termination}, '
+          f'theta=±{args.theta_termination}, theta_dot=±{args.theta_dot_termination}')
+    print(f'Velocity limits (clipping dynamics): x_dot=±{args.x_dot_bound}, theta_dot=±{args.theta_dot_bound}')
+    print(f'Control bounds: u=±{args.control_bound} N')
+    print(f'Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)')
+    print(f'Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)')
+    print(f'Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)')
 
     # Initialize statistics tracking
     stats = {
@@ -603,7 +605,7 @@ def main():
         # Get number of CPUs available (respecting taskset/affinity)
         num_workers = args.num_workers if args.num_workers else get_available_cpus()
 
-        print(f"Generating trajectories using {num_workers} CPU cores (parallel mode)...")
+        print(f'Generating trajectories using {num_workers} CPU cores (parallel mode)...')
 
         # Create arguments for each individual trajectory
         trajectory_args = [
@@ -616,7 +618,7 @@ def main():
             traj_results = list(tqdm(
                 pool.imap_unordered(process_single_trajectory, trajectory_args),
                 total=len(initial_states),
-                desc="Generating trajectories"
+                desc='Generating trajectories'
             ))
 
         # Aggregate statistics from all trajectories
@@ -646,23 +648,23 @@ def main():
 
     else:
         # Sequential execution
-        print(f"Generating trajectories sequentially (single core)...")
+        print('Generating trajectories sequentially (single core)...')
 
         # Create environment and controller once for sequential execution
         env_func = partial(make,
-                          'cartpole',
-                          task=env_config['task'],
-                          task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
-                          ctrl_freq=env_config['ctrl_freq'],
-                          pyb_freq=env_config['pyb_freq'],
-                          episode_len_sec=env_config['episode_len_sec'],
-                          done_on_out_of_bound=env_config['done_on_out_of_bound'],
-                          cost=env_config['cost'],
-                          gui=False,
-                          randomized_init=False,
-                          x_dot_limit=env_config['x_dot_limit'],
-                          theta_dot_limit=env_config['theta_dot_limit'],
-                          action_scale=env_config['action_scale'])
+                           'cartpole',
+                           task=env_config['task'],
+                           task_info=INVARIANT_TASK_INFO if env_config.get('invariant') else None,
+                           ctrl_freq=env_config['ctrl_freq'],
+                           pyb_freq=env_config['pyb_freq'],
+                           episode_len_sec=env_config['episode_len_sec'],
+                           done_on_out_of_bound=env_config['done_on_out_of_bound'],
+                           cost=env_config['cost'],
+                           gui=False,
+                           randomized_init=False,
+                           x_dot_limit=env_config['x_dot_limit'],
+                           theta_dot_limit=env_config['theta_dot_limit'],
+                           action_scale=env_config['action_scale'])
 
         ctrl = make('lqr',
                     env_func,
@@ -679,11 +681,11 @@ def main():
         env.theta_dot_threshold = env_config['theta_dot_threshold']
 
         # Process trajectories sequentially
-        for i, init_state in enumerate(tqdm(initial_states, desc="Generating trajectories")):
+        for i, init_state in enumerate(tqdm(initial_states, desc='Generating trajectories')):
             # Run trajectory
             trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
                 env, ctrl, init_state, env_config['max_steps'],
-        invariant=env_config.get('invariant', False))
+                invariant=env_config.get('invariant', False))
 
             # Update success and full-horizon-without-success tracking
             stats['total_count'] += 1
@@ -745,12 +747,12 @@ def main():
             f.write(line + '\n')
 
     if args.skip_save:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories (files not saved)")
-        print(f"ROA labels saved to: {roa_labels_path}")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories (files not saved)')
+        print(f'ROA labels saved to: {roa_labels_path}')
     else:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}")
-        print(f"Each file contains a trajectory with states in format: x,theta,x_dot,theta_dot")
-        print(f"ROA labels saved to: {roa_labels_path}")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}')
+        print('Each file contains a trajectory with states in format: x,theta,x_dot,theta_dot')
+        print(f'ROA labels saved to: {roa_labels_path}')
 
     # Print success rate and trajectory statistics
     success_rate = (stats['success_count'] / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
@@ -759,32 +761,32 @@ def main():
     failed_rate = (failed_count / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
 
     print(f"\n{'='*80}")
-    print(f"Trajectory Statistics:")
+    print('Trajectory Statistics:')
     print(f"{'='*80}")
     print(f"  Total trajectories:       {stats['total_count']}")
     print(f"  Successful:               {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
+    print(f'  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)')
     print(f"  Timeout (no success):     {stats['timeout_count']} ({timeout_rate:.2f}%)")
     print(f"  Max trajectory length:    {stats['max_traj_length']} states")
     if terminal_v_ratios:
         v = np.array(terminal_v_ratios)
-        print(f"  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} "
-              f"p95={np.percentile(v, 95):.4f} max={v.max():.4f} "
-              f"(a tail near 1 = late arrivals; consider a larger --max_steps)")
+        print(f'  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} '
+              f'p95={np.percentile(v, 95):.4f} max={v.max():.4f} '
+              f'(a tail near 1 = late arrivals; consider a larger --max_steps)')
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")
-    print(f"Actual Achieved Bounds Across All Trajectories:")
+    print('Actual Achieved Bounds Across All Trajectories:')
     print(f"{'='*80}")
 
     # Helper function to format state
     def format_state(state):
         if state is None:
-            return "N/A (initial state)"
-        return f"[x={state[0]:>7.3f}, θ={state[1]:>7.3f}, ẋ={state[2]:>7.3f}, θ̇={state[3]:>7.3f}]"
+            return 'N/A (initial state)'
+        return f'[x={state[0]:>7.3f}, θ={state[1]:>7.3f}, ẋ={state[2]:>7.3f}, θ̇={state[3]:>7.3f}]'
 
     for var_name, var_label in [('x', 'x'), ('theta', 'theta'), ('x_dot', 'x_dot'), ('theta_dot', 'theta_dot')]:
-        print(f"\n  {var_label}:")
+        print(f'\n  {var_label}:')
         print(f"    Min: {stats[var_name]['min']:>10.6f}")
         if stats[var_name]['prev_at_min'] is not None:
             print(f"         Previous state: {format_state(stats[var_name]['prev_at_min'])}")

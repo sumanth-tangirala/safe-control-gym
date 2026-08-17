@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Test script to verify control bounds are being applied correctly."""
 
-import numpy as np
 from functools import partial
+
+import numpy as np
+
 from safe_control_gym.utils.registration import make
 
 
@@ -10,18 +12,18 @@ def test_control_bounds():
     """Test that different control bounds produce different results."""
 
     # Test with control bound 5.0
-    print("Testing with control bound = 5.0 N")
+    print('Testing with control bound = 5.0 N')
     env_func_5 = partial(make,
-                        'cartpole',
-                        task='stabilization',
-                        ctrl_freq=15,
-                        pyb_freq=750,
-                        episode_len_sec=10,
-                        done_on_out_of_bound=True,
-                        cost='quadratic',
-                        gui=False,
-                        randomized_init=False,
-                        action_scale=5.0)
+                         'cartpole',
+                         task='stabilization',
+                         ctrl_freq=15,
+                         pyb_freq=750,
+                         episode_len_sec=10,
+                         done_on_out_of_bound=True,
+                         cost='quadratic',
+                         gui=False,
+                         randomized_init=False,
+                         action_scale=5.0)
 
     ctrl_5 = make('lqr',
                   env_func_5,
@@ -39,32 +41,33 @@ def test_control_bounds():
     obs_5 = env_5._get_observation()
     action_5 = ctrl_5.select_action(obs_5, None)
 
-    print(f"  LQR action (before clipping): {action_5}")
-    print(f"  Physical action bounds: {env_5.physical_action_bounds}")
+    print(f'  LQR action (before clipping): {action_5}')
+    print(f'  Physical action bounds: {env_5.physical_action_bounds}')
 
     # Step through environment to see clipped action
-    obs_5_next, rew_5, done_5, info_5 = env_5.step(action_5)
-    print(f"  Clipped action: {env_5.current_clipped_action}")
-    print(f"  Next state: {env_5.state}")
+    obs_5_next, rew_5, terminated_5, truncated_5, info_5 = env_5.step(action_5)
+    done_5 = terminated_5 or truncated_5  # noqa: F841 (unused, matches pre-migration behaviour)
+    print(f'  Clipped action: {env_5.current_clipped_action}')
+    print(f'  Next state: {env_5.state}')
 
     env_5.close()
     ctrl_5.close()
 
-    print("\n" + "="*80 + "\n")
+    print('\n' + '=' * 80 + '\n')
 
     # Test with control bound 20.0
-    print("Testing with control bound = 20.0 N")
+    print('Testing with control bound = 20.0 N')
     env_func_20 = partial(make,
-                         'cartpole',
-                         task='stabilization',
-                         ctrl_freq=15,
-                         pyb_freq=750,
-                         episode_len_sec=10,
-                         done_on_out_of_bound=True,
-                         cost='quadratic',
-                         gui=False,
-                         randomized_init=False,
-                         action_scale=20.0)
+                          'cartpole',
+                          task='stabilization',
+                          ctrl_freq=15,
+                          pyb_freq=750,
+                          episode_len_sec=10,
+                          done_on_out_of_bound=True,
+                          cost='quadratic',
+                          gui=False,
+                          randomized_init=False,
+                          action_scale=20.0)
 
     ctrl_20 = make('lqr',
                    env_func_20,
@@ -82,26 +85,27 @@ def test_control_bounds():
     obs_20 = env_20._get_observation()
     action_20 = ctrl_20.select_action(obs_20, None)
 
-    print(f"  LQR action (before clipping): {action_20}")
-    print(f"  Physical action bounds: {env_20.physical_action_bounds}")
+    print(f'  LQR action (before clipping): {action_20}')
+    print(f'  Physical action bounds: {env_20.physical_action_bounds}')
 
     # Step through environment to see clipped action
-    obs_20_next, rew_20, done_20, info_20 = env_20.step(action_20)
-    print(f"  Clipped action: {env_20.current_clipped_action}")
-    print(f"  Next state: {env_20.state}")
+    obs_20_next, rew_20, terminated_20, truncated_20, info_20 = env_20.step(action_20)
+    done_20 = terminated_20 or truncated_20  # noqa: F841 (unused, matches pre-migration behaviour)
+    print(f'  Clipped action: {env_20.current_clipped_action}')
+    print(f'  Next state: {env_20.state}')
 
     env_20.close()
     ctrl_20.close()
 
-    print("\n" + "="*80 + "\n")
-    print("Comparison:")
-    print(f"  State difference: {np.linalg.norm(env_5.state - env_20.state)}")
-    print(f"  Clipped action difference: {np.linalg.norm(env_5.current_clipped_action - env_20.current_clipped_action)}")
+    print('\n' + '=' * 80 + '\n')
+    print('Comparison:')
+    print(f'  State difference: {np.linalg.norm(env_5.state - env_20.state)}')
+    print(f'  Clipped action difference: {np.linalg.norm(env_5.current_clipped_action - env_20.current_clipped_action)}')
 
     if np.linalg.norm(env_5.state - env_20.state) < 1e-6:
-        print("\n  WARNING: States are identical! Control bounds may not be working.")
+        print('\n  WARNING: States are identical! Control bounds may not be working.')
     else:
-        print("\n  States are different. Control bounds are working correctly.")
+        print('\n  States are different. Control bounds are working correctly.')
 
 
 if __name__ == '__main__':

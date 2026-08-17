@@ -23,6 +23,8 @@ class Cost(str, Enum):
 
     RL_REWARD = 'rl_reward'  # Default RL reward function.
     QUADRATIC = 'quadratic'  # Quadratic cost.
+    SPARSE = 'sparse'  # Outcome-only: goal bonus, out-of-bounds penalty, step cost.
+    SHAPED_DMC = 'shaped_dmc'  # dm_control's swingup shaping; cartpole only.
 
 
 class Task(str, Enum):
@@ -83,6 +85,14 @@ class BenchmarkEnv(gym.Env, ABC):
                  adversary_disturbance=None,
                  adversary_disturbance_offset=0.0,
                  adversary_disturbance_scale=0.01,
+                 # Task semantics: True ends the episode on first entering the
+                 # goal ball (reach), False lets it run so the controller must
+                 # hold position there (stabilization).
+                 terminate_on_goal: bool = True,
+                 # Sparse reward (Cost.SPARSE only; ignored otherwise).
+                 sparse_goal_reward=1.0,
+                 sparse_oob_reward=-1.0,
+                 sparse_step_reward=-0.01,
                  **kwargs
                  ):
         '''Initialization method for BenchmarkEnv.
@@ -184,6 +194,10 @@ class BenchmarkEnv(gym.Env, ABC):
         self.adversary_disturbance = adversary_disturbance
         self.adversary_disturbance_offset = adversary_disturbance_offset
         self.adversary_disturbance_scale = adversary_disturbance_scale
+        self.terminate_on_goal = bool(terminate_on_goal)
+        self.sparse_goal_reward = float(sparse_goal_reward)
+        self.sparse_oob_reward = float(sparse_oob_reward)
+        self.sparse_step_reward = float(sparse_step_reward)
         self._setup_disturbances()
         # Default seed None means pure randomness/no seeding.
         self.seed(seed)
@@ -275,6 +289,38 @@ class BenchmarkEnv(gym.Env, ABC):
             prior_prop (dict): specify the prior inertial prop to use in the symbolic model.
         '''
         raise NotImplementedError
+
+    def _sparse_reward(self):
+        '''Outcome-only reward: goal bonus, out-of-bounds penalty, step cost.
+
+        Exists because the dense reward makes success irrational. `_get_done`
+        ends an episode when the goal ball is entered, and `rl_reward` is
+        strictly positive `exp(-sum(w*e^2))`, so reaching the goal forfeits
+        every remaining step. Measured on cartpole: tightening the terminal
+        error from 0.143 to 0.050 was worth +4.46 return, while the early
+        termination it causes cost -181.2. SAC correctly learned to hover just
+        outside the ball -- 3.8x the LQR return at 0.000 success rate.
+
+        Here the goal is the only positive term, so that inversion cannot arise.
+
+        All three values are config, not constants, because they trade off
+        against each other through the horizon and no single setting is right
+        for every system. With the defaults (+1 / -1 / -0.01), timing out costs
+        -0.01 * H, which on cartpole's 250-step horizon is -2.50 -- worse than
+        crashing at step 10 for -1.10. That makes an early crash preferable to
+        surviving without succeeding, which is rarely what you want from a
+        stabilising controller. Either raise `sparse_oob_reward` above
+        `sparse_step_reward * H` in magnitude, or shrink the step cost.
+
+        Reads self.goal_reached and self.out_of_bounds, which _get_done sets.
+        Every env therefore calls _get_done() BEFORE _get_reward(); they used
+        to run the other way round, which left both flags a step stale.
+        '''
+        if getattr(self, 'goal_reached', False):
+            return self.sparse_goal_reward
+        if getattr(self, 'out_of_bounds', False):
+            return self.sparse_oob_reward
+        return self.sparse_step_reward
 
     def _setup_disturbances(self):
         '''Creates attributes and action spaces for the disturbances.'''
@@ -444,19 +490,21 @@ class BenchmarkEnv(gym.Env, ABC):
 
         return extended_obs
 
-    def after_step(self, obs, rew, done, info):
+    def after_step(self, obs, rew, terminated, truncated, info):
         '''Post-processing after calling `.step()`.
 
         Args:
             obs (ndarray): The observation after this step.
             rew (float): The reward after this step.
-            done (bool): Whether the evaluation is done.
+            terminated (bool): Whether the evaluation is terminated.
+            truncated (bool): Whether the evaluation is truncated.
             info (dict): The info after this step.
 
         Returns:
             obs (ndarray): The udpdated observation after this step.
             rew (float): The udpdated reward after this step.
-            done (bool): Whether the evaluation is done.
+            terminated (bool): Whether the evaluation is terminated.
+            truncated (bool): Whether the evaluation is truncated.
             info (dict): The udpdated info after this step.
         '''
         # Increment counters
@@ -476,7 +524,7 @@ class BenchmarkEnv(gym.Env, ABC):
             if self.constraints.is_violated(self, c_value=c_value):
                 info['constraint_violation'] = 1
                 if self.DONE_ON_VIOLATION:
-                    done = True
+                    terminated = True
                     if self.COST == Cost.RL_REWARD and self.use_constraint_penalty:
                         rew = 0
             else:
@@ -494,12 +542,13 @@ class BenchmarkEnv(gym.Env, ABC):
                 else:
                     rew -= self.constraint_penalty
 
-        # Terminate when reaching time limit,
-        # but distinguish between done due to true termination or time limit reached
+        # Time limit is truncation, not termination. The legacy info key is
+        # retained: six controllers still read it, and it is what the migration
+        # tests cross-check `truncated` against.
         if self.ctrl_step_counter >= self.CTRL_STEPS:
-            info['TimeLimit.truncated'] = not done
-            done = True
-        return obs, rew, done, info
+            info['TimeLimit.truncated'] = not terminated
+            truncated = True
+        return obs, rew, terminated, truncated, info
 
     def _generate_trajectory(self,
                              traj_type='figure8',

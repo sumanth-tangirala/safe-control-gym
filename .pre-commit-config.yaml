@@ -47,12 +47,17 @@ repos:
 -   repo: https://github.com/PyCQA/flake8
     rev: 7.3.0
     hooks:
+    # --extend-ignore, not --ignore: --ignore REPLACES flake8's default ignore list
+    # (E121,E123,E126,E226,E24,E704,W503,W504), which re-enables W503 and W504 --
+    # "line break before" and "line break after" a binary operator. Those are
+    # mutually exclusive by construction, so every multi-line boolean expression
+    # violates one of them and 16 files in this repo cannot be made to pass.
     -   id: flake8
         name: flake8_default
-        args: ['--ignore=E501']
+        args: ['--extend-ignore=E501']
         exclude: (^safe_control_gym/__init__.py|^tests/|^safe_control_gym/math_and_models/transformations.py)
     -   id: flake8
         name: flake8_tests
-        args: ['--ignore=E501,E201,E241,E127']
+        args: ['--extend-ignore=E501,E201,E241,E127']
         files: (^tests/|^safe_control_gym/math_and_models/transformations.py)
         exclude: ^tests/test_build.py

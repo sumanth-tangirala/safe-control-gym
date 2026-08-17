@@ -1,0 +1,62 @@
+# The PHYSICAL regime: terminate only on bounds with a physical origin.
+#
+# Every bound here traces to a URDF joint limit or to the workspace. Everything
+# dropped was invented. Measured over 200 LQR episodes, the invented bounds were
+# doing most of the killing -- 61% of cartpole crashes came from a theta_dot
+# limit on a joint the URDF declares unlimited, and 99% of quadrotor2d crashes
+# from translational velocity limits on a free body that has no such limit.
+#
+# This is the regime to TRAIN in. configs/collection/ stays as the datasets
+# define it, and eval_policy scores every run under both -- so a policy is
+# reported both on what it can actually do and on the number comparable to the
+# shipped datasets.
+#
+# Initial states and the observation encoding are inherited from the collection
+# config unchanged; only the termination box differs.
+
+# slider_to_cart is prismatic with a declared URDF velocity limit of 5.0 m/s,
+# so x_dot 5.0 is REAL and kept. cart_to_pole is `type="continuous"` with no
+# <limit> tag at all -- PyBullet reports pos_limits=[0, -1] and max_velocity=0,
+# its encoding for unlimited -- so theta_dot has no physical basis and is
+# dropped. It caused 61% of all cartpole crashes and forbids swing-up, which is
+# exactly the manoeuvre LQR cannot do and RL might.
+#
+# x keeps a workspace bound, widened to 2x the initial region: init == termination
+# means a state sampled at the boundary dies whatever the controller does.
+
+init_state_randomization_info:
+  init_x:
+    distrib: uniform
+    low: -6.0
+    high: 6.0
+  init_x_dot:
+    distrib: uniform
+    low: -5.0
+    high: 5.0
+  init_theta:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: uniform
+    low: -5.0
+    high: 5.0
+state_layout:
+- x
+- x_dot
+- theta
+- theta_dot
+angle_observation:
+  angle: theta
+  rate: theta_dot
+normalize_observation: true
+normalized_rl_action_space: true
+curriculum:
+  start: 0.005
+  step: 0.15
+  threshold: 0.5
+env_attributes:
+  x_threshold: 12.0
+  x_dot_threshold: 5.0
+  theta_threshold_radians: .inf
+  theta_dot_threshold: 1000000.0

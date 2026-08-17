@@ -1,0 +1,91 @@
+# The collection regime for the inverted pendulum.
+#
+# Read by BOTH training (sb3_config.collection_bounds) and evaluation
+# (--eval_bounds), so the regime a policy learns in cannot drift from the one it
+# is scored in.
+#
+# Source: DATA_ROOT/deterministic/pendulum_lqr_50k/dataset_description.json.
+#
+# This system needs no termination overrides at all. inverted_pendulum's
+# _get_done ends an episode only on reaching the goal -- there is no
+# out-of-bounds test -- and theta_dot is clipped at theta_dot_max rather than
+# terminated. Start range and env already agree, which is why the pendulum was
+# the one system whose training distribution was correct from the start.
+
+init_state_randomization_info:
+  init_theta:
+    distrib: 'uniform'
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: 'uniform'
+    low: -6.283185307179586
+    high: 6.283185307179586
+
+# 19204/49770 of eval_states.txt labelled 1, produced by pendulum_lqr.
+reference_success: 0.3859
+reference_dataset: 'deterministic/pendulum_lqr_50k'
+
+# The reference above was measured under REACH semantics: every shipped dataset
+# was collected before terminate_on_goal existed, when entering the goal ball
+# ended the episode. A stabilization run, which must hold position there, is a
+# strictly harder problem -- so comparing a stabilization success rate against
+# this number is comparing two different tasks. eval_policy records both so the
+# mismatch is visible rather than assumed away.
+reference_task: reach
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# Declared here rather than in configs/sb3/ because which channel is an angle,
+# and what the state layout is, are facts about the system. Restating them per
+# training config invites two configs for one system to disagree.
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [theta, theta_dot]
+
+# Encode this angle as (cos, sin) and scale its rate. The cartpole's theta is
+# not wrapped -- measured over this region it reaches +/-4.4 during rollouts, so
+# theta and theta - 2*pi are the same physical state shown to the policy as
+# different observations, and it cannot generalise across revolutions.
+angle_observation:
+  angle: theta
+  rate: theta_dot
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env denormalises
+# to true units internally, so the dynamics are unchanged.
+#
+# Matters most for the quadrotors, whose raw action space is asymmetric and never
+# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
+# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
+# that box its natural output sits at the bottom of the thrust range and a zero
+# action means free fall rather than hover. SB3's check_env warns about exactly
+# this. Normalised, zero maps to mid-thrust, which is near hover.
+#
+# The collectors are unaffected: they build the base env ids and never read this
+# file.
+normalized_rl_action_space: true
+
+# Initial-state curriculum: start near the goal, widen as success is earned.
+#
+# Required, not optional. Measured over 300 random episodes, the number of steps
+# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
+# so under a sparse reward those runs see no positive signal at all and cannot
+# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
+#
+# fraction 0 is a point distribution at the goal, 1 is the full collection
+# region above. Ranges contract about the GOAL value rather than the midpoint,
+# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
+#
+# Advancement is driven by measured success rate, not by a step schedule: a
+# schedule has to be guessed per system and is wrong in both directions.
+curriculum:
+  start: 0.02
+  step: 0.15
+  threshold: 0.5

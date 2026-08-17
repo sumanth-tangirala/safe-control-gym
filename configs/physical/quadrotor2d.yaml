@@ -1,0 +1,78 @@
+# The PHYSICAL regime: terminate only on bounds with a physical origin.
+#
+# Every bound here traces to a URDF joint limit or to the workspace. Everything
+# dropped was invented. Measured over 200 LQR episodes, the invented bounds were
+# doing most of the killing -- 61% of cartpole crashes came from a theta_dot
+# limit on a joint the URDF declares unlimited, and 99% of quadrotor2d crashes
+# from translational velocity limits on a free body that has no such limit.
+#
+# This is the regime to TRAIN in. configs/collection/ stays as the datasets
+# define it, and eval_policy scores every run under both -- so a policy is
+# reported both on what it can actually do and on the number comparable to the
+# shipped datasets.
+#
+# Initial states and the observation encoding are inherited from the collection
+# config unchanged; only the termination box differs.
+
+# A free rigid body: no joints, so no joint limits. The rotors bound THRUST,
+# not velocity, and that is already enforced by the action space. So every
+# velocity and rate bound is dropped; only the room and the ground remain.
+#
+# x and z are the workspace, widened to 2x the initial region. z's lower edge is
+# the ground -- the one bound that means "crashed" in the ordinary sense.
+
+init_state_randomization_info:
+  init_x:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_x_dot:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_z:
+    distrib: uniform
+    low: 0.1
+    high: 1.5
+  init_z_dot:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_theta:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: uniform
+    low: -8.0
+    high: 8.0
+state_layout:
+- x
+- x_dot
+- z
+- z_dot
+- theta
+- theta_dot
+angle_observation: null
+normalize_observation: true
+normalized_rl_action_space: true
+curriculum:
+  start: 0.005
+  step: 0.15
+  threshold: 0.5
+state_space_bounds:
+  x:
+  - -2.0
+  - 2.0
+  z:
+  - 0.05
+  - 2.0
+  x_dot:
+  - -1000000.0
+  - 1000000.0
+  z_dot:
+  - -1000000.0
+  - 1000000.0
+  theta_dot:
+  - -1000000.0
+  - 1000000.0

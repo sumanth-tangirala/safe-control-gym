@@ -1,0 +1,58 @@
+# SAC on quadrotor3d, reach.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id quadrotor3d_reach --algo sac --output_dir logs \
+#       --overrides configs/sb3/quadrotor3d_reach_sac.yaml
+#
+# Initial-state range and termination bounds both come from
+# configs/collection/quadrotor3d.yaml, transcribed from the shipped dataset's
+# dataset_description.json. Training and evaluation read that one file, so the
+# regime a policy learns in is the regime it is scored in.
+#
+# cost: sparse, deliberately. Under the dense rl_reward, reaching the goal ends
+# the episode and forfeits every remaining step, so success is irrational:
+# measured on cartpole, tightening the terminal error to the goal ball was worth
+# +4.46 return while the termination it triggers cost -181.2. SAC learned the
+# correct policy for that reward -- hover just outside the ball, 3.8x the LQR
+# return at 0.000 success. Sparse makes the goal the only positive term.
+#
+# Hyperparameters are hand-written starting points. No search has been run.
+
+# Horizon, step cost and discount, set together because they interact.
+#
+# episode_len_sec 8 s = 480 steps, sized from the MEASURED worst-case LQR
+# steps-to-goal over the collection region (283), with margin.
+# cartpole's and quadrotor3d's worst cases were censored by their old horizons --
+# successful episodes were consuming the entire budget -- so those grow most.
+# The pendulum SHRINKS from 1000: its worst case is 289, and the extra 700 steps
+# bought nothing while costing resets and burying the terminal reward.
+#
+# sparse_step_reward -0.5/H = -0.001042, so a timeout costs -0.5 on every
+# system: half a crash. At the old flat -0.01 a timeout cost -0.01*H, which on
+# cartpole was -2.50 against a crash at -1.10 -- the agent was paid to crash
+# early. The invariant is |oob| > |step| * H.
+#
+# gamma 0.995 rather than SB3's 0.99. At 0.99 the terminal goal reward is worth
+# 0.99^480 at episode start, which for the pendulum's old 1000-step horizon was
+# 4e-5 -- invisible to the critic, and fatal when the reward is sparse.
+
+task_config:
+  cost: sparse
+  sparse_goal_reward: 1.0
+  sparse_oob_reward: -1.0
+  sparse_step_reward: -0.001042
+  episode_len_sec: 8
+sb3_config:
+  total_timesteps: 1000000
+  net_arch:
+  - 400
+  - 300
+  save_freq: 100000
+  eval_freq: 100000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/physical/quadrotor3d.yaml
+  # Scored against the collection regime too, for comparability with the
+  # shipped datasets. eval_policy --eval_bounds does that.
+  comparison_bounds: configs/collection/quadrotor3d.yaml
+  gamma: 0.995

@@ -186,7 +186,8 @@ class SubprocVecEnv(VecEnv):
 def worker(remote, parent_remote, env_fn_wrappers):
     '''Worker func to execute vec_env commands.'''
     def step_env(env, action):
-        ob, reward, done, info = env.step(action)
+        ob, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         if done:
             end_obs = copy.deepcopy(ob)
             end_info = copy.deepcopy(info)

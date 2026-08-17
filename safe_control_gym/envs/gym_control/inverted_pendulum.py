@@ -71,6 +71,7 @@ class InvertedPendulum(BenchmarkEnv):
                  pendulum_length=0.5,
                  damping=0.1,
                  u_sat=U_SAT_DEFAULT,
+                 external_action_disturbance=False,
                  theta_dot_max=2 * math.pi,
                  goal_threshold=0.075,
                  noise=None,
@@ -89,6 +90,17 @@ class InvertedPendulum(BenchmarkEnv):
             inertial_prop (dict, optional): ground-truth ``pendulum_mass`` / ``pendulum_length``.
             gravity, pendulum_mass, pendulum_length, damping (float): physical constants.
             u_sat (float): control saturation; action clipped to ``[-u_sat, u_sat]``.
+            external_action_disturbance (bool): where the action disturbance sits
+                relative to that clip. ``False`` (default) gives ``sat(u + w)``:
+                the noise is inside the actuator -- command, current or
+                quantisation noise -- so the motor cannot be driven past its own
+                limit by it. ``True`` gives ``sat(u) + w``: the noise is an
+                external torque on the shaft (wind, contact, friction), still
+                matched, but not bounded by the actuator because it does not come
+                from the actuator. The two are different physical claims, not a
+                magnitude setting, and they are not interchangeable -- measured on
+                the pendulum, the same w rescues 0% of deterministically-failing
+                states inside the clip and 47.8% outside it.
             theta_dot_max (float): angular-velocity bound; ``theta_dot`` clipped to it.
             goal_threshold (float): L2 goal tolerance around upright at rest.
             noise: source-system noise config -- ``None`` (deterministic), a preset
@@ -104,6 +116,7 @@ class InvertedPendulum(BenchmarkEnv):
         self.PENDULUM_LENGTH = pendulum_length
         self.DAMPING = damping
         self.u_sat = float(u_sat)
+        self.external_action_disturbance = bool(external_action_disturbance)
         self.theta_dot_max = float(theta_dot_max)
         self.goal_threshold = float(goal_threshold)
         # Optional source-system noise model (None -> deterministic no-op).
@@ -157,7 +170,7 @@ class InvertedPendulum(BenchmarkEnv):
         return self.PENDULUM_MASS * self.PENDULUM_LENGTH ** 2
 
     def step(self, action):
-        '''Advance one control step (returns the old-Gym 4-tuple).'''
+        '''Advance one control step (returns the gymnasium 5-tuple).'''
         u = super().before_step(action)
         u = float(np.asarray(u).flat[0])
 
@@ -183,14 +196,24 @@ class InvertedPendulum(BenchmarkEnv):
                 break
 
         obs = self._get_observation()
+        # _get_done BEFORE _get_reward: it is what sets goal_reached and
+        # out_of_bounds, and Cost.SPARSE reads both. Run the other way round
+        # they are a step stale. Behaviour-neutral for rl_reward and quadratic,
+        # neither of which reads those flags -- the golden rollout fixtures and
+        # the dataset-slice oracles pin that.
+        terminated = self._get_done()
         rew = self._get_reward()
-        done = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
-    def reset(self, seed=None):
-        '''(Re-)initialize the environment; returns ``(obs, info)``.'''
+    def reset(self, seed=None, options=None):
+        '''(Re-)initialize the environment; returns ``(obs, info)``.
+
+        ``options`` is accepted for gymnasium 1.x compatibility and ignored.
+        '''
         super().before_reset(seed=seed)
         init_values = {'init_theta': self.INIT_THETA, 'init_theta_dot': self.INIT_THETA_DOT}
         if self.RANDOMIZED_INIT:
@@ -214,10 +237,10 @@ class InvertedPendulum(BenchmarkEnv):
     def _setup_symbolic(self, prior_prop={}, **kwargs):
         '''Create the CasADi symbolic dynamics/observation/cost model.'''
         g = self.GRAVITY_ACC
-        l = prior_prop.get('pendulum_length', self.PENDULUM_LENGTH)
+        length = prior_prop.get('pendulum_length', self.PENDULUM_LENGTH)
         m = prior_prop.get('pendulum_mass', self.PENDULUM_MASS)
         b = self.DAMPING
-        inertia = m * l ** 2
+        inertia = m * length ** 2
         dt = self.CTRL_TIMESTEP
         # Input variables.
         theta = cs.MX.sym('theta')
@@ -226,7 +249,7 @@ class InvertedPendulum(BenchmarkEnv):
         U = cs.MX.sym('U')
         nx, nu = 2, 1
         # Dynamics (theta = 0 upright).
-        theta_ddot = (g / l) * cs.sin(theta) + U / inertia - (b / inertia) * theta_dot
+        theta_ddot = (g / length) * cs.sin(theta) + U / inertia - (b / inertia) * theta_dot
         X_dot = cs.vertcat(theta_dot, theta_ddot)
         # Observation (full state).
         Y = cs.vertcat(theta, theta_dot)
@@ -240,7 +263,7 @@ class InvertedPendulum(BenchmarkEnv):
         cost = {'cost_func': cost_func, 'vars': {'X': X, 'U': U, 'Xr': Xr, 'Ur': Ur, 'Q': Q, 'R': R}}
         params = {
             'pendulum_mass': m,
-            'pendulum_length': l,
+            'pendulum_length': length,
             'gravity': g,
             'damping': b,
             'X_EQ': np.zeros(self.state_dim),
@@ -268,10 +291,17 @@ class InvertedPendulum(BenchmarkEnv):
         self.STATE_UNITS = ['rad', 'rad/s']
 
     def _preprocess_control(self, action):
-        '''Denormalize, apply action disturbances, and clip to ``[-u_sat, u_sat]``.'''
+        '''Denormalize, apply action disturbances, and clip to ``[-u_sat, u_sat]``.
+
+        Where the action disturbance sits relative to the clip is the
+        ``external_action_disturbance`` switch, and it is a physical claim rather
+        than a detail: inside the clip the noise is part of the actuator and can
+        never drive it past ``u_sat``, outside it the noise is a separate torque
+        on the shaft and the actuator's limit simply does not apply to it.
+        '''
         action = self.denormalize_action(action)
         self.current_physical_action = action
-        if 'action' in self.disturbances:
+        if 'action' in self.disturbances and not self.external_action_disturbance:
             action = self.disturbances['action'].apply(action, self)
         if self.adversary_disturbance == 'action' and self.adv_action is not None:
             action = action + self.adv_action
@@ -280,6 +310,14 @@ class InvertedPendulum(BenchmarkEnv):
         action = np.array([u], dtype=np.float64)
         self.current_noisy_physical_action = action
         force = np.clip(action, self.physical_action_bounds[0], self.physical_action_bounds[1])
+        if 'action' in self.disturbances and self.external_action_disturbance:
+            # sat(u) + w. Deliberately NOT re-clipped: the whole point is that the
+            # shaft torque is not the motor's torque. Any signal-dependent scale
+            # therefore reads the SATURATED command, which is the torque the
+            # actuator is really producing.
+            force = np.asarray(self.disturbances['action'].apply(force, self),
+                               dtype=np.float64)
+            self.current_noisy_physical_action = force
         self.current_clipped_action = force
         return force[0]
 
@@ -312,6 +350,8 @@ class InvertedPendulum(BenchmarkEnv):
 
     def _get_reward(self):
         '''Compute the step reward/cost.'''
+        if self.COST == Cost.SPARSE:
+            return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
             state = deepcopy(self.state)
             act = np.asarray(self.current_noisy_physical_action)
@@ -331,9 +371,14 @@ class InvertedPendulum(BenchmarkEnv):
                                                  R=self.R)['l'])
 
     def _get_done(self):
-        '''Episode ends only on reaching the upright goal (no out-of-bounds).'''
+        '''Ends on the upright goal under reach; never out-of-bounds.
+
+        This system has no out-of-bounds test at all -- theta_dot is clipped at
+        theta_dot_max rather than terminated -- so under stabilization
+        (terminate_on_goal False) an episode only ever ends at the time limit.
+        '''
         self.goal_reached = bool(np.linalg.norm(self.state - self.X_GOAL) < self.goal_threshold)
-        return self.goal_reached
+        return self.goal_reached and self.terminate_on_goal
 
     def _get_info(self):
         '''Info dict: goal flag and (weighted) mse to the goal.'''

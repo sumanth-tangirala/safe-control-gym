@@ -71,11 +71,50 @@ GRID_RESOLUTION = 0.04  # 158 x 315 = 49,770 states, matching the shipped datase
 DEFAULT_NUM_TRAJS = 300000
 DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
 NOISE_LEVELS = ('low', 'med', 'high', 'xhigh', 'xxhigh', 'ultra', 'max')
+# Torque-noise success rule: the FIRST state with every channel inside the box,
+# with the trajectory cut there. The 0.05 tolerances replace the shipped L2 ball,
+# which adds radians to rad/s with equal weight.
+#
+# BOX_HOLD = 1 means no dwell [user, 2026-08-06]. A dwell was insurance against
+# the state-additive teleport, where one noise draw could place the state in the
+# goal set; a torque disturbance cannot do that, so it bought nothing here and
+# cost the invariant the entry-cut exists to protect. With a dwell, a rollout
+# that visited the box without holding it ran on to the horizon and could be
+# stored ending INSIDE the box with label 0 -- measured at tau=0.50, 9,863 of
+# 100,000 trajectories, so the same terminal state carried both labels. Stopping
+# at first entry makes `terminal state in the box` and `label 1` the same
+# statement again.
+BOX_TOL = np.array([0.05, 0.05])
+BOX_HOLD = 1
 INVARIANT_SET_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   'invariant_sets', 'pendulum.npz')
 # Fixed horizons (steps): old max success length + settle buffer
 # (plans/invariant-terminal-sets-recollection.md).
 DEFAULT_HORIZON = {'lqr': 600, 'rl': 1100}
+
+
+def validate_timing(ctrl_freq, pyb_freq):
+    '''Validate and normalize the control/integration frequencies.'''
+    ctrl_freq, pyb_freq = int(ctrl_freq), int(pyb_freq)
+    if ctrl_freq <= 0 or pyb_freq <= 0:
+        raise ValueError('ctrl_freq and pyb_freq must be positive integers')
+    if pyb_freq % ctrl_freq != 0:
+        raise ValueError('pyb_freq must be an integer multiple of ctrl_freq')
+    return ctrl_freq, pyb_freq
+
+
+def timing_description(ctrl_freq, pyb_freq):
+    '''Self-describing timing metadata shared by every collection path.'''
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
+    return {
+        'ctrl_freq': ctrl_freq,
+        'pyb_freq': pyb_freq,
+        # Keep ``dt`` as the numerical integration step for compatibility.
+        'dt': 1.0 / pyb_freq,
+        'control_dt': 1.0 / ctrl_freq,
+        'integration_dt': 1.0 / pyb_freq,
+        'substeps_per_control': pyb_freq // ctrl_freq,
+    }
 
 
 def load_invariant_set(path=INVARIANT_SET_PATH):
@@ -97,8 +136,78 @@ def noise_level(noise):
     return tail if tail in NOISE_LEVELS else noise
 
 
-def default_output_dir(controller, noise):
-    '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.'''
+def uses_box_rule(torque_noise, signal_noise=None):
+    '''Whether the per-channel box replaces the env's L2 goal ball.
+
+    True for every actuator-noise family, so its levels stay comparable
+    cell-for-cell across mechanisms; the state-additive presets keep the ball
+    they were collected with.
+    '''
+    return torque_noise is not None or signal_noise is not None
+
+
+def noise_mechanism_desc(noise, torque_noise, signal_noise=None, external_noise=False):
+    '''The ``noise_mechanism`` field shared by every description block.'''
+    if torque_noise is not None:
+        return 'uniform on commanded torque, pre-saturation'
+    if signal_noise is not None:
+        return ('gaussian external shaft torque, POST-saturation, '
+                'sigma = alpha + beta*|u|'
+                if external_noise else
+                'gaussian on commanded torque, pre-saturation, sigma = alpha + beta*|u|')
+    return 'state-additive preset' if noise else 'none'
+
+
+def signal_noise_desc(signal_noise, external_noise=False):
+    '''The ``signal_noise`` field: null, or the constants plus both sigma ends.'''
+    if signal_noise is None:
+        return None
+    alpha, beta = float(signal_noise[0]), float(signal_noise[1])
+    return {'alpha': alpha, 'beta': beta,
+            'law': 'w ~ Normal(0, alpha + beta*|u|), i.i.d. per control step',
+            'scale_is': 'standard deviation, not variance',
+            'sigma_at_zero_command': alpha,
+            'sigma_at_u_sat': alpha + beta * U_SAT,
+            'placement': 'sat(u) + w' if external_noise else 'sat(u + w)',
+            'physical_claim': (
+                'external torque on the shaft -- wind, contact, friction. Matched '
+                '(it enters through B) but NOT bounded by the actuator, because it '
+                'does not come from the actuator. The applied torque can exceed '
+                'u_sat.'
+                if external_noise else
+                'noise inside the actuator -- command, current or quantisation '
+                'noise. The motor cannot be driven past u_sat by it.'),
+            'clip': ('u is clipped at +/- u_sat and w is added AFTER, unclipped'
+                     if external_noise else
+                     'u + w is clipped at +/- u_sat; w itself is unbounded')}
+
+
+def default_output_dir(controller, noise, torque_noise=None, signal_noise=None,
+                       external_noise=False):
+    '''Dataset location, following the ``<family>/pendulum/<controller>/`` layout.
+
+    Torque-noise datasets get their own family rather than a new level under
+    ``noisy/``. They share no vocabulary with the preset levels and are not
+    comparable to them -- different mechanism, different units -- so filing
+    ``tau_0.10`` beside ``high`` would invite exactly the wrong comparison.
+    ``tau = 0.0`` still lands in the torque family, so all levels of a sweep come
+    from one pipeline.
+
+    Signal-dependent noise is a third family for the same reason: its sigma is a
+    function of the command, so a level of it is not a level of anything else.
+    ``alpha`` is fixed across the sweep and ``beta`` is what varies, so ``beta``
+    names the directory and ``alpha`` lives in the description.
+    '''
+    if signal_noise is not None:
+        alpha, beta = signal_noise
+        # A different place for w relative to the saturation is a different
+        # mechanism, not a level, so it gets its own family directory.
+        family = 'external_torque' if external_noise else 'signal_dependent'
+        return os.path.join(DATA_ROOT, family, 'pendulum', controller,
+                            f'beta_{beta:.3f}')
+    if torque_noise is not None:
+        return os.path.join(DATA_ROOT, 'noisy_torque', 'pendulum', controller,
+                            f'tau_{torque_noise:.2f}')
     if noise is None:
         return os.path.join(DATA_ROOT, 'deterministic', 'pendulum', controller)
     return os.path.join(DATA_ROOT, 'noisy', 'pendulum', controller, noise_level(noise))
@@ -167,6 +276,30 @@ def make_env_func(env_config):
     kwargs = {}
     if env_config.get('invariant'):
         kwargs['goal_threshold'] = 0.0
+    tau = env_config.get('torque_noise')
+    sig = env_config.get('signal_noise')
+    if tau is not None:
+        # Uniform noise on the commanded torque. Applied in _preprocess_control,
+        # i.e. before the u_sat clip, so a saturated actuator cannot be pushed
+        # further -- physically right, and it biases p slightly up relative to a
+        # disturbance acting on the shaft.
+        kwargs['disturbances'] = {'action': [{'disturbance_func': 'uniform',
+                                              'low': -tau, 'high': tau}]}
+    elif sig is not None:
+        # Same channel and same clip as the tau family -- only the law changes,
+        # from a fixed-width uniform to a Gaussian whose sigma tracks |u|.
+        alpha, beta = sig
+        kwargs['disturbances'] = {'action': [{'disturbance_func': 'signal_dependent',
+                                              'alpha': float(alpha),
+                                              'beta': float(beta)}]}
+        if env_config.get('external_noise'):
+            # sat(u) + w rather than sat(u + w): the disturbance is a torque on
+            # the shaft, not part of the actuator, so u_sat does not bound it.
+            kwargs['external_action_disturbance'] = True
+    if tau is not None or sig is not None:
+        # The box rule owns termination; the env's own L2 test must not fire
+        # first, or it would cut trajectories on the criterion we replaced.
+        kwargs['goal_threshold'] = 0.0
     return partial(make, 'inverted_pendulum',
                    ctrl_freq=env_config['ctrl_freq'],
                    pyb_freq=env_config['pyb_freq'],
@@ -187,7 +320,8 @@ def make_controller(controller, env_func):
     return ctrl
 
 
-def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None):
+def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None,
+                   box_rule=False):
     '''Roll out one trajectory from ``init_state``.
 
     Default: terminate at (and include) the first state within the goal
@@ -196,6 +330,15 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None)
     ``invariant=True``: no early termination; roll exactly ``max_steps`` steps
     and return ``(trajectory, None, False)`` -- the success label is decided
     afterwards from the terminal state.
+
+    ``box_rule=True``: success is ``|theta| < 0.05 and |theta_dot| < 0.05``, and
+    the rollout STOPS at the first state satisfying it, which is also the last
+    state stored. With ``BOX_HOLD = 1`` (no dwell) this makes the two statements
+    `terminal state is in the box` and `label is 1` equivalent in both
+    directions: a success ends there by construction, and a failure can never end
+    there because reaching the box would have terminated it. Requires
+    ``goal_threshold=0`` on the env so its L2 test cannot fire first
+    (``make_env_func`` sets this).
 
     ``seed`` reseeds the env's RNG, which is what the noise model draws from,
     making a noisy rollout exactly reproducible. ``None`` leaves the RNG alone
@@ -211,12 +354,24 @@ def run_trajectory(env, ctrl, init_state, max_steps, invariant=False, seed=None)
     trajectory = [[normalize_angle(env.state[0]), float(env.state[1])]]
     success = None if invariant else False
     timeout = False
+    run = 0  # consecutive steps inside the box, for box_rule
     for _ in range(max_steps):
         obs_in = ctrl.obs_normalizer(obs) if hasattr(ctrl, 'obs_normalizer') else obs
         action = ctrl.select_action(obs_in, info)
-        obs, _, done, info = env.step(action)
+        obs, _, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
         trajectory.append([normalize_angle(env.state[0]), float(env.state[1])])
-        if not invariant and done:
+        if box_rule:
+            run = run + 1 if np.all(np.abs(env.state) < BOX_TOL) else 0
+            if run >= BOX_HOLD:
+                # Cut back to the state that entered the window. At BOX_HOLD = 1
+                # that state is the one just appended and the slice is empty.
+                del trajectory[len(trajectory) - run + 1:]
+                success = True
+                break
+            if done:
+                break
+        elif not invariant and done:
             success = bool(info.get('goal_reached', False))
             break
     else:
@@ -241,9 +396,12 @@ def _process_batch(args_tuple):
     if invariant:
         P, center, c = load_invariant_set()
     records = []
+    box_rule = uses_box_rule(env_config.get('torque_noise'),
+                             env_config.get('signal_noise'))
     for idx, init_state in batch:
         trajectory, success, timeout = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], invariant=invariant)
+            env, ctrl, init_state, env_config['max_steps'], invariant=invariant,
+            box_rule=box_rule)
         terminal_v_over_c = None
         if invariant:
             dev = np.array(trajectory[-1]) - center
@@ -329,10 +487,13 @@ def _train_worker(args_tuple):
     ctrl = make_controller(controller, env_func)
     env = env_func()
     indices, states, lengths, labels, seeds = [], [], [], [], []
+    box_rule = uses_box_rule(env_config.get('torque_noise'),
+                             env_config.get('signal_noise'))
     for idx, init_state in batch:
         seed = rollout_seed(base_seed, TRAIN_SPLIT_ID, idx)
         trajectory, success, _ = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+            env, ctrl, init_state, env_config['max_steps'], seed=seed,
+            box_rule=box_rule)
         states.append(np.asarray(trajectory, dtype=np.float32))
         indices.append(idx)
         lengths.append(len(trajectory))
@@ -352,7 +513,9 @@ def _train_worker(args_tuple):
 
 def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
                   horizon=1000, noise=None, parallel=False, num_workers=None,
-                  batch_size=256, verbose=False):
+                  batch_size=256, verbose=False, torque_noise=None,
+                  signal_noise=None, external_noise=False,
+                  ctrl_freq=100, pyb_freq=100):
     '''Collect the training split: ``num_trajs`` rollouts from random starts.
 
     Each trajectory is cut at (and includes) the first state inside the goal
@@ -363,15 +526,21 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
         raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
     os.makedirs(output_dir, exist_ok=True)
 
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
-                  'max_steps': horizon, 'noise': noise, 'invariant': False}
+                  'max_steps': horizon, 'noise': noise, 'invariant': False,
+                  'torque_noise': torque_noise, 'signal_noise': signal_noise,
+                  'external_noise': external_noise}
 
     shards_dir = os.path.join(output_dir, '_shards')
     os.makedirs(shards_dir, exist_ok=True)
     fingerprint = json.dumps({'controller': controller, 'num_trajs': num_trajs,
                               'seed': seed, 'horizon': horizon, 'noise': noise,
+                              'torque_noise': torque_noise,
+                              'signal_noise': signal_noise,
+                              'external_noise': external_noise,
+                              'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                               'batch_size': batch_size}, sort_keys=True)
 
     init_states = sample_initial_states(num_trajs, True, seed, THETA_DOT_MAX, GRID_RESOLUTION)
@@ -392,24 +561,41 @@ def collect_train(controller, output_dir, num_trajs=DEFAULT_NUM_TRAJS, seed=42,
 
     stats = merge_train_shards(output_dir, [a[4] for a in worker_args], init_states)
     stats['controller'] = controller
+    box_rule = uses_box_rule(torque_noise, signal_noise)
     atomic_write_text(os.path.join(output_dir, 'train_description.json'), json.dumps({
         'dataset_name': 'Inverted Pendulum Trajectories (train split)',
         'split': 'train',
         'controller': controller,
         'noise': noise,
+        'torque_noise': torque_noise,
+        'signal_noise': signal_noise_desc(signal_noise, external_noise),
+        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise,
+                                                external_noise),
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'horizon_steps': horizon,
         'u_sat': U_SAT,
+        'fraction_of_u_sat': (None if torque_noise is None else torque_noise / U_SAT),
         'theta_dot_max': THETA_DOT_MAX,
         'seed': seed,
         'sampling': {'type': 'uniform random over the full state space',
                      'theta_range': [-math.pi, math.pi],
                      'theta_dot_range': [-THETA_DOT_MAX, THETA_DOT_MAX]},
-        'label_semantics': ('1 = the trajectory was cut at (and includes) the first state '
-                            'inside the 0.075 goal ball; 0 = it ran the full horizon. Under '
-                            'noise a rollout can enter and drift back out, so cutting at '
-                            'entry keeps the label a function of the terminal state.'),
+        'label_semantics': (
+            f'1 = the trajectory was cut at (and includes) the first state with '
+            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]}; 0 = it ran the full '
+            'horizon. The rollout STOPS on entry, so a label-0 trajectory can never end '
+            'inside the box and the label is a function of the terminal state.'
+            if box_rule else
+            '1 = the trajectory was cut at (and includes) the first state '
+            'inside the 0.075 goal ball; 0 = it ran the full horizon. Under '
+            'noise a rollout can enter and drift back out, so cutting at '
+            'entry keeps the label a function of the terminal state.'),
+        'success_rule': ({'kind': ('per_channel_box_entry' if BOX_HOLD == 1
+                                   else 'per_channel_box_with_dwell'),
+                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD}
+                         if box_rule else
+                         {'kind': 'l2_ball', 'radius': 0.075}),
         'data_format': {
             'file': 'train.npz',
             'states_dtype': 'float32',
@@ -466,10 +652,13 @@ def _eval_worker(args_tuple):
     ctrl = make_controller(controller, env_func)
     env = env_func()
     indices, outcomes = [], []
+    box_rule = uses_box_rule(env_config.get('torque_noise'),
+                             env_config.get('signal_noise'))
     for idx, init_state in chunk:
         seed = rollout_seed(base_seed, EVAL_SPLIT_ID, idx, batch_no)
         _, success, _ = run_trajectory(
-            env, ctrl, init_state, env_config['max_steps'], seed=seed)
+            env, ctrl, init_state, env_config['max_steps'], seed=seed,
+            box_rule=box_rule)
         indices.append(idx)
         outcomes.append(int(bool(success)))
     env.close()
@@ -511,6 +700,19 @@ def load_eval_state(output_dir, n_cells):
     return np.zeros(n_cells, np.int64), np.zeros(n_cells, np.int64), 0
 
 
+def _load_shard_state(path, n_cells, batch_lo):
+    """Resume a shard from itself. Mirrors load_eval_state for the whole dataset."""
+    if os.path.exists(path):
+        try:
+            with np.load(path, allow_pickle=False) as d:
+                if len(d['successes']) == n_cells and int(d['batch_lo']) == batch_lo:
+                    return (d['successes'].astype(np.int64),
+                            d['trials'].astype(np.int64), int(d['batch_hi']))
+        except (OSError, ValueError, KeyError):
+            pass  # truncated or foreign file: start this shard over
+    return np.zeros(n_cells, np.int64), np.zeros(n_cells, np.int64), batch_lo
+
+
 def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
                  n_batches, description=None, converged=False):
     '''Atomically publish the complete eval dataset.
@@ -537,54 +739,51 @@ def publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials
                         'converged': bool(converged),
                         'mean_se': mean_standard_error(successes, trials),
                         'success_rate': float(p_success.mean())}, indent=2)))
+    # State dimension is read from the grid, not assumed: the cartpole collector
+    # shares this writer and its state is 4-D. For a 2-D grid the output is
+    # byte-identical to the previous pendulum-only form.
     staged.append(stage_text(
         os.path.join(output_dir, 'success_probabilities.txt'),
-        ''.join(f'{t:.6f},{d:.6f},{p:.6f}\n' for (t, d), p in zip(grid, p_success))))
-    staged.append(stage_npz(
-        os.path.join(output_dir, 'eval_success_prob.npz'),
-        starts=grid,
-        successes=successes.astype(np.int32),
-        trials=trials.astype(np.int32),
-        p_success=p_success,
-        grid_theta=theta_axis,
-        grid_theta_dot=theta_dot_axis,
-        grid_shape=np.array([len(theta_axis), len(theta_dot_axis)], dtype=np.int64),
-        n_batches=np.int64(n_batches)))
+        ''.join(','.join(f'{v:.6f}' for v in row) + f',{p:.6f}\n'
+                for row, p in zip(np.atleast_2d(grid), p_success))))
+    arrays = dict(starts=grid,
+                  successes=successes.astype(np.int32),
+                  trials=trials.astype(np.int32),
+                  p_success=p_success,
+                  n_batches=np.int64(n_batches))
+    # The per-axis arrays only exist for a system whose grid was built from axes.
+    if len(theta_axis) and len(theta_dot_axis):
+        arrays.update(grid_theta=theta_axis, grid_theta_dot=theta_dot_axis,
+                      grid_shape=np.array([len(theta_axis), len(theta_dot_axis)],
+                                          dtype=np.int64))
+    staged.append(stage_npz(os.path.join(output_dir, 'eval_success_prob.npz'), **arrays))
     commit_staged(staged)
     return p_success
 
 
-def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
-                 resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
-                 max_batches=500, check_every=10, parallel=False,
-                 num_workers=None, chunk_size=512, verbose=False):
-    '''Collect the eval split: batches over the grid until the estimate settles.
+def eval_description(controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
+                     ctrl_freq, pyb_freq, horizon, seed, resolution,
+                     se_tol, min_batches, max_batches, check_every,
+                     signal_noise=None, external_noise=False):
+    '''The eval dataset's provenance block.
 
-    One batch is one rollout from every grid state. Only per-cell success
-    counts are kept, and the complete dataset is republished after every batch.
+    Shared by the collector and by --merge_eval_shards. Merging used to pass
+    description=None, so every merged dataset landed with no
+    eval_description.json beside it -- no tau, no success rule, no seed.
     '''
-    if controller not in VALID_CONTROLLERS:
-        raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
-    os.makedirs(output_dir, exist_ok=True)
-
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
-    env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
-                  'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
-                  'max_steps': horizon, 'noise': noise, 'invariant': False}
-
-    theta_axis = grid_axis(-math.pi, math.pi, resolution)
-    theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
-    grid = sample_initial_states(0, False, seed, THETA_DOT_MAX, resolution)
-    successes, trials, n_batches = load_eval_state(output_dir, len(grid))
-
-    description = {
+    box_rule = uses_box_rule(torque_noise, signal_noise)
+    return {
         'dataset_name': 'Inverted Pendulum Success Probabilities (eval split)',
         'split': 'eval',
         'controller': controller,
         'noise': noise,
+        'torque_noise': torque_noise,
+        'signal_noise': signal_noise_desc(signal_noise, external_noise),
+        'noise_mechanism': noise_mechanism_desc(noise, torque_noise, signal_noise,
+                                                external_noise),
         'num_cells': len(grid),
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'horizon_steps': horizon,
         'u_sat': U_SAT,
         'theta_dot_max': THETA_DOT_MAX,
@@ -595,8 +794,19 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
                  'theta_dot_range': [float(theta_dot_axis[0]), float(theta_dot_axis[-1])],
                  'note': 'half-open in both coordinates; theta is periodic, so -pi and '
                          '+pi are the same state and only one is sampled'},
-        'label_semantics': ('p_success is the fraction of rollouts from that cell that ever '
-                            'entered the 0.075 goal ball within horizon_steps'),
+        'label_semantics': (
+            'p_success is the fraction of rollouts from that cell that held '
+            f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} for {BOX_HOLD} '
+            'consecutive control steps within horizon_steps'
+            if box_rule else
+            'p_success is the fraction of rollouts from that cell that ever '
+            'entered the 0.075 goal ball within horizon_steps'),
+        'success_rule': ({'kind': ('per_channel_box_entry' if BOX_HOLD == 1
+                                   else 'per_channel_box_with_dwell'),
+                          'tol': BOX_TOL.tolist(), 'hold_steps': BOX_HOLD,
+                          'cut': 'rollout stops at, and stores, the first state inside the box'}
+                         if box_rule else
+                         {'kind': 'l2_ball', 'radius': 0.075, 'cut': 'first entry'}),
         'stopping_rule': {'statistic': 'mean per-cell Jeffreys posterior SD of p_success',
                           'se_tol': se_tol, 'min_batches': min_batches,
                           'max_batches': max_batches, 'check_every': check_every},
@@ -606,6 +816,114 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
                                 'after each batch',
                         'mirror': 'success_probabilities.txt (theta,theta_dot,p_success)'},
     }
+
+
+def shard_path(output_dir, batch_lo, batch_hi):
+    return os.path.join(output_dir, f'eval_shard_{batch_lo:05d}_{batch_hi:05d}.npz')
+
+
+def merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis, description=None):
+    """Sum the per-batch shards into the canonical whole-grid dataset.
+
+    Sharding is sound because eval batches are INDEPENDENT: batch b's outcome
+    does not depend on batch b-1, and rollout_seed(base, EVAL_SPLIT_ID, cell,
+    batch) is a pure function of its coordinates. So the same rollouts happen
+    whichever node runs them, and successes/trials are counters that add. The
+    merged result is bit-identical to the sequential run -- there is a test.
+
+    Refuses to merge a batch range that is not exactly tiled: an overlap would
+    double-count and a gap would silently under-report `trials`, and both look
+    like a perfectly ordinary dataset afterwards.
+    """
+    paths = sorted(f for f in os.listdir(output_dir)
+                   if f.startswith('eval_shard_') and f.endswith('.npz'))
+    if not paths:
+        raise FileNotFoundError(f'no eval_shard_*.npz in {output_dir}')
+    successes = np.zeros(len(grid), np.int64)
+    trials = np.zeros(len(grid), np.int64)
+    covered = []
+    for name in paths:
+        with np.load(os.path.join(output_dir, name), allow_pickle=False) as d:
+            lo, hi = int(d['batch_lo']), int(d['batch_hi'])
+            if len(d['successes']) != len(grid):
+                raise ValueError(f'{name}: grid size {len(d["successes"])} != {len(grid)}')
+            successes += d['successes'].astype(np.int64)
+            trials += d['trials'].astype(np.int64)
+            covered.append((lo, hi))
+    covered.sort()
+    expected = 0
+    for lo, hi in covered:
+        if lo != expected:
+            raise ValueError(f'batch coverage is not contiguous: expected batch {expected}, '
+                             f'shard starts at {lo}. Ranges: {covered}')
+        expected = hi
+    n_batches = expected
+    if not np.all(trials == n_batches):
+        raise ValueError('per-cell trials disagree with the batch count; a shard is partial')
+    # `converged` is the substantive claim -- did the estimate settle -- so it is
+    # decided by the ACHIEVED uncertainty, not by which loop stopped. A shard
+    # budget cannot fire the stopping rule, but it can still land under it, and a
+    # reader wants to know that rather than which code path ran.
+    se_tol = (description or {}).get('stopping_rule', {}).get('se_tol', 0.01)
+    settled = mean_standard_error(successes, trials) < se_tol
+    if description is not None:
+        description = {**description, 'stopped_by': 'batch_budget'}
+    publish_eval(output_dir, grid, theta_axis, theta_dot_axis, successes, trials,
+                 n_batches, description, converged=settled)
+    return {'n_batches': n_batches, 'shards': len(paths), 'num_cells': len(grid),
+            'success_rate': float((successes / np.maximum(trials, 1)).mean()),
+            'mean_se': mean_standard_error(successes, trials)}
+
+
+def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
+                 torque_noise=None, signal_noise=None, external_noise=False,
+                 resolution=GRID_RESOLUTION, se_tol=0.01, min_batches=10,
+                 max_batches=500, check_every=10, parallel=False,
+                 num_workers=None, chunk_size=512, verbose=False,
+                 batch_offset=None, batch_count=None,
+                 ctrl_freq=100, pyb_freq=100):
+    '''Collect the eval split: batches over the grid until the estimate settles.
+
+    One batch is one rollout from every grid state. Only per-cell success
+    counts are kept, and the complete dataset is republished after every batch.
+
+    ``batch_offset``/``batch_count``: run only batches
+    ``[offset, offset + count)`` and write them to their own shard file, for
+    fanning one grid across many nodes. The stopping rule does not apply --
+    a shard runs its assigned batches and stops -- so the caller picks the
+    batch budget up front and `merge_eval_shards` combines them. The default
+    (both None) is unchanged: one process, whole-grid atomic publication
+    after every batch, stopping when the estimate settles.
+    '''
+    if controller not in VALID_CONTROLLERS:
+        raise ValueError(f'[ERROR] unknown controller {controller!r}; valid: {VALID_CONTROLLERS}')
+    os.makedirs(output_dir, exist_ok=True)
+
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
+    env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
+                  'episode_len_sec': math.ceil(horizon / ctrl_freq) + 1,
+                  'max_steps': horizon, 'noise': noise, 'invariant': False,
+                  'torque_noise': torque_noise, 'signal_noise': signal_noise,
+                  'external_noise': external_noise}
+
+    theta_axis = grid_axis(-math.pi, math.pi, resolution)
+    theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX, resolution)
+    grid = sample_initial_states(0, False, seed, THETA_DOT_MAX, resolution)
+    sharded = batch_offset is not None
+    if sharded:
+        if batch_count is None or batch_count < 1:
+            raise ValueError('batch_offset requires a positive batch_count')
+        batch_lo, batch_hi = int(batch_offset), int(batch_offset) + int(batch_count)
+        spath = shard_path(output_dir, batch_lo, batch_hi)
+        successes, trials, n_batches = _load_shard_state(spath, len(grid), batch_lo)
+    else:
+        successes, trials, n_batches = load_eval_state(output_dir, len(grid))
+
+    description = eval_description(
+        controller, noise, torque_noise, grid, theta_axis, theta_dot_axis,
+        ctrl_freq, pyb_freq, horizon, seed, resolution, se_tol, min_batches,
+        max_batches, check_every, signal_noise=signal_noise,
+        external_noise=external_noise)
 
     cells = list(enumerate(grid))
     workers = num_workers or get_available_cpus()
@@ -622,9 +940,12 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
     # iterations, and re-forking the workers each time would repay the
     # per-process casadi warmup every batch.
     pool = Pool(processes=workers) if parallel else None
+    stop_at = batch_hi if sharded else max_batches
     try:
-        while n_batches < max_batches:
+        while n_batches < stop_at:
             args = [(c, controller, env_config, seed, n_batches) for c in chunks]
+            # n_batches is the GLOBAL batch index in both modes, so a cell's
+            # noise draw does not depend on which shard ran it.
             outcomes = np.zeros(len(grid), dtype=np.int64)
             results = pool.imap_unordered(_eval_worker, args) if pool else map(_eval_worker, args)
             for indices, values in results:
@@ -633,6 +954,18 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
             successes += outcomes
             trials += 1
             n_batches += 1
+
+            if sharded:
+                # The shard is its own checkpoint, atomically replaced each
+                # batch, so a killed shard resumes where it stopped.
+                atomic_savez(spath,
+                             successes=successes.astype(np.int32),
+                             trials=trials.astype(np.int32),
+                             batch_lo=np.int64(batch_lo),
+                             batch_hi=np.int64(n_batches))
+                if verbose:
+                    print(f'[eval shard {batch_lo}-{batch_hi}] batch {n_batches}', flush=True)
+                continue
 
             standard_error = mean_standard_error(successes, trials)
             due_for_check = n_batches >= min_batches and n_batches % check_every == 0
@@ -650,6 +983,11 @@ def collect_eval(controller, output_dir, seed=42, horizon=1000, noise=None,
             pool.close()
             pool.join()
 
+    if sharded:
+        return {'controller': controller, 'n_batches': n_batches,
+                'num_cells': len(grid), 'converged': False, 'shard': [batch_lo, batch_hi],
+                'mean_se': mean_standard_error(successes, trials),
+                'success_rate': float((successes / np.maximum(trials, 1)).mean())}
     return {'controller': controller, 'n_batches': n_batches,
             'num_cells': len(grid), 'converged': converged,
             'mean_se': mean_standard_error(successes, trials),
@@ -667,7 +1005,8 @@ def _load_cache(output_dir):
 def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42,
              parallel=False, num_workers=None, horizon=None, resolution=0.1,
              theta_dot_max=THETA_DOT_MAX, skip_save=False, overwrite=False,
-             batch_size=256, noise=None, invariant=False, verbose=False):
+             batch_size=256, noise=None, invariant=False, verbose=False,
+             torque_noise=None, ctrl_freq=100, pyb_freq=100):
     '''Generate a dataset and return aggregate statistics.
 
     Resumable: trajectories whose ``sequence_<idx>.txt`` already exists (and whose
@@ -679,7 +1018,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     trajectories_dir = os.path.join(output_dir, 'trajectories')
     os.makedirs(trajectories_dir if not skip_save else output_dir, exist_ok=True)
 
-    ctrl_freq = pyb_freq = 100  # dt = 0.01, matching the trained-on physics.
+    ctrl_freq, pyb_freq = validate_timing(ctrl_freq, pyb_freq)
     if horizon is None:
         # Default (first-entry termination): 10 s horizon as before. Invariant
         # mode: fixed horizon = old max success length + settle buffer.
@@ -688,7 +1027,8 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     episode_len_sec = math.ceil(horizon / ctrl_freq) + 1
     env_config = {'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq,
                   'episode_len_sec': episode_len_sec, 'max_steps': horizon,
-                  'noise': noise, 'invariant': invariant}
+                  'noise': noise, 'invariant': invariant,
+                  'torque_noise': torque_noise}
 
     init_states = sample_initial_states(num_trajs, random_init, seed, theta_dot_max, resolution)
     n = len(init_states)
@@ -747,7 +1087,7 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     description = {
         **stats,
         'state_order': ['theta', 'theta_dot'],
-        'ctrl_freq': ctrl_freq, 'pyb_freq': pyb_freq, 'dt': 1.0 / pyb_freq,
+        **timing_description(ctrl_freq, pyb_freq),
         'episode_len_sec': episode_len_sec, 'horizon_steps': horizon,
         'u_sat': U_SAT,
         'theta_dot_max': theta_dot_max,
@@ -791,6 +1131,17 @@ def generate(controller, output_dir, num_trajs=100000, random_init=True, seed=42
     return stats
 
 
+def _noise_desc(noise, torque_noise, signal_noise=None):
+    '''One-line mechanism description for the run banner.'''
+    if torque_noise is not None:
+        return f'torque tau={torque_noise:g} ({100 * torque_noise / U_SAT:.1f}% of u_sat)'
+    if signal_noise is not None:
+        alpha, beta = signal_noise
+        return (f'signal-dependent alpha={alpha:g} beta={beta:g} '
+                f'(sigma {alpha:.4f} at u=0, {alpha + beta * U_SAT:.4f} at u_sat)')
+    return f'noise={noise}'
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate inverted-pendulum trajectory dataset')
     parser.add_argument('--controller', required=True, choices=VALID_CONTROLLERS,
@@ -809,6 +1160,11 @@ def main():
     parser.add_argument('--resolution', type=float, default=None,
                         help=f'Grid resolution (default: {GRID_RESOLUTION} with --split eval, '
                              'else 0.1)')
+    parser.add_argument('--ctrl_freq', type=int, default=100,
+                        help='Control/update frequency in Hz (default: 100).')
+    parser.add_argument('--pyb_freq', type=int, default=100,
+                        help='Explicit-Euler integration frequency in Hz; must be an integer '
+                             'multiple of --ctrl_freq (default: 100).')
     parser.add_argument('--se_tol', type=float, default=0.01,
                         help='--split eval: stop once the mean per-cell uncertainty is below this')
     parser.add_argument('--min_batches', type=int, default=10, help='--split eval: floor on batches')
@@ -823,6 +1179,47 @@ def main():
                              '--invariant_terminal_sets: 600 for lqr, 1100 for RL)')
     parser.add_argument('--noise', type=str, default=None, choices=sorted(NOISE_PRESETS),
                         help='Noise preset (default: none/deterministic). See envs/gym_control/pendulum_noise.py')
+    parser.add_argument('--batch_offset', type=int, default=None,
+                        help='--split eval: run only batches [OFFSET, OFFSET+--batch_count) '
+                             'into their own shard file, to fan one grid across many nodes. '
+                             'The stopping rule does not apply to a shard.')
+    parser.add_argument('--batch_count', type=int, default=None,
+                        help='--split eval: number of batches this shard runs.')
+    parser.add_argument('--merge_eval_shards', action='store_true',
+                        help='--split eval: combine eval_shard_*.npz in --output_dir into the '
+                             'canonical dataset and exit. Refuses a range with gaps or overlaps.')
+    parser.add_argument('--torque_noise', type=float, default=None,
+                        help='Uniform noise on the commanded torque, U(-TAU, TAU) per control '
+                             'step, applied before the u_sat clip. The physically admissible '
+                             'channel: it enters the acceleration row only. Switches the success '
+                             f'rule to |theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]} held '
+                             f'for {BOX_HOLD} steps, and writes to the noisy_torque/ family. '
+                             'Mutually exclusive with --noise.')
+    parser.add_argument('--noise_alpha', type=float, default=None,
+                        help='Signal-dependent torque noise: the sigma FLOOR, i.e. the '
+                             'noise that survives as the command goes to zero. Requires '
+                             '--noise_beta. Together they give w ~ Normal(0, ALPHA + '
+                             'BETA*|u|) on the commanded torque, before the u_sat clip. '
+                             'The scale is a standard deviation, not a variance.')
+    parser.add_argument('--noise_beta', type=float, default=None,
+                        help='Signal-dependent torque noise: the effort-proportional term, '
+                             'which only bites while the controller is working hard. '
+                             'Requires --noise_alpha. Names the output directory '
+                             '(signal_dependent/.../beta_<BETA>), since alpha is held '
+                             'fixed across a sweep. Switches the success rule to '
+                             f'|theta| < {BOX_TOL[0]} and |theta_dot| < {BOX_TOL[1]}, as '
+                             '--torque_noise does. Mutually exclusive with both --noise '
+                             'and --torque_noise.')
+    parser.add_argument('--external_noise', action='store_true',
+                        help='Place w OUTSIDE the actuator saturation: sat(u) + w '
+                             'rather than sat(u + w). Models an external torque on '
+                             'the shaft -- wind, contact, friction -- which is matched '
+                             'but not bounded by the actuator, so the applied torque '
+                             'can exceed u_sat. This is a different physical claim, '
+                             'not a magnitude, and it writes to the external_torque/ '
+                             'family. Levels do NOT transfer from the pre-saturation '
+                             'family: the same w is far more potent outside the clip. '
+                             'Requires --noise_alpha/--noise_beta.')
     parser.add_argument('--invariant_terminal_sets', action='store_true',
                         help='Disable goal termination: run every trajectory for a fixed horizon '
                              'and label by terminal-state membership in the invariant ellipsoid '
@@ -833,30 +1230,92 @@ def main():
     args = parser.parse_args()
 
     noise = None if args.noise in (None, 'none') else args.noise
+    if noise is not None and args.torque_noise is not None:
+        # Rejecting the combination beats defining a precedence nobody remembers.
+        parser.error('--noise and --torque_noise are different mechanisms and cannot be '
+                     'combined; pick one.')
+    if args.torque_noise is not None and args.torque_noise < 0:
+        parser.error('--torque_noise must be non-negative (it is a half-width).')
+    if (args.noise_alpha is None) != (args.noise_beta is None):
+        # Defaulting the missing one to zero would silently collect a level
+        # nobody asked for -- alpha=0 has no floor, beta=0 has no signal
+        # dependence, and either way the directory name would not say so.
+        parser.error('--noise_alpha and --noise_beta must be given together.')
+    signal_noise = (None if args.noise_alpha is None
+                    else (args.noise_alpha, args.noise_beta))
+    if signal_noise is not None and (noise is not None or args.torque_noise is not None):
+        parser.error('--noise_alpha/--noise_beta is a third mechanism and cannot be '
+                     'combined with --noise or --torque_noise; pick one.')
+    if signal_noise is not None and (args.noise_alpha < 0 or args.noise_beta < 0):
+        parser.error('--noise_alpha and --noise_beta must be non-negative; together '
+                     'they are a standard deviation.')
+    if args.external_noise and signal_noise is None:
+        parser.error('--external_noise says where w is applied, so it needs a w: '
+                     'pass --noise_alpha and --noise_beta.')
+    try:
+        validate_timing(args.ctrl_freq, args.pyb_freq)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.split is not None:
-        output_dir = args.output_dir or default_output_dir(args.controller, noise)
+        output_dir = args.output_dir or default_output_dir(
+            args.controller, noise, args.torque_noise, signal_noise,
+            args.external_noise)
         if args.split == 'train':
             stats = collect_train(args.controller, output_dir,
                                   num_trajs=args.num_trajs or DEFAULT_NUM_TRAJS,
                                   seed=args.seed, horizon=args.horizon or 1000,
                                   noise=noise, parallel=args.parallel,
-                                  num_workers=args.num_workers, verbose=True)
+                                  num_workers=args.num_workers, verbose=True,
+                                  torque_noise=args.torque_noise,
+                                  signal_noise=signal_noise,
+                                  external_noise=args.external_noise,
+                                  ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
             print(f"\n{'=' * 70}")
-            print(f"Split:        train ({stats['controller']}, noise={noise})")
+            print(f"Split:        train ({stats['controller']}, "
+                  f'{_noise_desc(noise, args.torque_noise, signal_noise)})')
             print(f"Trajectories: {stats['num_trajectories']}")
             print(f"Successful:   {stats['success_count']} ({stats['success_rate'] * 100:.2f}%)")
             print(f"Mean length:  {stats['mean_length']:.1f} states")
         else:
+            if args.merge_eval_shards:
+                theta_axis = grid_axis(-math.pi, math.pi, args.resolution or GRID_RESOLUTION)
+                theta_dot_axis = grid_axis(-THETA_DOT_MAX, THETA_DOT_MAX,
+                                           args.resolution or GRID_RESOLUTION)
+                grid = sample_initial_states(0, False, args.seed, THETA_DOT_MAX,
+                                             args.resolution or GRID_RESOLUTION)
+                desc = eval_description(
+                    args.controller, noise, args.torque_noise, grid, theta_axis,
+                    theta_dot_axis, args.ctrl_freq, args.pyb_freq,
+                    args.horizon or 1000, args.seed,
+                    args.resolution or GRID_RESOLUTION, args.se_tol,
+                    args.min_batches, args.max_batches, args.check_every,
+                    signal_noise=signal_noise, external_noise=args.external_noise)
+                stats = merge_eval_shards(output_dir, grid, theta_axis, theta_dot_axis,
+                                          desc)
+                print(f"\n{'=' * 70}")
+                print(f"Merged:       {stats['shards']} shards, {stats['n_batches']} batches")
+                print(f"Grid cells:   {stats['num_cells']}")
+                print(f"Mean SE:      {stats['mean_se']:.5f}")
+                print(f"Mean p:       {stats['success_rate']:.4f}")
+                print(f'Output:       {output_dir}')
+                print(f"{'=' * 70}")
+                return
             stats = collect_eval(args.controller, output_dir, seed=args.seed,
                                  horizon=args.horizon or 1000, noise=noise,
+                                 torque_noise=args.torque_noise,
+                                 signal_noise=signal_noise,
+                                 external_noise=args.external_noise,
                                  resolution=args.resolution or GRID_RESOLUTION,
                                  se_tol=args.se_tol, min_batches=args.min_batches,
                                  max_batches=args.max_batches, check_every=args.check_every,
                                  parallel=args.parallel, num_workers=args.num_workers,
-                                 verbose=True)
+                                 verbose=True, batch_offset=args.batch_offset,
+                                 batch_count=args.batch_count,
+                                 ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
             print(f"\n{'=' * 70}")
-            print(f"Split:        eval ({stats['controller']}, noise={noise})")
+            print(f"Split:        eval ({stats['controller']}, "
+                  f'{_noise_desc(noise, args.torque_noise, signal_noise)})')
             print(f"Grid cells:   {stats['num_cells']}")
             print(f"Batches:      {stats['n_batches']} "
                   f"({'converged' if stats['converged'] else 'STOPPED AT CAP'})")
@@ -865,6 +1324,10 @@ def main():
         print(f'Output:       {output_dir}')
         print(f"{'=' * 70}")
         return
+
+    if args.torque_noise is not None or signal_noise is not None:
+        parser.error('--torque_noise and --noise_alpha/--noise_beta require --split train '
+                     'or --split eval; the legacy single-pass path does not carry them.')
 
     suffix = f'_{args.noise}' if noise else ''
     suffix += '_invariant' if args.invariant_terminal_sets else ''
@@ -876,7 +1339,8 @@ def main():
                      num_workers=args.num_workers, horizon=args.horizon,
                      resolution=args.resolution or 0.1, skip_save=args.skip_save,
                      overwrite=args.overwrite, noise=noise,
-                     invariant=args.invariant_terminal_sets, verbose=True)
+                     invariant=args.invariant_terminal_sets, verbose=True,
+                     ctrl_freq=args.ctrl_freq, pyb_freq=args.pyb_freq)
 
     print(f"\n{'=' * 70}")
     print(f"Controller:   {stats['controller']}")

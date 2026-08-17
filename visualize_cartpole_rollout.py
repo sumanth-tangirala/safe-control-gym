@@ -13,10 +13,11 @@ Usage:
 
 import argparse
 import os
+from functools import partial
+
 import numpy as np
 import pybullet as p
 import pybullet_data
-from functools import partial
 
 from safe_control_gym.utils.registration import make
 
@@ -113,13 +114,14 @@ def run_and_record(output_dir):
     joint_states = [(x, theta)]
     state_history = [[x, normalize_angle(theta), x_dot, theta_dot]]
 
-    print(f"Initial state: x={x:.3f}, x_dot={x_dot:.3f}, theta={theta:.3f}, theta_dot={theta_dot:.3f}")
-    print(f"Running physics rollout (max {MAX_STEPS} steps)...")
+    print(f'Initial state: x={x:.3f}, x_dot={x_dot:.3f}, theta={theta:.3f}, theta_dot={theta_dot:.3f}')
+    print(f'Running physics rollout (max {MAX_STEPS} steps)...')
 
     success = False
     for step in range(MAX_STEPS):
         action = ctrl.select_action(obs, info)
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         s = env.state  # internal: [x, x_dot, theta, theta_dot]
         joint_states.append((s[0], s[2]))
@@ -135,7 +137,7 @@ def run_and_record(output_dir):
     env.close()
 
     # ---- Phase 2: Replay with visual cartpole, capture video ----
-    print("Rendering video with visual cartpole...")
+    print('Rendering video with visual cartpole...')
 
     visual_urdf = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                'safe_control_gym', 'envs', 'gym_control',
@@ -150,8 +152,8 @@ def run_and_record(output_dir):
 
     # Load visual cartpole (scaled up to compensate for zoomed-out camera)
     cartpole_id = p.loadURDF(visual_urdf, [0, 0, 0],
-                              globalScaling=CARTPOLE_VISUAL_SCALE,
-                              physicsClientId=client)
+                             globalScaling=CARTPOLE_VISUAL_SCALE,
+                             physicsClientId=client)
 
     # Goal circle at pole tip when upright at x=0
     pole_tip_z = 0.65 * CARTPOLE_VISUAL_SCALE  # visual pole length * scale
@@ -203,12 +205,12 @@ def run_and_record(output_dir):
     p.disconnect(client)
 
     # Save video
-    video_path = os.path.join(output_dir, "cartpole_rollout.mp4")
+    video_path = os.path.join(output_dir, 'cartpole_rollout.mp4')
     save_video(frames, video_path, FPS)
 
     # Save x-theta trajectory plot
     state_history = np.array(state_history)
-    plot_path = os.path.join(output_dir, "cartpole_rollout_xtheta.png")
+    plot_path = os.path.join(output_dir, 'cartpole_rollout_xtheta.png')
     plot_xtheta_trajectory(state_history, plot_path, success)
 
 
@@ -219,7 +221,7 @@ def save_video(frames, path, fps):
     for frame in frames:
         writer.append_data(frame)
     writer.close()
-    print(f"Saved video: {path} ({len(frames)} frames, {fps} fps, {len(frames)/fps:.1f}s)")
+    print(f'Saved video: {path} ({len(frames)} frames, {fps} fps, {len(frames)/fps:.1f}s)')
 
 
 def plot_xtheta_trajectory(states, path, success):
@@ -264,7 +266,7 @@ def plot_xtheta_trajectory(states, path, success):
     plt.tight_layout()
     plt.savefig(path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"Saved plot: {path}")
+    print(f'Saved plot: {path}')
 
 
 def main():
@@ -274,7 +276,7 @@ def main():
     args = parser.parse_args()
 
     run_and_record(args.output_dir)
-    print("\nDone!")
+    print('\nDone!')
 
 
 if __name__ == '__main__':

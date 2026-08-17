@@ -6,20 +6,21 @@ Discretizes the initial state space with 0.05 resolution and saves trajectories.
 
 import argparse
 import os
-import numpy as np
 import tempfile
 from functools import partial
-from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
-import pybullet as p  # Import at module level to avoid multiprocessing issues
 
-from safe_control_gym.utils.registration import make
+import numpy as np
+import pybullet as p  # Import at module level to avoid multiprocessing issues
+from tqdm import tqdm
+
 from safe_control_gym.envs.gym_pybullet_drones.quadrotor_utils import QuadType
+from safe_control_gym.utils.registration import make
 
 # Pre-import torch and scipy to avoid multiprocessing import errors
 try:
-    import torch
-    import scipy.linalg
+    import scipy.linalg  # noqa: F401 (side-effecting pre-import, not referenced directly)
+    import torch  # noqa: F401 (side-effecting pre-import, not referenced directly)
 except ImportError:
     pass
 
@@ -304,7 +305,7 @@ def generate_discretized_initial_states(bounds, resolution=0.05, termination_thr
                                     abs(theta) >= termination_thresholds['theta'] or
                                     abs(x_dot) >= termination_thresholds['x_dot'] or
                                     abs(z_dot) >= termination_thresholds['z_dot'] or
-                                    abs(theta_dot) >= termination_thresholds['theta_dot']):
+                                        abs(theta_dot) >= termination_thresholds['theta_dot']):
                                     continue
 
                             states.append([x, z, theta, x_dot, z_dot, theta_dot])
@@ -355,13 +356,13 @@ def generate_random_initial_states(bounds, num_samples, termination_thresholds=N
                 abs(theta) >= termination_thresholds['theta'] or
                 abs(x_dot) >= termination_thresholds['x_dot'] or
                 abs(z_dot) >= termination_thresholds['z_dot'] or
-                abs(theta_dot) >= termination_thresholds['theta_dot']):
+                    abs(theta_dot) >= termination_thresholds['theta_dot']):
                 continue
 
         states.append([x, z, theta, x_dot, z_dot, theta_dot])
 
     if len(states) < num_samples:
-        print(f"Warning: Could only generate {len(states)} valid states out of {num_samples} requested")
+        print(f'Warning: Could only generate {len(states)} valid states out of {num_samples} requested')
 
     return states
 
@@ -399,7 +400,7 @@ def generate_stratified_initial_states(bounds, discretizations, termination_thre
     n_x, n_z, n_theta = len(x_vals), len(z_vals), len(theta_vals)
     n_x_dot, n_z_dot, n_theta_dot = len(x_dot_vals), len(z_dot_vals), len(theta_dot_vals)
     total_points = n_x * n_z * n_theta * n_x_dot * n_z_dot * n_theta_dot
-    print(f"Grid dimensions: {n_x} x {n_z} x {n_theta} x {n_x_dot} x {n_z_dot} x {n_theta_dot} = {total_points} points")
+    print(f'Grid dimensions: {n_x} x {n_z} x {n_theta} x {n_x_dot} x {n_z_dot} x {n_theta_dot} = {total_points} points')
 
     # Vectorized generation using meshgrid
     grid = np.meshgrid(x_vals, z_vals, theta_vals, x_dot_vals, z_dot_vals, theta_dot_vals, indexing='ij')
@@ -419,7 +420,7 @@ def generate_stratified_initial_states(bounds, discretizations, termination_thre
             (np.abs(states[:, 5]) < termination_thresholds['theta_dot'])
         )
         states = states[valid_mask]
-        print(f"After filtering: {len(states)} valid states")
+        print(f'After filtering: {len(states)} valid states')
 
     return states.tolist()
 
@@ -436,7 +437,7 @@ def get_default_model_path(algo, models_dir):
         str: Path to model file
     """
     # Model naming pattern: {algo}_model_quadrotor_2D_stab.pt
-    model_name = f"{algo}_model_quadrotor_2D_stab.pt"
+    model_name = f'{algo}_model_quadrotor_2D_stab.pt'
     return os.path.join(models_dir, algo, model_name)
 
 
@@ -504,8 +505,9 @@ def run_trajectory(env, ctrl, init_state, algo, max_steps=1000, invariant=False)
         # safe_explorer_ppo uses info['constraint_values'] internally
         action = ctrl.select_action(normalized_obs, info)
 
-        # Take step in environment (old Gym API returns 4 values)
-        obs, reward, done, info = env.step(action)
+        # Take step in environment
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
 
         # Extract state (env obs order: x, x_dot, z, z_dot, theta, theta_dot)
         x, x_dot, z, z_dot, theta, theta_dot = obs[:6]
@@ -778,17 +780,17 @@ def generate_roa_labels_from_trajectories(trajectories_dir, output_path, goal_to
 
     traj_files = sorted(glob.glob(os.path.join(trajectories_dir, 'sequence_*.txt')))
     if not traj_files:
-        print(f"Warning: No trajectory files found in {trajectories_dir}")
+        print(f'Warning: No trajectory files found in {trajectories_dir}')
         return 0, 0, 0, 0
 
     num_workers = get_available_cpus()
-    print(f"Processing {len(traj_files)} trajectory files with {num_workers} workers...")
+    print(f'Processing {len(traj_files)} trajectory files with {num_workers} workers...')
 
     worker_args = [(f, goal_tolerance, termination_thresholds, invariant) for f in traj_files]
     results = []
     with Pool(processes=num_workers) as pool:
         for result in tqdm(pool.imap(_process_trajectory_file, worker_args, chunksize=1000),
-                           total=len(traj_files), desc="Generating ROA labels"):
+                           total=len(traj_files), desc='Generating ROA labels'):
             if result is not None:
                 results.append(result)
 
@@ -833,20 +835,20 @@ def generate_eval_states_and_labels(trajectories_dir, output_dir, goal_tolerance
 
     traj_files = sorted(glob.glob(os.path.join(trajectories_dir, 'sequence_*.txt')))
     if not traj_files:
-        print(f"Warning: No trajectory files found in {trajectories_dir}")
+        print(f'Warning: No trajectory files found in {trajectories_dir}')
         return 0, 0, 0, 0
 
     eval_states_path = os.path.join(output_dir, 'eval_states.txt')
     traj_labels_path = os.path.join(output_dir, 'trajectory_labels.txt')
 
     num_workers = get_available_cpus()
-    print(f"Processing {len(traj_files)} trajectory files with {num_workers} workers...")
+    print(f'Processing {len(traj_files)} trajectory files with {num_workers} workers...')
 
     worker_args = [(f, goal_tolerance, termination_thresholds, invariant) for f in traj_files]
     results = []
     with Pool(processes=num_workers) as pool:
         for result in tqdm(pool.imap(_process_trajectory_file, worker_args, chunksize=1000),
-                           total=len(traj_files), desc="Generating eval states and trajectory labels"):
+                           total=len(traj_files), desc='Generating eval states and trajectory labels'):
             if result is not None:
                 results.append(result)
 
@@ -892,114 +894,114 @@ def generate_dataset_description(output_dir, args, stats, algo, model_path):
     from datetime import datetime
 
     description = {
-        "dataset_name": f"2D Quadrotor {algo.upper()} Stabilization Trajectories",
-        "description": f"Dataset of 2D quadrotor stabilization trajectories generated using {algo.upper()} RL controller with PyBullet physics simulation.",
-        "generated_at": datetime.now().isoformat(),
+        'dataset_name': f'2D Quadrotor {algo.upper()} Stabilization Trajectories',
+        'description': f'Dataset of 2D quadrotor stabilization trajectories generated using {algo.upper()} RL controller with PyBullet physics simulation.',
+        'generated_at': datetime.now().isoformat(),
 
-        "generation_parameters": {
-            "initial_state_bounds": {
-                "x": {"min": -args.x_bound, "max": args.x_bound, "unit": "m", "description": "Horizontal position"},
-                "z": {"min": args.z_min, "max": args.z_max, "unit": "m", "description": "Altitude (vertical position)"},
-                "theta": {"min": -args.theta_bound, "max": args.theta_bound, "unit": "rad", "description": "Pitch angle"},
-                "x_dot": {"min": -args.x_dot_bound, "max": args.x_dot_bound, "unit": "m/s", "description": "Horizontal velocity"},
-                "z_dot": {"min": -args.z_dot_bound, "max": args.z_dot_bound, "unit": "m/s", "description": "Vertical velocity"},
-                "theta_dot": {"min": -args.theta_dot_bound, "max": args.theta_dot_bound, "unit": "rad/s", "description": "Pitch rate"}
+        'generation_parameters': {
+            'initial_state_bounds': {
+                'x': {'min': -args.x_bound, 'max': args.x_bound, 'unit': 'm', 'description': 'Horizontal position'},
+                'z': {'min': args.z_min, 'max': args.z_max, 'unit': 'm', 'description': 'Altitude (vertical position)'},
+                'theta': {'min': -args.theta_bound, 'max': args.theta_bound, 'unit': 'rad', 'description': 'Pitch angle'},
+                'x_dot': {'min': -args.x_dot_bound, 'max': args.x_dot_bound, 'unit': 'm/s', 'description': 'Horizontal velocity'},
+                'z_dot': {'min': -args.z_dot_bound, 'max': args.z_dot_bound, 'unit': 'm/s', 'description': 'Vertical velocity'},
+                'theta_dot': {'min': -args.theta_dot_bound, 'max': args.theta_dot_bound, 'unit': 'rad/s', 'description': 'Pitch rate'}
             },
-            "termination_thresholds": {
-                "x": args.x_termination,
-                "z_min": args.z_min_termination,
-                "z_max": args.z_max_termination,
-                "theta": "inf" if args.theta_termination == float('inf') else args.theta_termination,
-                "x_dot": args.x_dot_termination,
-                "z_dot": args.z_dot_termination,
-                "theta_dot": args.theta_dot_termination
+            'termination_thresholds': {
+                'x': args.x_termination,
+                'z_min': args.z_min_termination,
+                'z_max': args.z_max_termination,
+                'theta': 'inf' if args.theta_termination == float('inf') else args.theta_termination,
+                'x_dot': args.x_dot_termination,
+                'z_dot': args.z_dot_termination,
+                'theta_dot': args.theta_dot_termination
             },
-            "simulation_parameters": {
-                "save_freq": args.save_freq,
-                "max_steps": args.max_steps,
-                "episode_len_sec": args.episode_len_sec
+            'simulation_parameters': {
+                'save_freq': args.save_freq,
+                'max_steps': args.max_steps,
+                'episode_len_sec': args.episode_len_sec
             },
-            "controller": {
-                "type": algo.upper(),
-                "model_path": model_path,
-                "task": "stabilization",
-                "goal_state": [0, 1, 0, 0, 0, 0],
-                "goal_state_order": ["x", "z", "theta", "x_dot", "z_dot", "theta_dot"]
+            'controller': {
+                'type': algo.upper(),
+                'model_path': model_path,
+                'task': 'stabilization',
+                'goal_state': [0, 1, 0, 0, 0, 0],
+                'goal_state_order': ['x', 'z', 'theta', 'x_dot', 'z_dot', 'theta_dot']
             },
-            "success_criteria": (lambda inv: {
-                "type": "invariant_ellipsoid",
-                "definition": "(s - center)' P (s - center) <= c, s in env order "
-                              "[x, x_dot, z, z_dot, theta, theta_dot]",
-                "P": inv[0].tolist(),
-                "center": inv[1].tolist(),
-                "c": inv[2],
-                "center_note": "center is the policy's closed-loop attractor, not the nominal goal",
-                "artifact": os.path.relpath(INVARIANT_SET_PATH, os.path.dirname(os.path.abspath(__file__))),
-                "termination": "none on success: trajectories run the fixed horizon (max_steps) "
-                               "unless out of bounds; label = terminal-state membership",
-                "reference": "plans/invariant-terminal-sets-recollection.md"
+            'success_criteria': (lambda inv: {
+                'type': 'invariant_ellipsoid',
+                'definition': "(s - center)' P (s - center) <= c, s in env order "
+                              '[x, x_dot, z, z_dot, theta, theta_dot]',
+                'P': inv[0].tolist(),
+                'center': inv[1].tolist(),
+                'c': inv[2],
+                'center_note': "center is the policy's closed-loop attractor, not the nominal goal",
+                'artifact': os.path.relpath(INVARIANT_SET_PATH, os.path.dirname(os.path.abspath(__file__))),
+                'termination': 'none on success: trajectories run the fixed horizon (max_steps) '
+                               'unless out of bounds; label = terminal-state membership',
+                'reference': 'plans/invariant-terminal-sets-recollection.md'
             })(get_invariant_set()) if args.invariant_terminal_sets else {
-                "type": "radius",
-                "threshold": args.goal_tolerance,
-                "description": f"Success if ||state - goal|| < {args.goal_tolerance}; "
-                               "trajectories terminate at (and include) the first such state"
+                'type': 'radius',
+                'threshold': args.goal_tolerance,
+                'description': f'Success if ||state - goal|| < {args.goal_tolerance}; '
+                               'trajectories terminate at (and include) the first such state'
             },
-            "sampling_method": {
-                "type": "stratified_grid" if args.stratified else ("random" if args.random_init else "discretized_grid"),
-                "discretizations": {
-                    "x": args.x_disc,
-                    "z": args.z_disc,
-                    "theta": args.theta_disc,
-                    "x_dot": args.x_dot_disc,
-                    "z_dot": args.z_dot_disc,
-                    "theta_dot": args.theta_dot_disc
+            'sampling_method': {
+                'type': 'stratified_grid' if args.stratified else ('random' if args.random_init else 'discretized_grid'),
+                'discretizations': {
+                    'x': args.x_disc,
+                    'z': args.z_disc,
+                    'theta': args.theta_disc,
+                    'x_dot': args.x_dot_disc,
+                    'z_dot': args.z_dot_disc,
+                    'theta_dot': args.theta_dot_disc
                 } if args.stratified else None,
-                "num_trajs": args.num_trajs if args.random_init else None,
-                "seed": args.seed
+                'num_trajs': args.num_trajs if args.random_init else None,
+                'seed': args.seed
             }
         },
 
-        "dataset_statistics": {
-            "total_trajectories": stats['total_count'],
-            "successful_trajectories": {
-                "count": stats['success_count'],
-                "percentage": round(stats['success_count'] / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
+        'dataset_statistics': {
+            'total_trajectories': stats['total_count'],
+            'successful_trajectories': {
+                'count': stats['success_count'],
+                'percentage': round(stats['success_count'] / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
             },
-            "failed_trajectories": {
-                "count": stats['total_count'] - stats['success_count'] - stats['timeout_count'],
-                "percentage": round((stats['total_count'] - stats['success_count'] - stats['timeout_count']) / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
+            'failed_trajectories': {
+                'count': stats['total_count'] - stats['success_count'] - stats['timeout_count'],
+                'percentage': round((stats['total_count'] - stats['success_count'] - stats['timeout_count']) / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
             },
-            "timeout_trajectories": {
-                "count": stats['timeout_count'],
-                "percentage": round(stats['timeout_count'] / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
+            'timeout_trajectories': {
+                'count': stats['timeout_count'],
+                'percentage': round(stats['timeout_count'] / stats['total_count'] * 100, 2) if stats['total_count'] > 0 else 0
             },
-            "max_trajectory_length": stats['max_traj_length']
+            'max_trajectory_length': stats['max_traj_length']
         },
 
-        "achieved_bounds": {
-            var: {"min": stats[var]['min'], "max": stats[var]['max']}
+        'achieved_bounds': {
+            var: {'min': stats[var]['min'], 'max': stats[var]['max']}
             for var in ['x', 'z', 'theta', 'x_dot', 'z_dot', 'theta_dot']
         },
 
-        "data_format": {
-            "trajectory_files": {
-                "directory": "trajectories/",
-                "file_naming": "sequence_{i}.txt",
-                "line_format": "x,z,theta,x_dot,z_dot,theta_dot",
-                "state_order": ["x", "z", "theta", "x_dot", "z_dot", "theta_dot"],
-                "state_units": ["m", "m", "rad", "m/s", "m/s", "rad/s"]
+        'data_format': {
+            'trajectory_files': {
+                'directory': 'trajectories/',
+                'file_naming': 'sequence_{i}.txt',
+                'line_format': 'x,z,theta,x_dot,z_dot,theta_dot',
+                'state_order': ['x', 'z', 'theta', 'x_dot', 'z_dot', 'theta_dot'],
+                'state_units': ['m', 'm', 'rad', 'm/s', 'm/s', 'rad/s']
             },
-            "eval_states_file": {
-                "filename": "eval_states.txt",
-                "format": "init_x,init_z,init_theta,init_x_dot,init_z_dot,init_theta_dot,final_x,final_z,final_theta,final_x_dot,final_z_dot,final_theta_dot,label"
+            'eval_states_file': {
+                'filename': 'eval_states.txt',
+                'format': 'init_x,init_z,init_theta,init_x_dot,init_z_dot,init_theta_dot,final_x,final_z,final_theta,final_x_dot,final_z_dot,final_theta_dot,label'
             },
-            "trajectory_labels_file": {
-                "filename": "trajectory_labels.txt",
-                "format": "filename,label"
+            'trajectory_labels_file': {
+                'filename': 'trajectory_labels.txt',
+                'format': 'filename,label'
             },
-            "roa_labels_file": {
-                "filename": "roa_labels.txt",
-                "format": "x,z,theta,x_dot,z_dot,theta_dot,label"
+            'roa_labels_file': {
+                'filename': 'roa_labels.txt',
+                'format': 'x,z,theta,x_dot,z_dot,theta_dot,label'
             }
         }
     }
@@ -1140,8 +1142,8 @@ def main():
 
     # Handle --generate_roa_only mode (no model needed)
     if args.generate_roa_only:
-        print(f"Generating labels from existing trajectory files...")
-        print(f"Trajectories directory: {trajectories_dir}")
+        print('Generating labels from existing trajectory files...')
+        print(f'Trajectories directory: {trajectories_dir}')
 
         # Resolve termination thresholds (same defaults as normal mode)
         if args.x_termination is None:
@@ -1166,31 +1168,31 @@ def main():
             'z_dot': args.z_dot_termination,
             'theta_dot': args.theta_dot_termination
         }
-        print(f"Termination thresholds: {termination_thresholds}")
+        print(f'Termination thresholds: {termination_thresholds}')
 
         # Generate ROA labels
-        print(f"\nGenerating ROA labels...")
+        print('\nGenerating ROA labels...')
         total_entries, success_count, oob_count, timeout_count = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
             termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
-        print(f"ROA labels saved to: {roa_labels_path}")
-        print(f"  Total trajectories: {total_entries}")
-        print(f"  Success (label=1): {success_count}")
-        print(f"  Out-of-bounds (label=0): {oob_count}")
-        print(f"  Timeout (label=-1): {timeout_count}")
+        print(f'ROA labels saved to: {roa_labels_path}')
+        print(f'  Total trajectories: {total_entries}')
+        print(f'  Success (label=1): {success_count}')
+        print(f'  Out-of-bounds (label=0): {oob_count}')
+        print(f'  Timeout (label=-1): {timeout_count}')
 
         # Generate eval states and trajectory labels
-        print(f"\nGenerating eval_states.txt and trajectory_labels.txt...")
+        print('\nGenerating eval_states.txt and trajectory_labels.txt...')
         total_trajs, eval_success, eval_oob, eval_timeout = generate_eval_states_and_labels(
             trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance,
             termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
-        print(f"  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)")
-        print(f"  trajectory_labels.txt: {total_trajs} entries (filename, label)")
-        print(f"  Success: {eval_success}, Out-of-bounds: {eval_oob}, Timeout: {eval_timeout}")
+        print(f'  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)')
+        print(f'  trajectory_labels.txt: {total_trajs} entries (filename, label)')
+        print(f'  Success: {eval_success}, Out-of-bounds: {eval_oob}, Timeout: {eval_timeout}')
         return
 
     # Determine model path
@@ -1201,46 +1203,77 @@ def main():
 
     # Verify model exists
     if not os.path.exists(model_path):
-        print(f"Error: Model file not found: {model_path}")
-        print(f"Available models in {args.models_dir}:")
+        print(f'Error: Model file not found: {model_path}')
+        print(f'Available models in {args.models_dir}:')
         for algo in ['ppo', 'sac', 'safe_explorer_ppo']:
             algo_dir = os.path.join(args.models_dir, algo)
             if os.path.exists(algo_dir):
                 models = [f for f in os.listdir(algo_dir) if f.endswith('.pt')]
                 for m in models:
-                    print(f"  {algo}/{m}")
+                    print(f'  {algo}/{m}')
         return
 
-    print(f"Using algorithm: {args.algo}")
-    print(f"Loading model from: {model_path}")
+    print(f'Using algorithm: {args.algo}')
+    print(f'Loading model from: {model_path}')
+
+    # Resolve termination defaults and build the thresholds dict BEFORE any call to
+    # generate_roa_labels_from_trajectories. That function dereferences
+    # termination_thresholds['x'] to classify out-of-bounds, so passing None raises
+    # TypeError. Both were previously resolved only further down, leaving the
+    # early --random_init resume path with unresolved args and no thresholds.
+    if args.x_termination is None:
+        args.x_termination = args.x_bound
+    if args.z_min_termination is None:
+        args.z_min_termination = args.z_min
+    if args.z_max_termination is None:
+        args.z_max_termination = args.z_max
+    if args.x_dot_termination is None:
+        args.x_dot_termination = args.x_dot_bound
+    if args.z_dot_termination is None:
+        args.z_dot_termination = args.z_dot_bound
+    if args.theta_dot_termination is None:
+        args.theta_dot_termination = args.theta_dot_bound
+
+    termination_thresholds = {
+        'x': args.x_termination,
+        'z_min': args.z_min_termination,
+        'z_max': args.z_max_termination,
+        'theta': args.theta_termination,
+        'x_dot': args.x_dot_termination,
+        'z_dot': args.z_dot_termination,
+        'theta_dot': args.theta_dot_termination
+    }
 
     # Check existing trajectories and calculate how many more are needed
     existing_count, start_idx = count_existing_trajectories(trajectories_dir)
 
     if existing_count > 0:
-        print(f"Found {existing_count} existing trajectories in {trajectories_dir}")
-        print(f"Next trajectory index: {start_idx}")
+        print(f'Found {existing_count} existing trajectories in {trajectories_dir}')
+        print(f'Next trajectory index: {start_idx}')
 
     if args.random_init:
         # For random init, check if we already have enough trajectories
         if existing_count >= args.num_trajs:
-            print(f"Target of {args.num_trajs} trajectories already reached ({existing_count} exist).")
-            print(f"Skipping trajectory generation, generating ROA labels from existing files...")
+            print(f'Target of {args.num_trajs} trajectories already reached ({existing_count} exist).')
+            print('Skipping trajectory generation, generating ROA labels from existing files...')
 
-            total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
-                trajectories_dir, roa_labels_path
+            total_states, success_trajs, oob_count, timeout_count = generate_roa_labels_from_trajectories(
+                trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
+                termination_thresholds=termination_thresholds,
+                invariant=args.invariant_terminal_sets
             )
+            failure_trajs = oob_count + timeout_count
 
-            print(f"\nROA labels saved to: {roa_labels_path}")
-            print(f"  Total trajectories processed: {success_trajs + failure_trajs}")
-            print(f"  Successful trajectories: {success_trajs}")
-            print(f"  Failed trajectories: {failure_trajs}")
-            print(f"  Total state-label pairs: {total_states}")
+            print(f'\nROA labels saved to: {roa_labels_path}')
+            print(f'  Total trajectories processed: {success_trajs + failure_trajs}')
+            print(f'  Successful trajectories: {success_trajs}')
+            print(f'  Failed trajectories: {failure_trajs}')
+            print(f'  Total state-label pairs: {total_states}')
             return
 
         # Calculate how many more trajectories to generate
         num_to_generate = args.num_trajs - existing_count
-        print(f"Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}")
+        print(f'Need to generate {num_to_generate} more trajectories to reach target of {args.num_trajs}')
 
     # Set default termination thresholds
     # Position termination
@@ -1291,8 +1324,8 @@ def main():
     if args.stratified:
         # Stratified grid sampling
         if existing_count > 0:
-            print(f"Warning: {existing_count} trajectories already exist. Stratified mode will add new trajectories starting from index {start_idx}.")
-        print("Generating stratified initial states...")
+            print(f'Warning: {existing_count} trajectories already exist. Stratified mode will add new trajectories starting from index {start_idx}.')
+        print('Generating stratified initial states...')
         discretizations = {
             'x': args.x_disc,
             'z': args.z_disc,
@@ -1304,27 +1337,27 @@ def main():
         initial_states = generate_stratified_initial_states(
             bounds, discretizations, termination_thresholds
         )
-        print(f"Generated {len(initial_states)} stratified initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} stratified initial states (excluding those that violate termination bounds)')
     elif args.random_init:
-        print(f"Generating {num_to_generate} random initial states...")
+        print(f'Generating {num_to_generate} random initial states...')
         initial_states = generate_random_initial_states(bounds, num_to_generate, termination_thresholds, args.seed)
-        print(f"Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} random initial states (excluding those that violate termination bounds)')
     else:
         # For discretized mode, generate all states (resumption not supported for grid)
         if existing_count > 0:
-            print(f"Warning: {existing_count} trajectories already exist. Discretized mode will add new trajectories starting from index {start_idx}.")
-        print("Generating discretized initial states...")
+            print(f'Warning: {existing_count} trajectories already exist. Discretized mode will add new trajectories starting from index {start_idx}.')
+        print('Generating discretized initial states...')
         initial_states = generate_discretized_initial_states(bounds, args.resolution, termination_thresholds)
-        print(f"Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)")
+        print(f'Generated {len(initial_states)} discretized initial states (excluding those that violate termination bounds)')
 
     # Confirmation prompt for stratified mode
     if args.stratified and not args.yes:
         print(f"\n{'='*60}")
-        print(f"Will generate {len(initial_states):,} trajectories.")
+        print(f'Will generate {len(initial_states):,} trajectories.')
         print(f"{'='*60}")
-        response = input("Proceed? [y/N]: ").strip().lower()
+        response = input('Proceed? [y/N]: ').strip().lower()
         if response != 'y':
-            print("Aborted.")
+            print('Aborted.')
             return
 
     # Calculate control frequency based on save_freq
@@ -1361,13 +1394,13 @@ def main():
         'invariant': args.invariant_terminal_sets
     }
 
-    print(f"Termination thresholds: x=+/-{args.x_termination}, z=[{args.z_min_termination}, {args.z_max_termination}], "
-          f"theta=+/-{args.theta_termination}, x_dot=+/-{args.x_dot_termination}, "
-          f"z_dot=+/-{args.z_dot_termination}, theta_dot=+/-{args.theta_dot_termination}")
-    print(f"Goal tolerance: {args.goal_tolerance} (success when ||state - goal|| < {args.goal_tolerance})")
-    print(f"Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)")
-    print(f"Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)")
-    print(f"Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)")
+    print(f'Termination thresholds: x=+/-{args.x_termination}, z=[{args.z_min_termination}, {args.z_max_termination}], '
+          f'theta=+/-{args.theta_termination}, x_dot=+/-{args.x_dot_termination}, '
+          f'z_dot=+/-{args.z_dot_termination}, theta_dot=+/-{args.theta_dot_termination}')
+    print(f'Goal tolerance: {args.goal_tolerance} (success when ||state - goal|| < {args.goal_tolerance})')
+    print(f'Save frequency: {args.save_freq} s ({1.0/args.save_freq:.1f} Hz)')
+    print(f'Control frequency: {ctrl_freq:.1f} Hz (timestep: {ctrl_timestep:.6f} s)')
+    print(f'Physics frequency: {pyb_freq} Hz (timestep: {1.0/pyb_freq:.6f} s)')
 
     # Initialize statistics tracking
     # State order: [x, z, theta, x_dot, z_dot, theta_dot]
@@ -1390,7 +1423,7 @@ def main():
         # Get number of CPUs available (respecting taskset/affinity)
         num_workers = args.num_workers if args.num_workers else get_available_cpus()
 
-        print(f"Generating trajectories using {num_workers} CPU cores (parallel mode)...")
+        print(f'Generating trajectories using {num_workers} CPU cores (parallel mode)...')
 
         # Create arguments for each individual trajectory
         # Use start_idx to allow resuming from a previous run
@@ -1408,12 +1441,12 @@ def main():
                 for result in tqdm(
                     pool.imap_unordered(process_single_trajectory, trajectory_args, chunksize=1),
                     total=len(initial_states),
-                    desc="Generating trajectories"
+                    desc='Generating trajectories'
                 ):
                     traj_results.append(result)
         except KeyboardInterrupt:
-            print(f"\n\nInterrupted by user. Collected {len(traj_results)}/{len(initial_states)} trajectory results.")
-            print("Continuing with post-processing of completed trajectories...")
+            print(f'\n\nInterrupted by user. Collected {len(traj_results)}/{len(initial_states)} trajectory results.')
+            print('Continuing with post-processing of completed trajectories...')
             pool.terminate()
             pool.join()
 
@@ -1442,7 +1475,7 @@ def main():
 
     else:
         # Sequential execution
-        print(f"Generating trajectories sequentially (single core)...")
+        print('Generating trajectories sequentially (single core)...')
 
         # Create a temporary directory for the controller
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1490,7 +1523,7 @@ def main():
 
             # Process trajectories sequentially
             try:
-                for i, init_state in enumerate(tqdm(initial_states, desc="Generating trajectories")):
+                for i, init_state in enumerate(tqdm(initial_states, desc='Generating trajectories')):
                     # Run trajectory
                     trajectory, success, full_horizon, terminal_v_over_c = run_trajectory(
                         env, ctrl, init_state, args.algo, env_config['max_steps'],
@@ -1540,39 +1573,43 @@ def main():
                         save_trajectory(trajectory, filepath)
             except KeyboardInterrupt:
                 print(f"\n\nInterrupted by user after {stats['total_count']} trajectories.")
-                print("Continuing with post-processing of completed trajectories...")
+                print('Continuing with post-processing of completed trajectories...')
 
             # Clean up
             env.close()
             ctrl.close()
 
     if args.skip_save:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories (files not saved)")
-        print(f"Note: ROA labels and other output files cannot be generated when --skip_save is used")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories (files not saved)')
+        print('Note: ROA labels and other output files cannot be generated when --skip_save is used')
     else:
-        print(f"\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}")
-        print(f"Each file contains a trajectory with states in format: x,z,theta,x_dot,z_dot,theta_dot")
+        print(f'\nSuccessfully generated {len(initial_states)} trajectories in {trajectories_dir}')
+        print('Each file contains a trajectory with states in format: x,z,theta,x_dot,z_dot,theta_dot')
 
         # Generate ROA labels from saved trajectory files (post-processing)
-        print(f"\nGenerating ROA labels from saved trajectories...")
+        print('\nGenerating ROA labels from saved trajectories...')
         roa_labels_path = os.path.join(args.output_dir, 'roa_labels.txt')
-        total_states, success_trajs, failure_trajs = generate_roa_labels_from_trajectories(
+        total_states, success_trajs, oob_count, timeout_count = generate_roa_labels_from_trajectories(
             trajectories_dir, roa_labels_path, goal_tolerance=args.goal_tolerance,
+            termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
-        print(f"ROA labels saved to: {roa_labels_path}")
-        print(f"  Total state-label pairs: {total_states}")
-        print(f"  From successful trajectories: {success_trajs}")
-        print(f"  From failed trajectories: {failure_trajs}")
+        failure_trajs = oob_count + timeout_count
+        print(f'ROA labels saved to: {roa_labels_path}')
+        print(f'  Total state-label pairs: {total_states}')
+        print(f'  From successful trajectories: {success_trajs}')
+        print(f'  From failed trajectories: {failure_trajs}')
 
         # Generate eval_states.txt and trajectory_labels.txt
-        print(f"\nGenerating eval_states.txt and trajectory_labels.txt...")
-        total_trajs, eval_success, eval_failure = generate_eval_states_and_labels(
+        print('\nGenerating eval_states.txt and trajectory_labels.txt...')
+        # Only total_trajs is reported below; the per-outcome counts are unused here.
+        total_trajs, _, _, _ = generate_eval_states_and_labels(
             trajectories_dir, args.output_dir, goal_tolerance=args.goal_tolerance,
+            termination_thresholds=termination_thresholds,
             invariant=args.invariant_terminal_sets
         )
-        print(f"  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)")
-        print(f"  trajectory_labels.txt: {total_trajs} entries (filename, label)")
+        print(f'  eval_states.txt: {total_trajs} entries (initial_state, final_state, label)')
+        print(f'  trajectory_labels.txt: {total_trajs} entries (filename, label)')
 
     # Print success rate and trajectory statistics
     success_rate = (stats['success_count'] / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
@@ -1581,33 +1618,33 @@ def main():
     failed_rate = (failed_count / stats['total_count'] * 100) if stats['total_count'] > 0 else 0
 
     print(f"\n{'='*80}")
-    print(f"Trajectory Statistics:")
+    print('Trajectory Statistics:')
     print(f"{'='*80}")
     print(f"  Total trajectories:       {stats['total_count']}")
     print(f"  Successful:               {stats['success_count']} ({success_rate:.2f}%)")
-    print(f"  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)")
+    print(f'  Failed (out of bounds):   {failed_count} ({failed_rate:.2f}%)')
     print(f"  Timeout (no success):     {stats['timeout_count']} ({timeout_rate:.2f}%)")
     print(f"  Max trajectory length:    {stats['max_traj_length']} states")
     if terminal_v_ratios:
         v = np.array(terminal_v_ratios)
-        print(f"  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} "
-              f"p95={np.percentile(v, 95):.4f} max={v.max():.4f} "
-              f"(a tail near 1 = late arrivals; consider a larger --max_steps)")
+        print(f'  Terminal V/c (successes): p50={np.percentile(v, 50):.4f} '
+              f'p95={np.percentile(v, 95):.4f} max={v.max():.4f} '
+              f'(a tail near 1 = late arrivals; consider a larger --max_steps)')
 
     # Print actual achieved bounds statistics
     print(f"\n{'='*80}")
-    print(f"Actual Achieved Bounds Across All Trajectories:")
+    print('Actual Achieved Bounds Across All Trajectories:')
     print(f"{'='*80}")
 
     # Helper function to format state
     # State order: [x, z, theta, x_dot, z_dot, theta_dot]
     def format_state(state):
         if state is None:
-            return "N/A (initial state)"
-        return f"[x={state[0]:>7.3f}, z={state[1]:>7.3f}, theta={state[2]:>7.3f}, x_dot={state[3]:>7.3f}, z_dot={state[4]:>7.3f}, theta_dot={state[5]:>7.3f}]"
+            return 'N/A (initial state)'
+        return f'[x={state[0]:>7.3f}, z={state[1]:>7.3f}, theta={state[2]:>7.3f}, x_dot={state[3]:>7.3f}, z_dot={state[4]:>7.3f}, theta_dot={state[5]:>7.3f}]'
 
     for var_name, var_label in [('x', 'x'), ('z', 'z'), ('theta', 'theta'), ('x_dot', 'x_dot'), ('z_dot', 'z_dot'), ('theta_dot', 'theta_dot')]:
-        print(f"\n  {var_label}:")
+        print(f'\n  {var_label}:')
         print(f"    Min: {stats[var_name]['min']:>10.6f}")
         if stats[var_name]['prev_at_min'] is not None:
             print(f"         Previous state: {format_state(stats[var_name]['prev_at_min'])}")

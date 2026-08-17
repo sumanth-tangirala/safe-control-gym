@@ -2,6 +2,13 @@
 results/
 temp-data/
 
+# Claude Code: .claude/ and CLAUDE.md are shared, personal overrides are not
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages
+.superpowers/
+
 # acados
 c_generated_code/
 acados_*
@@ -48,3 +55,9 @@ models/**
 !models/quad3d_ctrl1_selected.pt
 !models/quad3d_ctrl1_selected_prev2.pt
 rollout_visualizations_backup_*/
+
+# Agent worktrees
+.claude/worktrees/
+
+# SLURM logs written next to the clone by the collection arrays
+logs/

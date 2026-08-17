@@ -239,7 +239,8 @@ class RARL(BaseController):
                 action_adv = np.zeros(self.adv_act_space.shape[0])
             env.set_adversary_control(action_adv)
 
-            obs, _, done, info = env.step(action)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             if render:
                 env.render()
                 frames.append(env.render('rgb_array'))

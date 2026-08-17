@@ -205,7 +205,32 @@ class Quadrotor(BaseAviary):
         super().__init__(init_state=init_state, inertial_prop=inertial_prop, **kwargs)
 
         # Store initial state info.
-        self.INIT_STATE_RAND_INFO = deepcopy(self.BASE_INIT_STATE_RAND_INFO)
+        #
+        # Only fall back to the class defaults when the caller supplied nothing.
+        # This line used to assign unconditionally, immediately after
+        # super().__init__() had stored the caller's init_state_randomization_info
+        # (benchmark_env.py:161) -- so the quadrotors silently discarded every
+        # requested initial-state range and always sampled BASE_.
+        #
+        # cartpole and inverted_pendulum never had the bug: they declare
+        # INIT_STATE_RAND_INFO as a class attribute and leave the instance one
+        # alone. Verified by asking each env for x in +/-6 and theta in +/-pi:
+        # cartpole returned 5.972 and 3.130, the quadrotors returned their
+        # defaults of 0.5 and 0.3.
+        #
+        # Consequence worth recording: upstream's own
+        # examples/rl/config_overrides/quadrotor_*/*.yaml init ranges were
+        # never in effect either, so the shipped Safe Explorer PPO models were
+        # trained on the class defaults rather than the ranges their configs
+        # declare.
+        #
+        # Datasets are unaffected -- every quadrotor collector passes
+        # randomized_init=False and never sets this field, so the randomization
+        # info is unused on those paths.
+        if self.INIT_STATE_RAND_INFO is None:
+            self.INIT_STATE_RAND_INFO = deepcopy(self.BASE_INIT_STATE_RAND_INFO)
+        else:
+            self.INIT_STATE_RAND_INFO = deepcopy(self.INIT_STATE_RAND_INFO)
         self.INIT_STATE_LABELS = {
             QuadType.ONE_D: ['init_x', 'init_x_dot'],
             QuadType.TWO_D: ['init_x', 'init_x_dot', 'init_z', 'init_z_dot', 'init_theta', 'init_theta_dot'],
@@ -325,13 +350,14 @@ class Quadrotor(BaseAviary):
         # Set prior/symbolic info.
         self._setup_symbolic()
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         '''(Re-)initializes the environment to start an episode.
 
         Mandatory to call at least once after __init__().
 
         Args:
             seed (int): An optional seed to reseed the environment.
+            options (dict): Unused. Accepted for gymnasium 1.x compatibility.
 
         Returns:
             obs (ndarray): The initial state of the environment.
@@ -408,7 +434,8 @@ class Quadrotor(BaseAviary):
         Returns:
             obs (ndarray): The state of the environment after the step.
             reward (float): The scalar reward/cost of the step.
-            done (bool): Whether the conditions for the end of an episode are met in the step.
+            terminated (bool): Whether the MDP has reached a terminal state in the step.
+            truncated (bool): Whether the episode was truncated by the time limit.
             info (dict): A dictionary with information about the constraints evaluations and violations.
         '''
 
@@ -443,11 +470,18 @@ class Quadrotor(BaseAviary):
         super()._advance_simulation(rpm, disturb_force)
         # Standard Gym return.
         obs = self._get_observation()
+        # _get_done BEFORE _get_reward: it is what sets goal_reached and
+        # out_of_bounds, and Cost.SPARSE reads both. Run the other way round
+        # they are a step stale. Behaviour-neutral for rl_reward and quadratic,
+        # neither of which reads those flags -- the golden rollout fixtures and
+        # the dataset-slice oracles pin that.
+        terminated = self._get_done()
         rew = self._get_reward()
-        done = self._get_done()
+        truncated = False
         info = self._get_info()
-        obs, rew, done, info = super().after_step(obs, rew, done, info)
-        return obs, rew, done, info
+        obs, rew, terminated, truncated, info = super().after_step(
+            obs, rew, terminated, truncated, info)
+        return obs, rew, terminated, truncated, info
 
     def render(self, mode='human'):
         '''Retrieves a frame from PyBullet rendering.
@@ -714,7 +748,7 @@ class Quadrotor(BaseAviary):
 
         # Define obs space exposed to the controller.
         # Note how the obs space can differ from state space (i.e. augmented with the next reference states for RL)
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float64)
 
     def _setup_disturbances(self):
         '''Sets up the disturbances.'''
@@ -828,6 +862,8 @@ class Quadrotor(BaseAviary):
             reward (float): The evaluated reward/cost.
         '''
         # RL cost.
+        if self.COST == Cost.SPARSE:
+            return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:
             state = self.state
             act = np.asarray(self.current_noisy_physical_action)
@@ -872,10 +908,15 @@ class Quadrotor(BaseAviary):
         Returns:
             done (bool): Whether an episode is over.
         '''
-        # Done if goal reached for stabilization task with quadratic cost.
+        # Goal termination is the reach/stabilization distinction.
+        # terminate_on_goal True ends the episode on first entering the ball
+        # (reach); False lets it run, so holding position there is required
+        # (stabilization). goal_reached is set either way -- Cost.SPARSE reads
+        # it every step, which is what pays +1 per step held under
+        # stabilization and +1 once under reach.
         if self.TASK == Task.STABILIZATION:
             self.goal_reached = bool(np.linalg.norm(self.state - self.X_GOAL) < self.TASK_INFO['stabilization_goal_tolerance'])
-            if self.goal_reached:
+            if self.goal_reached and self.terminate_on_goal:
                 return True
 
         # Done if state is out-of-bounds.

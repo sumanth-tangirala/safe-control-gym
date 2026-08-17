@@ -240,7 +240,8 @@ class SAC(BaseController):
         while len(ep_returns) < n_episodes:
             action = self.select_action(obs=obs, info=info)
 
-            obs, _, done, info = env.step(action)
+            obs, _, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             if render:
                 env.render()
                 frames.append(env.render('rgb_array'))
