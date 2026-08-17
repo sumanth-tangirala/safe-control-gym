@@ -67,7 +67,36 @@ def shaped_reward(state, next_state, in_g_nom):
     return reward
 
 
-def sample_uniform_state(rng, max_init_tilt=None):
+def sampling_bounds_from_env(env):
+    '''Derive dataset-order sampling bounds from the env's OWN termination bounds.
+
+    CLAUDE.md requires a CLOSED state space: the initialized and achieved state
+    spaces must be identical. Hardcoding STATE_LOW/STATE_HIGH breaks that the
+    moment a caller overrides a termination bound (as the relaxed-limits arm
+    does for |x_dot|, |z_dot| and |theta_dot|) -- training would then sample a
+    strictly smaller box than it is allowed to reach, and the policy would never
+    see the fast states it must handle. Reading the bounds back off the env makes
+    the two impossible to desynchronise.
+
+    env state order  [x, x_dot, z, z_dot, theta, theta_dot]
+    dataset order    [x, z, theta, x_dot, z_dot, theta_dot]
+
+    theta is periodic and has an infinite termination bound, so it always samples
+    the full circle rather than tracking the env.
+    '''
+    space = getattr(env, 'state_space', None)
+    if space is None:
+        # No state_space (test doubles): fall back to the shipped closed state
+        # space. Real envs always have one, so this never silently narrows a
+        # relaxed-limits run.
+        return STATE_LOW.copy(), STATE_HIGH.copy()
+    lo, hi = space.low, space.high
+    low = np.array([lo[0], lo[2], -np.pi, lo[1], lo[3], lo[5]], dtype=float)
+    high = np.array([hi[0], hi[2], np.pi, hi[1], hi[3], hi[5]], dtype=float)
+    return low, high
+
+
+def sample_uniform_state(rng, max_init_tilt=None, bounds=None):
     '''Uniform over the closed state space (spec: training distribution).
 
     `max_init_tilt` (radians) optionally narrows the INITIAL theta range only.
@@ -82,7 +111,8 @@ def sample_uniform_state(rng, max_init_tilt=None):
     This narrows TRAINING only. Evaluation, calibration and dataset generation
     keep the full closed state space, so nothing downstream is affected.
     '''
-    state = rng.uniform(STATE_LOW, STATE_HIGH)
+    low, high = bounds if bounds is not None else (STATE_LOW, STATE_HIGH)
+    state = rng.uniform(low, high)
     if max_init_tilt is not None:
         state[2] = rng.uniform(-max_init_tilt, max_init_tilt)
     return state
@@ -144,6 +174,10 @@ class FlipTrainingEnv(gym.Wrapper):
         super().__init__(env)
         self.g_nom = g_nom
         self.max_init_tilt = max_init_tilt
+        # Closed state space: sample exactly what the env permits (see
+        # sampling_bounds_from_env). Must be read AFTER the caller has applied
+        # its termination bounds to env.state_space.
+        self.sampling_bounds = sampling_bounds_from_env(env)
         self.rng = np.random.default_rng(seed)
         self._state = None
         # 7-dim (spec D6): the env's native observation_space has the folded
@@ -152,7 +186,7 @@ class FlipTrainingEnv(gym.Wrapper):
         self.observation_space = ctrl1_observation_space(env)
 
     def reset(self, **kwargs):
-        init = sample_uniform_state(self.rng, self.max_init_tilt)
+        init = sample_uniform_state(self.rng, self.max_init_tilt, self.sampling_bounds)
         obs, info = set_initial_state(self.env, init)
         # state_from_env reads TRUE attitude for the reward/termination state
         # (Finding C1); ctrl1_observation is the SEPARATE 7-dim transform

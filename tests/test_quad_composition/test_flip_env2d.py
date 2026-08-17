@@ -131,7 +131,7 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
 
     fixed_init = np.array([0.1, 0.9, 0.2, 0.05, -0.05, 0.3])
     monkeypatch.setattr(flip_env2d, 'sample_uniform_state',
-                        lambda rng, max_init_tilt=None: fixed_init)
+                        lambda rng, max_init_tilt=None, bounds=None: fixed_init)
 
     # env order [x, x_dot, z, z_dot, theta, theta_dot]
     fake_obs = np.array([0.1, 0.05, 0.9, -0.05, 0.2, 0.3])
@@ -425,3 +425,29 @@ def test_capping_tilt_leaves_every_other_dimension_untouched():
         spread = capped[:, idx].max() - capped[:, idx].min()
         full = STATE_HIGH[idx] - STATE_LOW[idx]
         assert spread > 0.9 * full, f'dimension {idx} was narrowed along with theta'
+
+
+def test_sampling_bounds_track_the_envs_own_termination_bounds():
+    '''Closed state space (CLAUDE.md): initialized == achieved.
+
+    The relaxed-limits arm widens |x_dot|, |z_dot| and |theta_dot| on the env.
+    If sampling stayed pinned to the shipped STATE_LOW/STATE_HIGH, training
+    would draw from a strictly smaller box than it may reach and the policy
+    would never see the fast states it must handle.
+    '''
+    from quad_composition.flip_env2d import FlipTrainingEnv, G_NOM
+    from quad_composition.rollout2d import make_env
+    env = make_env()
+    for idx, (lo, hi) in {1: (-3.0, 3.0), 3: (-3.0, 3.0), 5: (-24.0, 24.0)}.items():
+        env.state_space.low[idx] = lo
+        env.state_space.high[idx] = hi
+    try:
+        wrapped = FlipTrainingEnv(env, G_NOM, seed=0)
+        low, high = wrapped.sampling_bounds
+        # dataset order [x, z, theta, x_dot, z_dot, theta_dot]
+        assert high[3] == 3.0 and low[3] == -3.0, 'x_dot sampling must follow termination'
+        assert high[4] == 3.0 and low[4] == -3.0, 'z_dot sampling must follow termination'
+        assert high[5] == 24.0 and low[5] == -24.0, 'theta_dot sampling must follow termination'
+        assert high[2] == pytest.approx(np.pi), 'theta is periodic: always the full circle'
+    finally:
+        env.close()
