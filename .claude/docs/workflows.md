@@ -284,8 +284,8 @@ cartpole entry points need `CP_DET_DIR` (holding `eval_states.txt`) and
 `docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md`.
 
 Amarel batch scripts for the whole pipeline live in `scripts/`:
-`sbatch_pendulum_{signal_sweep,signal_collection,alpha_sweep,external_sweep,external_collection,external_ab,external_pair}.sh`
-and `sbatch_cartpole_gauss_sweep.sh`,
+`sbatch_pendulum_external_pair.sh` (any pendulum level, ALPHA/BETA from env),
+`sbatch_cartpole_gauss_sweep.sh` and `sbatch_cartpole_gauss_collect.sh`,
 each taking `MODE=collect` then `MODE=finalize`.
 
 Flags worth knowing before launching:

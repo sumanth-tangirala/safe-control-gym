@@ -11,10 +11,12 @@
 
 # One (alpha, beta) pair of the external-torque pendulum family, full collection.
 #
-# Generalised from sbatch_pendulum_external_ab.sh, which hard-codes the three
-# published pairs. That script stays as the record of what those were; this one
-# takes ALPHA and BETA from the environment so a single extra level can be added
-# without editing a committed level list.
+# Takes ALPHA and BETA from the environment, so any pendulum level can be
+# collected without editing a level list. It replaces a set of per-campaign
+# scripts that each hard-coded their own levels; those were removed once their
+# collections were published, and what they ran is recorded in
+# .claude/docs/datasets.md and in each published level's description JSON, which
+# is the durable record.
 #
 #   ALPHA=0.2 BETA=1.0 sbatch scripts/sbatch_pendulum_external_pair.sh
 #   MODE=finalize ALPHA=0.2 BETA=1.0 bash scripts/sbatch_pendulum_external_pair.sh
