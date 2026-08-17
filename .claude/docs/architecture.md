@@ -301,6 +301,24 @@ sides of the `tau` sweep, so the class docstring, the JSON field `scale_is` and
 command sends the scale negative at `u = -0.637`, and the constructor rejects a
 negative `alpha` or `beta` for the same reason.
 
+### Cartpole reloads its robot on every reset
+
+`CartPole.reset()` calls `p.resetSimulation()`, which destroys the world, then
+rebuilds the body from a URDF. Until 2026-08-17 it rewrote that URDF every reset
+and ran with `enableFileCaching=0`, so PyBullet re-read it from disk each time —
+write, read, delete, per rollout, for a model that never changes when
+`randomized_inertial_prop` is False, which it is for every collection here. The
+randomization was behind the flag; the rewrite was not.
+
+Now the file is written once and cached when randomization is off, and `close()`
+removes it. Gated bit-exact: 540/540 trajectory hashes and labels identical.
+
+Measured honestly, this bought **no speedup** in our configuration — `reset()` is
+0.71 ms, 2% of a rollout, and `output_dir` is node-local `/tmp`. It matters only
+when `output_dir` is on NFS, where `compute.md` records a 15-45x penalty. The
+real cost of a cartpole rollout is `pyb_freq 5000` against `ctrl_freq 100`: 50
+simulator substeps per control step, 1.067 ms each, ~15x the pendulum's cost.
+
 ### Where an action disturbance sits relative to saturation
 
 The pendulum takes `external_action_disturbance` (default `False`), which

@@ -365,13 +365,35 @@ cells have been driven to a flat p = 0.
 Gains are **zero at every level**, for the reason in `glossary.md` under
 saturation placement.
 
-## External-torque pendulum datasets (`stochastic/`)
+## `gaussian_signal` — the standard stochastic family (`stochastic/`)
+
+**This is the canonical noise family for both pendulum and cartpole**
+[user, 2026-08-17]. `noisy_torque` and the state-additive presets are historical;
+prefer this one for new work and for anything a downstream model consumes.
 
 ```
-DATA_ROOT/stochastic/pendulum/gaussian_signal/lqr/a<alpha>_b<beta>/
+DATA_ROOT/stochastic/pendulum/gaussian_signal/lqr/{low,med,high}/
+DATA_ROOT/stochastic/cartpole/noisy_torque/lqr/{low,med,high}/   (uniform, being replaced)
 ```
 
-Collected 2026-08-15. Identical to the signal-dependent family in every respect
+| system | level | alpha | beta | mean p | interior | rescued | broken |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| pendulum | `low` | 0.05 | 0.16 | 0.3869 | 11.2% | 3,027 | 2,548 |
+| pendulum | `med` | 0.10 | 0.64 | 0.4067 | 64.6% | 25,191 | 6,955 |
+| pendulum | `high` | 0.20 | 1.00 | 0.5457 | 82.4% | 30,561 | 10,443 |
+
+Deterministic reference `noisy_torque/lqr/tau_0.00`, mean p 0.3860. Archived
+beside the published tree: `gaussian_signal/archive_alpha_0.008/` holds an
+earlier `alpha = 0.008` beta sweep.
+
+**Level names carry no parameters.** `low`/`med`/`high` [user, 2026-08-16],
+with the constants recorded in `README.md` beside the levels and in each
+description's `level_name` and `noise_model.parameters`. The earlier
+`a<alpha>_b<beta>` convention is gone from the published tree; before it, an
+even earlier run used `beta_<b>` with `alpha` implicit, which is the trap that
+motivated making both explicit in the first place.
+
+Collected 2026-08-15/16. Identical to the signal-dependent family in every respect
 **except where `w` is applied**:
 
 ```
@@ -412,18 +434,19 @@ deterministic ROA rather than an erosion of it. For a terminal-state consumer
 that removes a property the other families give for free: `p_success > 0` no
 longer implies the deterministic label was 1.
 
-**Only three levels are published**, the pairs above [user, 2026-08-15]. The
-family is named `gaussian_signal/` on disk — the noise law rather than the
-placement, which is recorded per level in `noise_model.placement`. Not published,
-still on cluster scratch: the four `beta_*` levels at `alpha = 0.008`
-(`beta` 0.16/0.64/1.00/1.40, eval p 0.3865/0.3961/0.4448/0.5793), the six
-pre-saturation `signal_dependent` levels, and the alpha x beta sweep.
+The family is named for the noise **law**, not the placement; the placement is
+recorded per level in `noise_model.placement`. Not published, still on cluster
+scratch: the six pre-saturation `signal_dependent` levels and the alpha x beta
+sweep.
 
-**Level naming carries both constants.** An earlier run used `beta_<b>` with
-`alpha` implicit at 0.008 — accurate while `alpha` was pinned, and a trap the
-moment it was not, since a reader comparing `beta_0.640` across two trees would
-silently be comparing different noise. `a<alpha>_b<beta>` is the surviving
-convention, applied to both families.
+**`high` behaves differently from the other two.** Every one of the 30,561
+deterministically-failing cells has `p > 0` and no cell on the grid reads a hard
+0, with rescued cells reaching p = 0.76. At `low` and `med` both rescued and
+broken are boundary cells — no rescued cell exceeds 0.9, no broken cell falls
+below 0.1 — so the boundary is blurred rather than moved. At `high` sigma also
+exceeds the motor's own authority (131% of `u_sat`), so it is informative as a
+probability field but is not a statement about the controller. Its description
+carries a `regime_note` saying so.
 
 **The published descriptions are enriched beyond what the collector writes.**
 Each level carries `noise_model` (style, equation, what alpha and beta each mean,
@@ -443,12 +466,67 @@ rather than controlled, and the descriptions carry the sigma-to-`u_sat` ratio so
 a reader can tell which side of that crossover a level is on.
 
 
+
+## `gaussian_signal` on cartpole
+
+Same law, same standard family, but the system differs from the pendulum in two
+ways that change what the parameters mean. Design and Amarel runbook:
+`docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md`.
+
+**Placement is inert here.** The cartpole LQR demands a median **0.27 N** against
+an `action_scale` of **2000 N** — p99 28.9, max 57.8, and it never saturates in
+16,494 measured steps. So `sat(u + w)` and `sat(u) + w` are the same function and
+the collector does not offer the switch. That absence is also *why* the published
+uniform cartpole family gains 743-911 cells under pre-saturation noise where the
+pendulum's gains nothing: the pendulum is saturated 70-98% of steps, and a
+saturated clip discards every positive draw. `action_scale = 2000` is inherited
+from the deterministic set and is not physically motivated; the clip would only
+begin binding near 10 N (3% of steps).
+
+**The action is on the cart and reaches the pole through `cos(theta)`.**
+Finite-differenced through the simulator: 1.46 rad/s^2 per N upright, 0.69 at 60
+degrees, 0.02 at 89 — tracking `cos(theta)` to a few percent, and vanishing with
+the pole horizontal. So constant force noise is *already* a state-dependent
+disturbance on the pole. Sign: positive force gives negative `theta_ddot`, the
+pole being driven by the cart accelerating out from under it.
+
+**`beta` needs a different scale.** On the pendulum `|u|` sits pinned at `u_sat`,
+so `beta ~ 1` is meaningful. On cartpole `|u|` is heavily skewed — median 0.27 N,
+p99 28.9 — so the same `beta` contributes ~0.02 N and does nothing, while
+`beta ~ 1` leaves the median untouched and multiplies the tail sevenfold. Levels
+are reduced to one knob by fixing the share of noise *variance* from the signal
+term at 50%, which against the measured `E|u| = 1.581`, `E[u^2] = 26.436` gives
+
+```
+beta = k,   alpha = 3.80 * k
+```
+
+`k = 0.635 / 0.873 / 1.429` deliver the same standard deviation as the published
+uniform `low`/`med`/`high` (sigma 8/11/18 = 4.62/6.35/10.39 N).
+
+**Matched variance is not matched difficulty.** Measured on 240 stratified cells
+at K = 10, the gaussian family is substantially gentler at every matched pairing:
+
+| k | gaussian p | uniform counterpart | uniform p |
+| --- | --- | --- | --- |
+| 0.635 | 0.4567 | `low` (sigma 8) | 0.3692 |
+| 0.873 | 0.3804 | `med` (sigma 11) | 0.2592 |
+| 1.429 | 0.1825 | `high` (sigma 18) | 0.1029 |
+
+24%, 47% and 77% more success, widening with strength, and it breaks fewer cells
+(63 against 109 at the `low` pairing). What kills a cartpole run is noise *at*
+the goal preventing entry into the 0.05 ball, and this family goes quiet exactly
+there. So **timing matters, not just variance** — which is the reason the family
+is worth having, and the reason a level set has to declare which of the two it
+matches.
+
+
 ## Unmatched-force datasets: quad3d, quad2d, and the cartpole re-collection
 
 ```
 DATA_ROOT/stochastic/quadrotor3D/noisy_dynamics/lqr/f_{0.000,0.032,0.048,0.060,0.072}/
 DATA_ROOT/stochastic/quadrotor2D/noisy_dynamics/rl/ f_{0.000,0.070,0.100,0.150,0.200}/
-DATA_ROOT/stochastic/cartpole/noisy_torque/lqr/     sigma_{0,6,8,11,18}/
+DATA_ROOT/stochastic/cartpole/noisy_torque/lqr/     {low,med,high}/  + archive/
 ```
 
 Collected 2026-08-14/15. Two mechanisms across the three:

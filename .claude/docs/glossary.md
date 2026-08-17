@@ -91,6 +91,28 @@ pendulum to sit inside the box still helps it stumble in, and stumbling in is al
 that counts. A dwell requirement would restore the turn. This is the clearest
 case on record of a label choice determining a result that looks physical.
 
+**Scale mixture.** What signal-dependent noise is: every draw has its own sigma,
+`w_t ~ Normal(0, alpha + beta*|u_t|)`. Its delivered standard deviation is
+therefore `sqrt(E[sigma^2])`, **not** `E[sigma]`, and with a heavy-tailed command
+the two diverge badly — measured on cartpole at `alpha = 0, beta = 2`, 10.76
+against 2.52, a factor of four. Quoting the mean sigma understates a level.
+
+**Matched variance vs matched difficulty.** Two ways to align a new noise family
+with an existing one, and they are not the same. Matching *variance* fixes
+`sqrt(E[sigma^2])`; matching *difficulty* fixes `p_success`. On cartpole,
+gaussian levels matched in variance to the uniform ones came out 24-77% easier
+(p 0.4567 vs 0.3692 at the `low` pairing, widening with strength), because what
+kills a run is noise at the goal and the signal-dependent family goes quiet
+there. A published level set must say which it matched.
+
+**Level naming.** Published levels are `low`/`med`/`high` [user, 2026-08-16] with
+the constants in a `README.md` beside them and in each description's `level_name`
+and `noise_model.parameters`. Two earlier conventions failed: `beta_<b>` with
+`alpha` implicit, which silently misleads once `alpha` varies, and
+`a<alpha>_b<beta>`, which is explicit but unreadable as a ladder. The rule that
+survives is that a name is either fully explicit or carries no parameters at all
+— never partially explicit.
+
 **Noise preset.** A named entry in `NOISE_PRESETS`
 (`safe_control_gym/envs/gym_control/pendulum_noise.py`), mirroring the source
 repo's Hydra config names: `<family>_<level>`, e.g. `truncated_gaussian_act_med`,

@@ -69,6 +69,35 @@ NFS, so it is not a safe default. The directory must exist: `reset` raises
 
 Applies to cartpole only; the quadrotors load a static URDF from the package.
 
+## Per-rollout cost differs 15x between systems
+
+Sizing a campaign from the pendulum's numbers underestimates cartpole badly.
+
+| | ctrl_freq | pyb_freq | substeps/step | horizon | cost per rollout |
+| --- | --- | --- | --- | --- | --- |
+| pendulum | 100 | 300 | 3 | 800 | ~0.07 core-s |
+| cartpole | 100 | 5000 | 50 | 1000 | ~1.07 core-s |
+
+Measured: a cartpole control step is 1.067 ms, `reset()` only 0.71 ms (2% of a
+rollout — it is not the URDF reload, which is the intuitive but wrong suspect).
+There is a second multiplier: a *noiseless* cartpole rollout averages 94 steps
+because it reaches the goal fast, while a noisy one runs far closer to the cap,
+so adding noise makes each rollout roughly 10x dearer on top of the 50 substeps.
+
+Consequence: three cartpole levels at K = 100 over its 116,242-cell grid is
+~10,400 core-hours, against ~700 for the equivalent pendulum campaign. Quote it
+as an upper bound — heavily-noised rollouts often die early on the out-of-bounds
+thresholds rather than timing out.
+
+## Inputs a cluster cannot see
+
+Amarel has its own filesystem and cannot read `/common/users/shared`, where the
+deterministic reference sets live. Any collector that compares against them must
+take a path override, and the files must be copied across first — quad3d needed
+this, and cartpole needs `CP_DET_DIR` plus `CP_SIGMA0`. The failure is loud
+(`eval_states.txt not found`) but identical on every array task, so it reads like
+a cluster fault rather than a missing input.
+
 ## A job that runs the wrong code
 
 Distinct from the failure modes below: the job runs, exits clean, and produces

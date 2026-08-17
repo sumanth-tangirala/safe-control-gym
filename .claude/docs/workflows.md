@@ -267,8 +267,25 @@ python pend_sig_validate.py gate       # alpha = beta = 0 reproduces tau_0.00
 python pend_sig_sweep.py 2000 20       # level sweep; SIG_EXTERNAL=1 for sat(u)+w
 ```
 
+Cartpole has the same family, without the placement switch (its LQR never
+saturates, so there is nothing for a placement to change):
+
+```bash
+python cp_collect.py --split {train,eval} --alpha A --beta B --trials 100 \
+    --shard S --nshards N --out <dir>/shard.npz
+python cp_gauss_sweep.py --config I --shard S --nshards N --out shard.npz
+python cp_gauss_sweep.py --merge --out-dir <dir>
+```
+
+`--alpha/--beta` and the uniform `--level` are mutually exclusive and the
+collector says so. On a cluster that cannot see the iLab filesystem, both
+cartpole entry points need `CP_DET_DIR` (holding `eval_states.txt`) and
+`CP_SIGMA0` (the deterministic labels) — see the runbook in
+`docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md`.
+
 Amarel batch scripts for the whole pipeline live in `scripts/`:
-`sbatch_pendulum_{signal_sweep,signal_collection,alpha_sweep,external_sweep,external_collection,external_ab}.sh`,
+`sbatch_pendulum_{signal_sweep,signal_collection,alpha_sweep,external_sweep,external_collection,external_ab,external_pair}.sh`
+and `sbatch_cartpole_gauss_sweep.sh`,
 each taking `MODE=collect` then `MODE=finalize`.
 
 Flags worth knowing before launching:

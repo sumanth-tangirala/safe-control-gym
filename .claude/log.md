@@ -1,7 +1,60 @@
 # Log
 
 Append-only, newest first. One entry per ingest, per filed query answer, per
-lint pass. Keep the `## [2026-08-15] ingest | signal-dependent and external-torque pendulum families; the placement result
+lint pass. Keep the `## [2026-08-17] ingest | gaussian_signal becomes the standard family; cartpole port
+
+`gaussian_signal` is now the canonical stochastic family for both pendulum and
+cartpole [user, 2026-08-17]. `noisy_torque` and the state-additive presets are
+historical. Pages updated to present it as the default rather than as the newest
+of several alternatives.
+
+**Published naming changed twice and has settled.** Both trees are now
+`low`/`med`/`high` [user, 2026-08-16], with constants in a `README.md` beside the
+levels and in each description's `level_name`. Pendulum: alpha 0.05/0.10/0.20,
+beta 0.16/0.64/1.00, mean p 0.3869/0.4067/0.5457. Cartpole: sigma 8/11/18.
+Non-published levels moved to `archive_alpha_0.008/` and `archive/`. The rule
+that survived two failed conventions: a level name is either fully explicit or
+carries no parameters at all, never partially explicit.
+
+**Cartpole port.** `cp_collect.build()` takes alpha/beta; `cp_gauss_sweep.py` and
+`sbatch_cartpole_gauss_sweep.sh` added; design and Amarel runbook in
+`docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md`.
+Three findings worth keeping:
+
+- **Placement is inert on cartpole.** Its LQR demands a median 0.27 N against a
+  2000 N `action_scale` and never saturates in 16,494 measured steps, so
+  sat(u + w) and sat(u) + w are the same function. That absence explains why the
+  published uniform cartpole family gains 743-911 cells under pre-saturation
+  noise where the pendulum's gains nothing.
+- **The action is on the cart and reaches the pole through cos(theta)**, measured
+  1.46 rad/s^2 per N upright falling to 0.02 at 89 degrees. Constant force noise
+  is therefore already state-dependent on the pole.
+- **Matched variance is not matched difficulty.** Gaussian levels matched in
+  delivered std to the uniform ones came out 24/47/77% easier, widening with
+  strength, because what kills a run is noise at the goal and this family goes
+  quiet there. A level set has to declare which it matched.
+
+**Corrections to my own reasoning, both measured rather than argued.** I claimed
+beta was inert on cartpole; it is inert only at pendulum-scale values, because
+|u| there is skewed (median 0.27 N, p99 28.9) rather than uniformly small. And I
+blamed cartpole's slowness on the per-reset URDF rewrite; the profile refuted it
+-- reset is 2% of a rollout. The real cost is pyb_freq 5000 giving 50 simulator
+substeps per control step, ~15x the pendulum per rollout. The URDF caching fix
+landed anyway (bit-exact, 540/540 hashes) but is honestly recorded as buying no
+speedup outside NFS.
+
+New glossary entries: scale mixture and why delivered std is sqrt(E[sigma^2])
+rather than E[sigma] (they differ 4x at alpha = 0); matched variance vs matched
+difficulty; level naming.
+
+Pages touched: `datasets.md`, `glossary.md`, `architecture.md`, `workflows.md`,
+`compute.md`, `INDEX.md`.
+
+Not yet done: the cartpole family is specced and smoke-tested but not collected
+-- it is intended to run on a collaborator's own Amarel allocation. The level
+criterion (matched variance or matched difficulty) is still open.
+
+## [2026-08-15] ingest | signal-dependent and external-torque pendulum families; the placement result
 
 Two new pendulum families collected and one library capability added, plus a
 result that corrects a claim this wiki has been carrying.
