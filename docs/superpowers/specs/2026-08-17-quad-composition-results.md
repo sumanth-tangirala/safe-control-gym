@@ -52,6 +52,38 @@ SO(3) sampling essentially never starts inside it.
 
 Reproduce: `analyze_quad3d_composition.py`; result in `results/quad3d_composition.json`.
 
+### Caveat: the magnitude depends on `G1`, so never quote it alone
+
+Non-subsumption is substantially a measure of **how loose `G1` is**. Sweeping `G1` and scoring
+each on what actually matters (n=400 paired, selected controller):
+
+| `G1` | S1 | **S1→S2** | S1→F2 | non-subsumption |
+|---|---|---|---|---|
+| `G_NOM_3D` (10°, 4) | 40.8% | 33.2% | 7.5% | **0.184** |
+| exit q0.50 (34.7°, 7.6) | 49.2% | 28.5% | 20.8% | 0.421 |
+| exit q0.75 (93°, 19) | 68.0% | 13.8% | 54.2% | 0.798 |
+| exit q0.90 — **spec D1** (123°, 28) | 86.0% | 9.0% | 77.0% | **0.895** |
+| tightened 20°/6 | 45.5% | 33.0% | 12.5% | 0.275 |
+| tightened 15°/5 | 44.2% | **34.8%** | 9.5% | 0.215 |
+
+So 0.195 is a property of *(system, `G1`)*, not of the system alone. The qualitative claim
+survives — every sensible attitude-only region lands in 0.18–0.28, and `G_NOM_3D` was fixed a
+priori rather than tuned — but **always report the (`G1`, non-subsumption, S1→S2) triple
+together.** A loose `G1` yields a more dramatic 0.895 while the composition collapses to 9%
+end-to-end; that is a weaker result presented as a stronger one.
+
+### Spec D1's calibration procedure should be withdrawn
+
+D1 sets `G1` from a high quantile of controller 1's exit attitudes. Tested fairly — calibrated
+from the *selected* controller, not the weak geometric one — it yields `tilt_c = 123.45°`,
+`w_c = 28.06` rad/s (which exceeds the ±24 rate bound, admitting any rate).
+
+The exit quantiles show why: p50 34.7°, p75 93.2°, p90 123.4°. The policy genuinely improves
+attitude (median best-attitude 34.7° vs ~90° uncontrolled), but a **high quantile of a
+distribution that includes the ~57% of rollouts that fail is dominated by failures, not by
+deliveries.** The procedure is monotonically harmful in this system: no quantile beats a plain
+a-priori region. If retained at all, it must fit on successful rollouts only.
+
 ### Replicated on an independent seed
 
 The headline initially rested on one seed. Re-drawn:
