@@ -395,6 +395,14 @@ def build_parser():
     parser.add_argument('--max_steps', type=int, default=MAX_STEPS)
     parser.add_argument('--ctrl1_path', default='models/quad3d_ctrl1_selected.pt')
     parser.add_argument('--output', default='results/quad3d_composition.json')
+    # Non-subsumption is a property of (system, G1), not of the system alone -- it rises
+    # monotonically as G1 loosens (0.184 nominal -> 0.895 at the 90th percentile of the
+    # controller's exit distribution). So G1 must be reportable alongside the figure, and
+    # therefore settable. Defaults to G_NOM_3D, the region the delivered videos use.
+    parser.add_argument('--g1_tilt_deg', type=float, default=None,
+                        help='Override G1 tilt_c in degrees (default: G_NOM_3D, 10.03).')
+    parser.add_argument('--g1_w_c', type=float, default=None,
+                        help='Override G1 w_c in rad/s (default: G_NOM_3D, 4.0).')
     return parser
 
 
@@ -405,6 +413,10 @@ def main(argv=None):
                          'least 1500 initial states')
 
     g1 = G_NOM_3D
+    if args.g1_tilt_deg is not None or args.g1_w_c is not None:
+        g1 = G1Region(
+            tilt_c=(np.radians(args.g1_tilt_deg) if args.g1_tilt_deg is not None else G_NOM_3D.tilt_c),
+            w_c=(args.g1_w_c if args.g1_w_c is not None else G_NOM_3D.w_c))
     t0 = time.time()
     jobs = sample_jobs(args.seed, args.num_states)
     print(f'{len(jobs)} initial states sampled (seed={args.seed}), full SO(3) attitude '
