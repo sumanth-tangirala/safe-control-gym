@@ -68,10 +68,23 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Matches train_rl_controller.py's set_seed_from_config. Without it the
-    # network initialisation is only seeded incidentally, by make_env_fn's
-    # per-worker torch.manual_seed(seed + rank) during make_vec_envs, which
-    # leaves weight init pinned to whichever rank happened to be built last.
+    # Matches train_rl_controller.py's set_seed_from_config, and seeds the
+    # global random/numpy/torch state from process start.
+    #
+    # It does NOT control network initialisation, despite running before
+    # make('sac', ...). SAC.__init__ calls make_vec_envs first, and
+    # DummyVecEnv builds all rollout_batch_size workers eagerly; each one's
+    # make_env_fn thunk reseeds all three global RNGs to seed + rank. So by
+    # the time SACAgent.__init__ initialises weights, the torch RNG is at
+    # seed + rollout_batch_size - 1, not args.seed -- verified empirically:
+    # for --seed S the checkpoint's weights are exactly those produced by
+    # torch.manual_seed(S + 3), and are NOT reproduced by manual_seed(S).
+    # --seed does still vary runs, via that same seed + rank path.
+    #
+    # The call is kept anyway: it is the repo's convention, it covers
+    # anything drawing on the global RNGs before make_vec_envs (and any
+    # future path that does not route through the vec-env workers), and
+    # dropping it is an untested behavioural change for no gain.
     set_seed(args.seed)
 
     # Ruling D-C: SAC_CONFIG comes from rollout2d (Task 2's verified copy of
