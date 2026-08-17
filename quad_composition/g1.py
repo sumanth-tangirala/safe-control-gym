@@ -42,3 +42,18 @@ def attitude_2d(states):
     '''(|theta|, |theta_dot|) from dataset-order [x, z, theta, x_dot, z_dot, theta_dot].'''
     s = np.atleast_2d(np.asarray(states, dtype=float))
     return np.abs(s[:, 2]), np.abs(s[:, 5])
+
+
+def fit_from_exits(tilts, omegas, quantile=0.9):
+    '''Fit G1 to controller 1's measured exit attitudes (spec D1 step 2).
+
+    (tilt_c, w_c) are quantiles of what controller 1 actually delivers -- the
+    tightest attitude region it hits reliably.  RoA2 is deliberately not an
+    argument to this function: if it were, G1 would be fitted to the answer.
+    '''
+    tilts = np.abs(np.asarray(tilts, dtype=float))
+    omegas = np.abs(np.asarray(omegas, dtype=float))
+    if tilts.size == 0 or omegas.size == 0:
+        raise ValueError('no exits to calibrate from')
+    return G1Region(tilt_c=float(np.quantile(tilts, quantile)),
+                    w_c=float(np.quantile(omegas, quantile)))

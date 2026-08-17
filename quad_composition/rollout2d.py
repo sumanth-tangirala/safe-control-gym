@@ -152,16 +152,29 @@ def _normalized_dataset_row(state):
             float(x_dot), float(z_dot), float(theta_dot)]
 
 
+def make_env(seed=None):
+    '''Build the 2D quadrotor env alone, with TERMINATION bounds applied and
+    no controller loaded.
+
+    Factored out of `make_env_and_ctrl2` so callers that need an env but not
+    controller 2 -- e.g. G1 calibration, which must not load controller 2 at
+    all (spec D1) -- do not have to load and immediately discard it just to
+    get an env instance.
+    '''
+    env = make('quadrotor', seed=seed, **ENV_CONFIG)
+    for idx, (lo, hi) in TERMINATION.items():
+        env.state_space.low[idx] = lo
+        env.state_space.high[idx] = hi
+    return env
+
+
 def make_env_and_ctrl2(model_path, output_dir):
     '''Build the env and load controller 2 (safe_explorer_ppo) unmodified.'''
     env_func = partial(make, 'quadrotor', **ENV_CONFIG)
     ctrl2 = make('safe_explorer_ppo', env_func, **ALGO_CONFIG, output_dir=output_dir)
     ctrl2.load(model_path)
     ctrl2.obs_normalizer.set_read_only()
-    env = env_func()
-    for idx, (lo, hi) in TERMINATION.items():
-        env.state_space.low[idx] = lo
-        env.state_space.high[idx] = hi
+    env = make_env()
     return env, ctrl2
 
 
