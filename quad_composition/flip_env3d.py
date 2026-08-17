@@ -124,14 +124,18 @@ def random_rotation_quat(rng):
     return -q if q[0] < 0.0 else q
 
 
-def capped_tilt_quat(rng, max_tilt):
-    '''A random rotation whose TILT is uniform on [0, max_tilt], with uniform
-    azimuth and uniform yaw about the body z axis.
+def capped_tilt_quat(rng, max_tilt, min_tilt=0.0):
+    '''A random rotation whose TILT is uniform on [min_tilt, max_tilt], with
+    uniform azimuth and uniform yaw about the body z axis.
 
-    Used only when training is asked to narrow the initial attitude range; the
-    uncapped case uses `random_rotation_quat` (true uniform SO(3)).
+    Used when training is asked to narrow the initial attitude range (the
+    uncapped case uses `random_rotation_quat`, true uniform SO(3)), and by
+    `evaluate_geometric_flip3d.py` to draw a single tilt BAND -- which is what
+    `min_tilt` is for.  Note this is uniform in tilt, NOT uniform on the
+    spherical cap: bucketed evaluation wants equal weight per degree of tilt,
+    not the cap's sin-weighting toward the equator.
     '''
-    polar = float(rng.uniform(0.0, max_tilt))
+    polar = float(rng.uniform(min_tilt, max_tilt))
     az = float(rng.uniform(0.0, 2.0 * np.pi))
     yaw = float(rng.uniform(0.0, 2.0 * np.pi))
     # Tilt world-z by `polar` about the horizontal axis at azimuth `az + pi/2`,
