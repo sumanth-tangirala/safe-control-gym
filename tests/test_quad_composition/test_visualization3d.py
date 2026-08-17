@@ -477,8 +477,6 @@ def test_parse_args_requires_no_g1_and_no_ctrl2_model():
 # ---------------------------------------------------------------------------
 
 def test_poses_from_states_matches_set_initial_state_convention():
-    import pybullet as p
-
     from visualize_quad3d_composition import poses_from_states
 
     # 90 deg about body x: wxyz = [cos45, sin45, 0, 0].
@@ -593,6 +591,10 @@ def test_main_runs_for_real_end_to_end_and_writes_non_empty_mp4s(tmp_path):
         '--output_dir', str(output_dir), '--categories', 'F1',
         '--num_per_category', '1', '--max_steps', '50', '--max_attempts', '10',
         '--seed', '0', '--width', '160', '--height', '120',
+        # The shipped MIN_CLIP_STATES['F1'] needs hundreds of attempts to hit;
+        # relax it (and the candidate pool) so 10 attempts still produce a real
+        # video, which is the whole point of this test.
+        '--min_clip_states', 'F1=3', '--pool_per_category', '2',
     ])
 
     assert summary['categories']['F1']['found'] >= 0  # ran without raising either way
@@ -603,3 +605,321 @@ def test_main_runs_for_real_end_to_end_and_writes_non_empty_mp4s(tmp_path):
         assert (output_dir / 'F1' / 'rollout_000_tilt.png').exists()
         assert (output_dir / 'F1' / 'rollout_000.json').exists()
     assert (output_dir / 'summary.json').exists()
+
+
+# ---------------------------------------------------------------------------
+# clip_for_category / clip-length selection
+#
+# The two defects these cover, both from the first cut of the deliverable:
+# clips 10-16 frames long, and the S1 set showing the same three flights as
+# the S1_to_F2 set.
+# ---------------------------------------------------------------------------
+
+def _tilted_row(i, tilt_rad):
+    '''`_row` rotated by `tilt_rad` about body x, so initial_tilt_deg is
+    exactly `degrees(tilt_rad)`.
+    '''
+    return _row(i, qw=float(np.cos(tilt_rad / 2)), qx=float(np.sin(tilt_rad / 2)))
+
+
+def test_clip_for_category_s1_stops_at_the_handoff_and_the_others_do_not():
+    from visualize_quad3d_composition import clip_for_category
+
+    trajectory = [_row(i) for i in range(500)]
+    result = make_result(True, True, handoff_index=11, trajectory=trajectory)
+
+    s1_states, _ = clip_for_category('S1', result)
+    full_states, marker = clip_for_category('S1_to_S2', result)
+
+    # THE defect: selecting on len(trajectory) would rate this rollout 500
+    # states long while the 'S1' video it produces is 12.
+    assert len(s1_states) == 12
+    assert len(full_states) == 500
+    assert marker == 11
+
+
+def test_clip_for_category_f1_has_no_handoff_to_mark():
+    from visualize_quad3d_composition import clip_for_category
+
+    result = make_result(False, False, handoff_index=-1, trajectory=[_row(i) for i in range(9)])
+    states, marker = clip_for_category('F1', result)
+
+    assert len(states) == 9
+    assert marker is None
+
+
+def test_min_clip_states_filters_on_the_rendered_clip_not_the_whole_rollout():
+    '''A 500-state S1->S2 rollout whose handoff fires at step 11 is long
+    enough for the 'S1_to_S2' video and far too short for the 'S1' one. The
+    filter must reach that conclusion per category.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    long_tail = make_result(True, True, handoff_index=11,
+                            trajectory=[_row(i) for i in range(500)])
+    late_handoff = make_result(True, True, handoff_index=99,
+                               trajectory=[_row(i) for i in range(500)])
+    outcomes = [long_tail, late_handoff]
+    calls = {'n': 0}
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        res = outcomes[calls['n'] % len(outcomes)]
+        calls['n'] += 1
+        return res
+
+    recorded, _ = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['S1', 'S1_to_S2'], num_per_category=1, max_steps=10, max_attempts=6,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
+        min_clip_states={'S1': 50, 'S1_to_S2': 50}, disjoint_sets=None)
+
+    assert len(recorded['S1']) == 1
+    assert recorded['S1'][0][1] is late_handoff, 'the 12-state S1 clip must be rejected'
+    assert len(recorded['S1_to_S2']) == 1
+
+
+def test_sample_and_classify_keeps_the_two_video_sets_disjoint():
+    '''Every sampled rollout here is S1 + S1_to_F2, i.e. eligible for a slot
+    in BOTH sets. The recorded S1 clips and the recorded S1_to_F2 clips must
+    still come from different rollouts -- the first cut shipped the same three.
+    '''
+    from visualize_quad3d_composition import DISJOINT_SETS, disjointness_report, sample_and_classify
+
+    made = []
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        res = make_result(True, False, handoff_index=40,
+                          trajectory=[_row(i) for i in range(200)])
+        made.append(res)
+        return res
+
+    recorded, _ = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['S1', 'S1_to_F2'], num_per_category=3, max_steps=10, max_attempts=50,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
+        disjoint_sets=DISJOINT_SETS, pool_per_category=10)
+
+    assert len(recorded['S1']) == 3
+    assert len(recorded['S1_to_F2']) == 3
+    s1_ids = {id(r.trajectory) for _, r in recorded['S1']}
+    f2_ids = {id(r.trajectory) for _, r in recorded['S1_to_F2']}
+    assert not (s1_ids & f2_ids), 'the S1 set and the S1->F2 set share a rollout'
+
+    report = disjointness_report(recorded, [['S1'], ['S1_to_F2']])
+    assert report['disjoint'] is True
+    assert report['overlaps'] == []
+
+
+def test_disjointness_report_flags_a_reused_rollout():
+    '''The check must be able to FAIL -- a report that always says "disjoint"
+    would have passed on the broken first cut too.
+    '''
+    from visualize_quad3d_composition import disjointness_report
+
+    shared = make_result(True, False, handoff_index=4)
+    recorded = {'S1': [(_row(0), shared)], 'S1_to_F2': [(_row(0), shared)]}
+
+    report = disjointness_report(recorded, [['S1'], ['S1_to_F2']])
+
+    assert report['disjoint'] is False
+    assert report['overlaps'][0]['shared_rollouts'] == 1
+
+
+def test_sample_and_classify_prefers_the_highest_initial_tilt():
+    '''A bigger flip is both a longer clip and the more interesting picture,
+    so among candidates that pass the length filter the highest initial tilts
+    win -- not simply the first ones sampled.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    tilts = [10.0, 170.0, 30.0, 120.0, 5.0]
+    calls = {'n': 0}
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        tilt = np.radians(tilts[calls['n'] % len(tilts)])
+        calls['n'] += 1
+        return make_result(False, False, handoff_index=-1,
+                           trajectory=[_tilted_row(i, tilt) for i in range(60)])
+
+    recorded, _ = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['F1'], num_per_category=2, max_steps=10, max_attempts=5,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout,
+        prefer_high_tilt=True, pool_per_category=5)
+
+    from quad_composition.rollout3d import QUAT_SLICE, tilt_from_quat_wxyz
+    picked = sorted(float(np.degrees(tilt_from_quat_wxyz(np.asarray(r.trajectory[0])[QUAT_SLICE])))
+                    for _, r in recorded['F1'])
+    assert picked == pytest.approx([120.0, 170.0], abs=1e-6)
+
+
+def test_sample_and_classify_defaults_still_stream_and_share_rollouts():
+    '''With none of the new options the old behaviour must survive exactly:
+    one rollout fills both 'S1' and its subdivision, from a single attempt.
+    '''
+    from visualize_quad3d_composition import sample_and_classify
+
+    def fake_rollout(env, ctrl1, ctrl2, g1, init_state, max_steps):
+        return make_result(True, True, handoff_index=0)
+
+    recorded, attempts = sample_and_classify(
+        None, None, None, None, np.random.default_rng(0),
+        categories=['S1', 'S1_to_S2'], num_per_category=1, max_steps=10, max_attempts=10,
+        sample_fn=lambda rng: _row(0), rollout_fn=fake_rollout)
+
+    assert attempts == 1
+    assert recorded['S1'][0][1] is recorded['S1_to_S2'][0][1]
+
+
+# ---------------------------------------------------------------------------
+# playback_plan / capture-vs-playback rate
+# ---------------------------------------------------------------------------
+
+def test_playback_plan_leaves_a_long_category_at_real_time():
+    from visualize_quad3d_composition import playback_plan
+
+    results = [(_row(0), make_result(True, True, handoff_index=20,
+                                     trajectory=[_row(i) for i in range(500)]))]
+
+    plan = playback_plan('S1_to_S2', results, ctrl_freq=100, fps=30, min_clip_seconds=3.0)
+
+    assert plan['treated'] is False
+    assert plan['capture_fps'] == plan['playback_fps'] == 30
+    assert plan['slowdown'] == 1.0
+    assert plan['reason'] is None
+
+
+def test_playback_plan_slows_a_short_category_and_records_why():
+    '''F1 clips end when the drone leaves the box -- often well under a
+    second of real time. The plan must slow them down, and must say so rather
+    than silently stretching the clip.
+    '''
+    from visualize_quad3d_composition import playback_plan
+
+    results = [(_row(0), make_result(False, False, handoff_index=-1,
+                                     trajectory=[_row(i) for i in range(45)]))]
+
+    plan = playback_plan('F1', results, ctrl_freq=100, fps=30, min_clip_seconds=3.0)
+
+    assert plan['treated'] is True
+    assert plan['capture_fps'] == 100, 'must capture every simulated state, not interpolate'
+    assert plan['playback_fps'] < 30
+    assert plan['slowdown'] > 1.0
+    assert plan['shortest_clip_states'] == 45
+    assert '45 states' in plan['reason']
+    # 45 frames at the planned rate must clear the floor.
+    assert 45 / plan['playback_fps'] >= 3.0 - 1e-9
+
+
+def test_playback_plan_never_drops_below_the_playback_floor():
+    '''A 3-state clip cannot reach the target at any watchable frame rate; the
+    plan must clamp rather than emit a 1 fps slideshow.
+    '''
+    from visualize_quad3d_composition import MIN_PLAYBACK_FPS, playback_plan
+
+    results = [(_row(0), make_result(False, False, handoff_index=-1,
+                                     trajectory=[_row(i) for i in range(3)]))]
+
+    plan = playback_plan('F1', results, ctrl_freq=100, fps=30, min_clip_seconds=3.0)
+
+    assert plan['playback_fps'] == MIN_PLAYBACK_FPS
+
+
+def test_playback_plan_uses_the_shortest_selected_clip():
+    '''One short clip in the category is enough to require the treatment --
+    all three videos in a category share a timing so they read as a set.
+    '''
+    from visualize_quad3d_composition import playback_plan
+
+    results = [
+        (_row(0), make_result(True, True, handoff_index=20,
+                              trajectory=[_row(i) for i in range(500)])),
+        (_row(0), make_result(True, True, handoff_index=20,
+                              trajectory=[_row(i) for i in range(40)])),
+    ]
+
+    plan = playback_plan('S1_to_S2', results, ctrl_freq=100, fps=30, min_clip_seconds=3.0)
+
+    assert plan['shortest_clip_states'] == 40
+    assert plan['treated'] is True
+
+
+def test_record_rollout_writes_the_playback_rate_not_the_capture_rate(tmp_path, monkeypatch):
+    '''Slow motion only exists because these two rates are separate: capture
+    at 100 Hz, write the file at 20 fps. Passing one rate for both makes the
+    stride and the frame rate cancel and every clip plays at real time.
+    '''
+    import visualize_quad3d_composition as m
+
+    calls = {}
+
+    def fake_render_frames(poses, handoff_frame_index, ctrl_freq=None, fps=None, width=None,
+                           height=None, urdf_path=None):
+        calls['render_fps'] = fps
+        calls['render_poses_len'] = len(poses)
+        return [np.zeros((4, 4, 3), dtype=np.uint8)] * 12
+
+    def fake_save_video(frames, path, fps):
+        calls['save_fps'] = fps
+        with open(path, 'wb') as fh:
+            fh.write(b'fake-mp4-bytes')
+
+    monkeypatch.setattr(m, 'render_frames', fake_render_frames)
+    monkeypatch.setattr(m, 'save_video', fake_save_video)
+    monkeypatch.setattr(m, 'plot_tilt_and_trajectory',
+                        lambda states, path, success, handoff_index=None:
+                        open(path, 'w').write('x'))
+
+    result = make_result(True, True, handoff_index=3, trajectory=[_row(i) for i in range(7)])
+    sidecar = m.record_rollout('S1_to_S2', 0, _row(0), result, str(tmp_path),
+                               fps=100, ctrl_freq=100, playback_fps=20)
+
+    assert calls['render_fps'] == 100
+    assert calls['save_fps'] == 20
+    assert sidecar['capture_fps'] == 100
+    assert sidecar['playback_fps'] == 20
+    assert sidecar['num_video_frames'] == 12
+    assert sidecar['video_seconds'] == pytest.approx(12 / 20)
+
+
+def test_record_rollout_hold_is_counted_in_finished_frames(tmp_path, monkeypatch):
+    '''The hold is specified in seconds OF VIDEO. Appending `hold_seconds *
+    fps` poses (the old code) loses all but one in `frame_skip` of them to the
+    capture stride, so a nominal 0.6 s hold at 30 fps against a 100 Hz sim
+    actually lasted 0.2 s. It must be scaled by the stride.
+    '''
+    import visualize_quad3d_composition as m
+
+    calls = {}
+    _patch_rendering(monkeypatch, calls)
+
+    result = make_result(False, False, handoff_index=-1, trajectory=[_row(i) for i in range(10)])
+    m.record_rollout('F1', 0, _row(0), result, str(tmp_path),
+                     fps=30, ctrl_freq=100, playback_fps=30, hold_seconds=0.6)
+
+    # 18 output frames of hold * stride 3 = 54 appended poses, on top of 10.
+    assert calls['render_poses_len'] == 10 + 54
+
+
+def test_parse_args_defaults_enforce_both_quality_fixes():
+    from visualize_quad3d_composition import MIN_CLIP_STATES, parse_args
+
+    args = parse_args(['--output_dir', '/tmp/x'])
+
+    assert args.min_clip_states == MIN_CLIP_STATES
+    assert args.no_disjoint_sets is False
+    assert args.no_prefer_high_tilt is False
+    assert args.pool_per_category > args.num_per_category
+    assert args.min_clip_seconds > 0
+
+
+def test_parse_args_min_clip_states_is_parseable_and_validated():
+    from visualize_quad3d_composition import parse_args
+
+    args = parse_args(['--output_dir', '/tmp/x', '--min_clip_states', 'S1=7,F1=9'])
+    assert args.min_clip_states == {'S1': 7, 'F1': 9}
+
+    with pytest.raises(SystemExit):
+        parse_args(['--output_dir', '/tmp/x', '--min_clip_states', 'NOPE=7'])
+    with pytest.raises(SystemExit):
+        parse_args(['--output_dir', '/tmp/x', '--min_clip_states', 'garbage'])
