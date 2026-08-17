@@ -1,13 +1,110 @@
 # Cartpole gaussian_signal: design and Amarel runbook
 
 **Date:** 2026-08-17
-**Status:** ready to run — levels chosen, see "Collect these three"
-**Scope:** `cp_collect.py`, `cp_gauss_sweep.py`, `scripts/sbatch_cartpole_gauss_sweep.sh`,
+**Status:** SUPERSEDED below — the levels in "Collect these three" are wrong and
+must not be collected. See "2026-08-17 revision" for what replaces them.
+**Scope:** `cp_collect.py`, `cp_gauss_sweep.py`, `cp_interior_sweep.py`,
+`scripts/sbatch_cartpole_gauss_sweep.sh`,
+`scripts/sbatch_cartpole_interior_sweep.sh`,
 `safe_control_gym/envs/gym_control/cartpole.py`
 
 A cartpole stochastic family whose noise scale grows with the commanded force,
 the counterpart to the pendulum's `gaussian_signal`. Intended to be run on Amarel
 by someone with the full 6720-core allocation.
+
+---
+
+## 2026-08-17 revision: two findings that invalidate the sections below
+
+**1. The env could not step at all.** `cartpole.py::_get_reward` branched on
+`Cost.SHAPED_DMC` and `Cost.SHAPED`, and `inverted_pendulum.py` on
+`Cost.SHAPED`, as the *first* test in the function. Neither member existed in
+the enum, so the attribute lookup raised `AttributeError: SHAPED_DMC` on every
+step of every rollout, in every cost mode including the `quadratic` this
+collection uses. `_shaped_reward()` is defined on no branch in this
+repository's history.
+
+Fixed: `SHAPED_DMC` added to the enum (`_shaped_dmc_reward()` is fully
+implemented, so the dispatch was the only missing piece); the `SHAPED` branches
+removed from both envs. The gate then reproduces the deterministic labels 58/58.
+
+Note the implication for "What the smoke test already showed": that table cannot
+have been produced by this commit. Its numbers are from a checkout that predates
+the breakage, which is the stale-checkout hazard `.claude/docs/compute.md`
+documents.
+
+**2. The chosen levels do not deliver the variance they claim.** The calibration
+rests on `E|u| = 1.581`, `E[u^2] = 26.436`. Measured over 25,845 control steps
+of the noiseless LQR on 320 uniformly-drawn cells of the actual eval grid:
+
+| | spec | measured | ratio |
+| --- | --- | --- | --- |
+| `E|u|` | 1.581 | 6.234 | 3.94x |
+| `E[u^2]` | 26.436 | 552.975 | 20.92x |
+| p50 | 0.27 | 0.526 | |
+| p99 | 28.9 | 137.6 | |
+
+Since delivered std is `sqrt(alpha^2 + 2*alpha*beta*E|u| + beta^2*E[u^2])`, the
+three levels deliver **3.41x** their target — 15.7 / 21.6 / 35.4 N against the
+intended 4.62 / 6.35 / 10.39 N. The ratio is identical across levels because
+both constants scale with `k`, which is a self-consistency check on the
+measurement. Confirmed end to end: instrumenting the disturbance during real
+rollouts gives 13.6 / 17.4 / 24.3 N on a smaller sample, while the uniform
+family measures 4.64 / 6.39 / 10.50 N on the same cells — exactly as claimed,
+because its noise is state-independent.
+
+### What replaces it: match the pendulum's uncertainty band
+
+The requirement is no longer "same variance as the uniform cartpole levels" but
+"same *noisiness* as the pendulum `gaussian_signal` set" — the separatrix blur
+that makes those `p_success` fields look the way they do. The measurable form of
+that is the **interior fraction**: cells with `0 < p < 1` at K = 100.
+
+From `stochastic/pendulum/gaussian_signal/lqr/README.md`, reproduced exactly
+from each level's `eval_success_prob.npz`:
+
+| level | alpha | beta | interior | mean p |
+| --- | --- | --- | --- | --- |
+| low | 0.05 | 0.16 | 11.2% | 0.3869 |
+| med | 0.10 | 0.64 | 64.6% | 0.4067 |
+| high | 0.20 | 1.00 | 82.4% | 0.5457 |
+
+Those three numbers are the targets. `cp_interior_sweep.py` searches for the
+cartpole `(alpha, beta)` that hit them, and
+`scripts/sbatch_cartpole_interior_sweep.sh` runs it.
+
+Two things it does differently from `cp_gauss_sweep.py`:
+
+- **Uniform sampling, not stratified.** Interior is a whole-grid rate; the 50/50
+  stratification by deterministic label over-represents the boundary, which is
+  where interior cells are, so its interior number is not comparable to the
+  pendulum's.
+- **The ratio `alpha/beta` is swept, not assumed.** It sets the character:
+  `alpha` is all that survives at the goal. Variance-matching forces
+  `alpha = 3.80*beta`, which makes `alpha` dominate everywhere but the tail —
+  i.e. nearly constant noise, discarding the one property that distinguishes
+  this family. At the median command (0.53 N) a pendulum-like balance wants
+  `alpha ~ 0.27*beta`. The sweep covers 0.27, 1.00 and 3.80 so the choice is
+  read off measurements rather than assumed.
+
+Levels are therefore **not yet chosen**, and the sweep is a prerequisite again,
+not optional confirmation.
+
+### Also corrected in the runbook
+
+- `--cpus-per-task=64` is wrong for `main-redhat`, which is heterogeneous:
+  excluding `halk*` it holds 44 nodes of 32 cores, 50 of 40, 48 of 52 and 198 of
+  64. Pinning 64 makes an array schedulable on 58% of the partition. Use
+  `--exclusive` and size the pool from `nproc`; the collectors already read
+  `sched_getaffinity`.
+- The sbatch scripts hardcoded `/home/dm1487` for the repo, interpreter, log
+  directory and scratch root, so every array task failed immediately for any
+  other account. Now `CP_REPO`/`PYTHON` with per-user defaults.
+- `CP_SIGMA0` is required by `sbatch_cartpole_gauss_collect.sh` but never read
+  by `cp_collect.py`; only `cp_gauss_sweep.py` uses it. Copying `sigma_0.npz` is
+  needed for the old sweep, not for collection.
+
+---
 
 ## Collect these three
 
