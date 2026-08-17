@@ -22,7 +22,7 @@ import tempfile
 
 import numpy as np
 
-from quad_composition.flip_env2d import sample_uniform_state
+from quad_composition.flip_env2d import potential, sample_uniform_state
 from quad_composition.g1 import fit_from_exits
 from quad_composition.rollout2d import load_ctrl1, make_env, set_initial_state, state_from_obs
 
@@ -31,10 +31,11 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
     '''Roll out controller 1 from uniform initial states and record each
     rollout's best-attained attitude (spec D1 step 2).
 
-    "Best" means the state with the lowest attitude score
-    (|theta|/pi + |theta_dot|/8) seen along the rollout, i.e. controller 1's
-    closest approach to upright-and-still within `settle_steps` ticks -- the
-    same normalized potential `flip_env2d.potential` descends. A rollout that
+    "Best" means the state maximizing `flip_env2d.potential` (equivalently,
+    minimizing |theta|/TILT_SCALE + |theta_dot|/RATE_SCALE) seen along the
+    rollout -- controller 1's closest approach to upright-and-still within
+    `settle_steps` ticks, scored by the exact potential it was trained to
+    climb, not a separately maintained copy of its constants. A rollout that
     terminates (`done`) contributes its best state up to that point; a
     rollout that takes zero steps (`settle_steps == 0`) contributes nothing.
 
@@ -50,9 +51,9 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
             action = ctrl1.select_action(ctrl1.obs_normalizer(obs), info)
             obs, _, done, info = env.step(action)
             state = state_from_obs(obs)
-            score = abs(state[2]) / np.pi + abs(state[5]) / 8.0
-            if best is None or score < best[0]:
-                best = (score, abs(state[2]), abs(state[5]))
+            phi = potential(state)
+            if best is None or phi > best[0]:
+                best = (phi, abs(state[2]), abs(state[5]))
             if done:
                 break
         if best is not None:
