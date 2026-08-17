@@ -136,6 +136,62 @@ def test_non_subsumption_needs_at_least_one_handoff():
         non_subsumption(np.array([0, 0]), np.array([0, 0]))
 
 
+def test_non_subsumption_scales_to_the_real_sample_size_without_a_huge_allocation():
+    '''Finding I1: the interval used to be a bootstrap, drawing an
+    (n_boot, n_handoffs) index array. At this experiment's real scale --
+    10,000 draws over ~245,000 handoffs -- that is ~20 GB of int64, i.e. an
+    OOM at the very last step of a multi-week pipeline. The Wilson score
+    interval is closed-form and O(1) in memory.
+
+    tracemalloc is the assertion rather than a timing bound because it fails
+    for the right reason: a reintroduced bootstrap would blow the peak, not
+    merely be slow. The 50 MB budget is generous next to the handful of
+    megabytes the boolean mask itself needs, and tiny next to 20 GB.
+    '''
+    import tracemalloc
+
+    from analyze_quad2d_composition import non_subsumption
+
+    n = 500_000
+    rng = np.random.default_rng(0)
+    flip = np.ones(n, dtype=bool)
+    ctrl2 = rng.random(n) < 0.7        # built before tracing starts
+
+    tracemalloc.start()
+    try:
+        point, lo, hi = non_subsumption(flip, ctrl2)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 50 * 1024 * 1024, f'allocated {peak / 1e6:.0f} MB for n={n}'
+    assert point == pytest.approx(1.0 - ctrl2.mean())
+    assert lo <= point <= hi
+    # At half a million samples the interval is narrow, and Wilson is
+    # essentially centred on the point estimate.
+    assert hi - lo < 0.01
+
+
+def test_non_subsumption_interval_stays_inside_the_unit_interval_at_the_extremes():
+    '''The two regimes this experiment is designed to distinguish are p ~ 0
+    (G1 subsumed) and p ~ 1 (G1 disjoint) -- exactly where a Wald interval
+    misbehaves and can run outside [0, 1]. Wilson must not.
+    '''
+    from analyze_quad2d_composition import non_subsumption
+
+    all_succeeded = np.ones(40, dtype=bool)
+    point, lo, hi = non_subsumption(np.ones(40, dtype=bool), all_succeeded)
+    assert point == pytest.approx(0.0)
+    assert 0.0 <= lo <= hi <= 1.0
+    assert hi > 0.0, 'a zero-count interval must still have width'
+
+    none_succeeded = np.zeros(40, dtype=bool)
+    point, lo, hi = non_subsumption(np.ones(40, dtype=bool), none_succeeded)
+    assert point == pytest.approx(1.0)
+    assert 0.0 <= lo <= hi <= 1.0
+    assert lo < 1.0
+
+
 def test_composed_gain_is_paired_over_shared_initial_states():
     from analyze_quad2d_composition import composed_gain
     baseline = np.array([0, 0, 1, 0])

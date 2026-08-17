@@ -51,6 +51,7 @@ width:
 
 import argparse
 import json
+import math
 import os
 
 import numpy as np
@@ -60,18 +61,39 @@ from generate_quadrotor_2d_composition import validate_labels
 BASELINE_DATASET_NAME = 'Quadrotor-2D baseline trajectories (regenerated)'
 
 
-def non_subsumption(flip_success, ctrl2_success, n_boot=10000, seed=0):
-    '''(point estimate, lo, hi) of 1 - P(ctrl2 succeeds | handoff fired).'''
+# Two-sided 95% normal quantile, for the Wilson interval below.
+Z_95 = 1.959963984540054
+
+
+def non_subsumption(flip_success, ctrl2_success, z=Z_95):
+    '''(point estimate, lo, hi) of 1 - P(ctrl2 succeeds | handoff fired).
+
+    The interval is a WILSON SCORE interval, not a bootstrap. This quantity is
+    a plain Bernoulli proportion over the handoff rows, so a closed form is
+    both exact enough and free; the bootstrap this replaced allocated an
+    (n_boot, n_handoffs) index array, which at the real scale (10,000 draws
+    over ~245,000 handoffs) is ~20 GB and would have OOMed at the final step
+    of a multi-week pipeline. It is O(1) memory now, whatever the sample size.
+
+    Wilson rather than the textbook normal (Wald) interval because the
+    interesting regimes here are exactly the ones Wald handles worst: the
+    experiment's two failure modes are p near 0 (G1 subsumed by RoA2) and p
+    near 1 (G1 disjoint from it), where Wald's interval is badly miscentered
+    and can even run outside [0, 1]. Wilson stays inside [0, 1] and remains
+    sensible at k = 0 and k = n.
+    '''
     flip = np.asarray(flip_success).astype(bool)
     ctrl2 = np.asarray(ctrl2_success).astype(bool)
     handed = ctrl2[flip]
-    if handed.size == 0:
+    n = int(handed.size)
+    if n == 0:
         raise ValueError('no handoffs: cannot measure non-subsumption')
-    point = 1.0 - handed.mean()
-    rng = np.random.default_rng(seed)
-    draws = rng.integers(0, handed.size, size=(n_boot, handed.size))
-    boot = 1.0 - handed[draws].mean(axis=1)
-    return float(point), float(np.quantile(boot, 0.025)), float(np.quantile(boot, 0.975))
+
+    point = 1.0 - float(handed.mean())
+    denom = 1.0 + z * z / n
+    center = (point + z * z / (2 * n)) / denom
+    half = (z / denom) * math.sqrt(point * (1.0 - point) / n + z * z / (4 * n * n))
+    return point, max(0.0, center - half), min(1.0, center + half)
 
 
 def composed_gain(baseline_labels, composite_labels):
