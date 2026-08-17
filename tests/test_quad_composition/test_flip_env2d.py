@@ -6,6 +6,7 @@ import math
 import os
 import sys
 
+import gymnasium as gym
 import numpy as np
 import pybullet as p
 import pytest
@@ -106,6 +107,12 @@ class _AttitudeEnv:
     same observation as an upright one.
     '''
 
+    # Generic 6-dim bounds -- FlipTrainingEnv.__init__ reads this to build
+    # ctrl1_observation_space (spec D6); its actual values don't matter to
+    # any test here, only its presence and shape.
+    observation_space = gym.spaces.Box(low=np.full(6, -10.0), high=np.full(6, 10.0),
+                                       dtype=np.float32)
+
     def __init__(self, theta, theta_dot, done=False, info=None,
                  x=0.0, x_dot=0.0, z=1.0, z_dot=0.0):
         self.quat = _quat(theta)
@@ -139,6 +146,8 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
 
     class FakeEnv:
         quat = _quat(0.2)
+        observation_space = gym.spaces.Box(low=np.full(6, -10.0), high=np.full(6, 10.0),
+                                           dtype=np.float32)
 
     env = FakeEnv()
     wrapped = flip_env2d.FlipTrainingEnv(env, flip_env2d.G_NOM, seed=0)
@@ -146,7 +155,11 @@ def test_reset_samples_the_closed_state_space_and_delegates_to_set_initial_state
 
     assert calls['env'] is env
     np.testing.assert_array_equal(calls['init_state'], fixed_init)
-    assert obs is fake_obs
+    # Spec D6: reset() returns the 7-dim UNFOLDED observation (fake_obs's own
+    # theta, index 4, is discarded in favour of true attitude from env.quat),
+    # not fake_obs itself.
+    assert obs.shape == (7,)
+    np.testing.assert_allclose(obs, flip_env2d.ctrl1_observation(env, fake_obs))
     assert info is fake_info
     np.testing.assert_allclose(wrapped._state, flip_env2d.state_from_env(env, fake_obs))
 
@@ -162,8 +175,14 @@ def test_step_returns_shaped_reward_and_does_not_terminate_while_still_flying():
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
+    # state_from_env is computed on the env's raw obs (env._obs, i.e. what
+    # `self.env.step` actually returned), NOT on `obs` -- the wrapper's
+    # returned `obs` is now the 7-dim ctrl1_observation (spec D6), a
+    # different quantity with a different index layout.
+    next_state = np.asarray(flip_env2d.state_from_env(env, env._obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
+    assert obs.shape == (7,), 'controller 1 must receive the 7-dim unfolded observation'
+    np.testing.assert_allclose(obs, flip_env2d.ctrl1_observation(env, env._obs))
     assert reward == pytest.approx(expected)
     assert done is False
     assert info == {}
@@ -181,8 +200,10 @@ def test_step_terminates_on_g_nom_entry_even_when_the_env_itself_is_not_done():
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
+    # See the sibling test above for why this reads env._obs, not obs.
+    next_state = np.asarray(flip_env2d.state_from_env(env, env._obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=True)
+    assert obs.shape == (7,), 'controller 1 must receive the 7-dim unfolded observation'
     assert done is True, 'must terminate on G_nom entry even though the wrapped env is not done'
     assert reward == pytest.approx(expected)
     assert reward > flip_env2d.BONUS
@@ -229,8 +250,11 @@ def test_step_terminates_on_out_of_bounds_but_does_not_score_a_penalty():
 
     obs, reward, done, info = wrapped.step(np.zeros(2))
 
-    next_state = np.asarray(flip_env2d.state_from_env(env, obs), dtype=float)
+    # See test_step_returns_shaped_reward_and_does_not_terminate_while_still_flying
+    # for why this reads env._obs, not obs.
+    next_state = np.asarray(flip_env2d.state_from_env(env, env._obs), dtype=float)
     expected = flip_env2d.shaped_reward(state_before, next_state, in_g_nom=False)
+    assert obs.shape == (7,), 'controller 1 must receive the 7-dim unfolded observation'
     assert done is True, 'the episode must still end on out-of-bounds'
     assert reward == pytest.approx(expected), 'reward must be pure shaped_reward -- no OOB penalty term exists'
     assert not hasattr(flip_env2d, 'OOB_PENALTY'), 'OOB_PENALTY must be removed, not merely unused'

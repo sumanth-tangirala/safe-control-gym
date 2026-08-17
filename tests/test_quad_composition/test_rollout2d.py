@@ -363,13 +363,135 @@ def test_the_same_true_attitude_is_classified_identically_at_step_0_and_step_1(m
     assert handoff_for(3.0, 0.1) == 1, 'true theta 0.1 at step 1 must latch at 1'
 
 
+# ---------------------------------------------------------------------------
+# Spec D6: controller 1's observation is UNFOLDED. Ruling on the OPEN ITEM
+# flagged at the end of the C1/C2 fix wave (final-fix-report.md) -- folding
+# aliases true pitch t with sign(t)*pi - t, so an upright drone and an
+# inverted one present the identical raw observation while their dynamics
+# are opposite (thrust up vs thrust down). All real-env: every attitude bug
+# on this branch so far survived exactly because its tests used synthetic
+# state vectors, where the fold never happens.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.slow
+def test_ctrl1_observation_is_7d_and_cos_sin_matches_true_attitude():
+    '''`ctrl1_observation` must be 7-dim, with the folded theta element (env
+    index 4) replaced by (cos(true_theta), sin(true_theta)) and the other
+    five elements unchanged in their existing positions. Swept over both
+    signs and past the fold boundary (|theta| > pi/2), through the real env.
+    '''
+    from quad_composition.rollout2d import ctrl1_observation, make_env, set_initial_state
+
+    env = make_env(seed=0)
+    try:
+        for theta in (0.5, 2.0, 3.0, -3.0):
+            obs, _ = set_initial_state(env, [0.0, 1.0, theta, 0.0, 0.0, 0.0])
+            obs7 = ctrl1_observation(env, obs)
+
+            assert obs7.shape == (7,)
+            assert obs7[4] == pytest.approx(math.cos(theta), abs=1e-3), f'cos mismatch at theta={theta}'
+            assert obs7[5] == pytest.approx(math.sin(theta), abs=1e-3), f'sin mismatch at theta={theta}'
+            # The other five elements (x, x_dot, z, z_dot, theta_dot) are
+            # unchanged and keep their positions.
+            np.testing.assert_allclose(obs7[[0, 1, 2, 3]], np.asarray(obs)[[0, 1, 2, 3]])
+            assert obs7[6] == pytest.approx(obs[5])
+            # cos^2 + sin^2 == 1 to tight tolerance (obs7 is float32, whose
+            # machine epsilon is ~1.19e-7, so 1e-6 is tight relative to the
+            # dtype rather than an arbitrary loosening).
+            assert obs7[4] ** 2 + obs7[5] ** 2 == pytest.approx(1.0, abs=1e-6), \
+                f'cos^2+sin^2 != 1 at theta={theta}'
+    finally:
+        env.close()
+
+
+@pytest.mark.slow
+def test_ctrl1_observation_distinguishes_upright_from_inverted():
+    '''The whole point of spec D6. On the RAW folded observation, an upright
+    drone (true theta 0.05) and a nearly-inverted one (true theta pi - 0.05)
+    are almost indistinguishable -- both observe theta ~ 0.05 (asserted below,
+    non-vacuously). `ctrl1_observation` must tell them apart: this fails on
+    the pre-fix code, which handed the policy the raw (folded) obs unchanged.
+    '''
+    from quad_composition.rollout2d import ctrl1_observation, make_env, set_initial_state, state_from_obs
+
+    env = make_env(seed=0)
+    try:
+        # ctrl1_observation reads env.quat -- the env's CURRENT state -- not
+        # something embedded in `obs`, so it must be called immediately after
+        # the set_initial_state call that produced that obs, exactly as
+        # rollout_composite/FlipTrainingEnv/collect_exit_attitudes all do.
+        # Deferring it past the second set_initial_state call below would
+        # read both "up" and "down" off the SAME (latest) env.quat -- the
+        # very same class of step-0-vs-step-N mixup as Finding C2.
+        obs_up, _ = set_initial_state(env, [0.0, 1.0, 0.05, 0.0, 0.0, 0.0])
+        up7 = ctrl1_observation(env, obs_up)
+        folded_up = state_from_obs(obs_up)[2]
+
+        obs_down, _ = set_initial_state(env, [0.0, 1.0, math.pi - 0.05, 0.0, 0.0, 0.0])
+        down7 = ctrl1_observation(env, obs_down)
+        folded_down = state_from_obs(obs_down)[2]
+
+        # Not vacuous: the RAW folded observations are nearly identical.
+        assert folded_up == pytest.approx(folded_down, abs=1e-3)
+
+        assert not np.allclose(up7, down7, atol=1e-2), \
+            'controller 1 must see upright and inverted as different observations'
+        # cos flips sign between upright and (nearly) inverted -- the
+        # discriminating feature the folded observation could never carry.
+        assert up7[4] > 0.9
+        assert down7[4] < -0.9
+    finally:
+        env.close()
+
+
+@pytest.mark.slow
+def test_act_ctrl1_and_act_ctrl2_feed_different_observations_on_the_real_env():
+    '''`_act_ctrl1` must feed controller 1 the 7-dim unfolded observation;
+    `_act_ctrl2` must feed controller 2 the SAME raw obs the env actually
+    produced, byte-for-byte -- exactly 6 dims, folded theta untouched. Real
+    env so the folded theta is genuine PyBullet output, not a value nobody's
+    Euler-angle solver ever computed.
+    '''
+    from quad_composition.rollout2d import _act_ctrl1, _act_ctrl2, make_env, set_initial_state
+
+    class RecordingCtrl:
+        def obs_normalizer(self, obs):
+            return obs
+
+        def select_action(self, obs, info):
+            self.seen = np.array(obs, dtype=float)
+            return np.zeros(2)
+
+    env = make_env(seed=0)
+    try:
+        obs, info = set_initial_state(env, [0.1, 0.9, 3.0, 0.05, -0.05, 0.3])
+
+        ctrl1, ctrl2 = RecordingCtrl(), RecordingCtrl()
+        _act_ctrl1(env, ctrl1, obs, info)
+        _act_ctrl2(ctrl2, obs, info)
+
+        assert ctrl1.seen.shape == (7,), 'controller 1 must receive the 7-dim unfolded observation'
+        assert ctrl2.seen.shape == (6,), 'controller 2 must receive exactly 6 dims'
+        np.testing.assert_array_equal(ctrl2.seen, np.asarray(obs, dtype=float))
+    finally:
+        env.close()
+
+
 @pytest.mark.slow
 def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeypatch):
     '''Construction smoke test only: controller 1 has no trained checkpoint
     yet (a later task trains and exercises it), so this stops short of an
     actual `.load()` against a real file.
+
+    Spec D6: controller 1's network must be sized to the 7-dim
+    `ctrl1_observation_space`, not the raw env's native 6-dim one, and
+    `select_action` must actually run against a real 7-dim observation
+    computed from the real env -- otherwise a checkpoint trained under
+    `train_quadrotor_2d_flip.py` (which wraps the SAME 7-dim space via
+    `FlipTrainingEnv`) would fail to load with a shape mismatch the first
+    time anyone tried it.
     '''
-    from quad_composition.rollout2d import ENV_CONFIG, load_ctrl1
+    from quad_composition.rollout2d import ENV_CONFIG, ctrl1_observation, load_ctrl1, set_initial_state
     from safe_control_gym.controllers.sac.sac import SAC
     from safe_control_gym.utils.registration import make
 
@@ -381,6 +503,13 @@ def test_load_ctrl1_smoke_builds_a_sac_controller_against_the_shared_env(monkeyp
             ctrl1 = load_ctrl1('unused/path.pt', env, tmp)
             assert isinstance(ctrl1, SAC)
             assert ctrl1.obs_normalizer.read_only is True
+            assert ctrl1.env.observation_space.shape == (7,), \
+                "controller 1's network must be sized to the 7-dim observation space"
+
+            obs, info = set_initial_state(env, [0.0, 1.0, 2.0, 0.0, 0.0, 0.0])
+            action = ctrl1.select_action(ctrl1.obs_normalizer(ctrl1_observation(env, obs)), info)
+            assert action.shape == env.action_space.shape
+
             ctrl1.close()
         finally:
             env.close()

@@ -65,12 +65,27 @@ CONTROLLER 2 IS NOT AFFECTED: it keeps receiving the env's native folded
 observation, exactly as it was trained and exactly as the shipped baseline
 was generated. Changing its input would redefine its region of attraction
 and invalidate every comparison against that baseline.
+
+CONTROLLER 1'S OBSERVATION IS ALSO UNFOLDED (spec D6, ruled on after the C1/C2
+fix wave -- see .superpowers/sdd/2026-08-16-quad2d-composition/final-fix-
+report.md's "OPEN ITEM"). Folding aliases true pitch t with sign(t)*pi - t,
+so an upright drone and an inverted one present the IDENTICAL raw
+observation while their dynamics are opposite -- controller 1 would be
+asked to learn a flip on a POMDP where the two states it most needs to
+distinguish are indistinguishable. Its observation is therefore the env's
+native 6-dim obs with the folded theta element replaced by
+`(cos(true_theta), sin(true_theta))`, a 7-dim vector with no discontinuity
+anywhere on the circle. See `ctrl1_observation` / `ctrl1_observation_space`.
+Every place controller 1 acts goes through this: `flip_env2d.FlipTrainingEnv`
+at training time, `_act_ctrl1` (used by `rollout_composite`) and
+`calibrate_quad2d_g1.collect_exit_attitudes` at inference/calibration time.
 '''
 
 import math
 from dataclasses import dataclass
 from functools import partial
 
+import gymnasium as gym
 import numpy as np
 import pybullet as p
 
@@ -253,6 +268,53 @@ def state_from_env(env, obs):
     return state
 
 
+def ctrl1_observation(env, obs):
+    '''Controller 1's observation (spec D6): the env's native 6-dim obs
+    `[x, x_dot, z, z_dot, theta, theta_dot]` with the GIMBAL-FOLDED theta
+    element (index 4) REPLACED by `(cos(true_theta), sin(true_theta))` --
+    true attitude read off the rotation matrix (Finding C1, `true_theta`),
+    not PyBullet's folded pitch. The other five elements are UNCHANGED and
+    keep their existing positions.
+
+    Layout (7-dim): `[x, x_dot, z, z_dot, cos(theta_true), sin(theta_true),
+    theta_dot]`. See `ctrl1_observation_space` for the matching Box.
+
+    Why: folding aliases true pitch `t` with `sign(t)*pi - t`, so an upright
+    drone and an inverted one present the IDENTICAL raw observation while
+    their dynamics are opposite (thrust up vs thrust down) -- controller 1
+    was being trained on a POMDP where the two states it most needs to tell
+    apart are indistinguishable. `(cos, sin)` has no discontinuity anywhere
+    on the circle, including at the fold's branch point.
+
+    CONTROLLER 1 ONLY -- see `_act_ctrl1`. Controller 2 must keep receiving
+    `obs` untouched -- see `_act_ctrl2` -- or its region of attraction is
+    redefined and comparability with the shipped baseline is destroyed.
+    '''
+    obs = np.asarray(obs, dtype=np.float32)
+    theta = true_theta(env)
+    return np.array([obs[0], obs[1], obs[2], obs[3],
+                     math.cos(theta), math.sin(theta), obs[5]], dtype=np.float32)
+
+
+def ctrl1_observation_space(env):
+    '''`gymnasium.spaces.Box` matching `ctrl1_observation`'s shape (7,) and
+    layout, derived from `env`'s own native observation_space bounds for
+    every element carried through unchanged, with the folded-theta bound
+    replaced by cos/sin's exact `[-1, 1]` range.
+
+    Used both to build `flip_env2d.FlipTrainingEnv.observation_space` (so
+    SAC sizes controller 1's TRAINING-time network correctly) and, at
+    inference time, by `load_ctrl1` to build the same-shaped env
+    `make('sac', ...)` sizes controller 1's network from. A mismatch
+    between the two is a `load_state_dict` size error at best and a silent
+    misinterpretation of the checkpoint's weights at worst.
+    '''
+    low, high = env.observation_space.low, env.observation_space.high
+    obs_low = np.array([low[0], low[1], low[2], low[3], -1.0, -1.0, low[5]], dtype=np.float32)
+    obs_high = np.array([high[0], high[1], high[2], high[3], 1.0, 1.0, high[5]], dtype=np.float32)
+    return gym.spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
+
+
 def _normalized_dataset_row(state):
     '''dataset order [x, z, theta, x_dot, z_dot, theta_dot] with theta
     normalized to [-pi, pi], matching what state_from_env produces for every
@@ -297,14 +359,43 @@ def make_env_and_ctrl2(model_path, output_dir):
     return env, ctrl2
 
 
+class _Ctrl1ObservationSpaceEnv(gym.Wrapper):
+    '''Advertises `ctrl1_observation_space` (7-dim, spec D6) over an
+    otherwise-untouched env.
+
+    Exists ONLY so `make('sac', ...)` sizes controller 1's actor/critic
+    networks and `obs_normalizer` to the shape it was trained on. It is
+    never reset or stepped in this codebase's eval-only rollout path:
+    `rollout_composite` steps the SHARED underlying env directly and feeds
+    controller 1 `ctrl1_observation(env, obs)` itself (see `_act_ctrl1`),
+    not anything produced by this wrapper. If that ever changes, note that
+    `.reset()`/`.step()` here (inherited from `gym.Wrapper`) return the
+    env's NATIVE 6-dim obs unchanged -- this wrapper does not itself
+    compute the 7-dim view, only advertise its shape/bounds.
+    '''
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.observation_space = ctrl1_observation_space(env)
+
+
 def load_ctrl1(flip_model_path, env, output_dir):
     '''Build and load controller 1 (SAC) against an already-built, shared env.
 
-    `lambda **kw: env` is used instead of an env-constructing partial because
-    SAC's runner may call `env_func(seed=...)`; the lambda swallows any
-    kwargs and always hands back the one shared env instance (Ruling D-D).
+    `lambda **kw: ctrl1_env` is used instead of an env-constructing partial
+    because SAC's runner may call `env_func(seed=...)`; the lambda swallows
+    any kwargs and always hands back the one shared, wrapped env instance
+    (Ruling D-D).
+
+    `env` is wrapped in `_Ctrl1ObservationSpaceEnv` before being handed to
+    `make('sac', ...)`, so SAC's constructor reads the 7-dim
+    `ctrl1_observation_space` (spec D6) -- matching the network the
+    checkpoint at `flip_model_path` was trained with -- rather than `env`'s
+    native 6-dim observation_space, which controller 1 was never trained
+    against.
     '''
-    ctrl1 = make('sac', lambda **kw: env, **SAC_CONFIG, output_dir=output_dir)
+    ctrl1_env = _Ctrl1ObservationSpaceEnv(env)
+    ctrl1 = make('sac', lambda **kw: ctrl1_env, **SAC_CONFIG, output_dir=output_dir)
     ctrl1.load(flip_model_path)
     ctrl1.obs_normalizer.set_read_only()
     return ctrl1
@@ -339,8 +430,23 @@ class RolloutResult:
     ctrl2_success: bool     # composite reached the goal ball under ctrl2
 
 
-def _act(ctrl, obs, info):
-    return ctrl.select_action(ctrl.obs_normalizer(obs), info)
+def _act_ctrl1(env, ctrl1, obs, info):
+    '''Feed controller 1 the SAME 7-dim unfolded observation it saw during
+    training (spec D6; see `ctrl1_observation`,
+    `flip_env2d.FlipTrainingEnv`). Feeding it the raw `obs` here would hand
+    it a distribution it never trained on.
+    '''
+    return ctrl1.select_action(ctrl1.obs_normalizer(ctrl1_observation(env, obs)), info)
+
+
+def _act_ctrl2(ctrl2, obs, info):
+    '''Feed controller 2 its native, UNCHANGED 6-dim folded observation --
+    exactly what it was trained on and what generated the shipped baseline.
+    Deliberately does not take `env`: there is no true-attitude computation
+    on this path, by construction, so this function cannot accidentally
+    grow one.
+    '''
+    return ctrl2.select_action(ctrl2.obs_normalizer(obs), info)
 
 
 def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
@@ -368,7 +474,14 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
     theta, so the same physical state was classified two different ways
     depending on when it was seen -- and a nearly-inverted drone (true theta
     3.0 -> folded 0.1416) triggered a spurious handoff on step 1.
-    Controller 2 is unaffected: `_act` still hands it the untouched `obs`.
+    Controller 2 is unaffected: `_act_ctrl2` still hands it the untouched
+    `obs`.
+
+    CONTROLLER 1'S OBSERVATION (spec D6): `_act_ctrl1` feeds controller 1 the
+    same 7-dim `(x, x_dot, z, z_dot, cos(theta_true), sin(theta_true),
+    theta_dot)` observation it was trained on (`ctrl1_observation`) -- never
+    the raw folded `obs`. This must match `flip_env2d.FlipTrainingEnv`
+    exactly, or controller 1 sees a distribution it never trained on.
     '''
     obs, info = set_initial_state(env, init_state)
     trajectory = [_normalized_dataset_row(init_state)]
@@ -386,7 +499,12 @@ def rollout_composite(env, ctrl1, ctrl2, g1, init_state, max_steps=MAX_STEPS):
 
     ctrl2_success = False
     for step in range(max_steps):
-        action = _act(ctrl2 if latched else ctrl1, obs, info)
+        # Two separate, differently-shaped helpers rather than one
+        # branch on the same call: _act_ctrl1 REQUIRES env (it computes true
+        # attitude); _act_ctrl2 does not accept one. Swapping which
+        # controller gets which treatment is a TypeError, not a silent bug.
+        action = (_act_ctrl2(ctrl2, obs, info) if latched
+                  else _act_ctrl1(env, ctrl1, obs, info))
         obs, _, done, info = env.step(action)
         state = state_from_env(env, obs)
         trajectory.append(state)

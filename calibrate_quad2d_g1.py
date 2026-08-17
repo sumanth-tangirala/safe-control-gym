@@ -24,7 +24,8 @@ import numpy as np
 
 from quad_composition.flip_env2d import potential, sample_uniform_state
 from quad_composition.g1 import fit_from_exits
-from quad_composition.rollout2d import load_ctrl1, make_env, set_initial_state, state_from_env
+from quad_composition.rollout2d import (ctrl1_observation, load_ctrl1, make_env, set_initial_state,
+                                        state_from_env)
 
 
 def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
@@ -47,13 +48,19 @@ def collect_exit_attitudes(env, ctrl1, rng, num_rollouts, settle_steps):
     gimbal-folded observation theta (Finding C1). Fitting G1 to folded exits
     would fit it to a distribution structurally capped at pi/2, and would
     score a fully inverted exit as a perfect one.
+
+    Controller 1 is fed `ctrl1_observation(env, obs)` here, the same 7-dim
+    unfolded observation it was trained on (spec D6) and that
+    `rollout2d._act_ctrl1` feeds it at composition-rollout time -- not the
+    raw folded `obs`, which its network was never trained against and, since
+    `load_ctrl1` now sizes it to 7 dims, is the wrong shape besides.
     '''
     tilts, omegas = [], []
     for _ in range(num_rollouts):
         obs, info = set_initial_state(env, sample_uniform_state(rng))
         best = None
         for _ in range(settle_steps):
-            action = ctrl1.select_action(ctrl1.obs_normalizer(obs), info)
+            action = ctrl1.select_action(ctrl1.obs_normalizer(ctrl1_observation(env, obs)), info)
             obs, _, done, info = env.step(action)
             state = state_from_env(env, obs)
             phi = potential(state)

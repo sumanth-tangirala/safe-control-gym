@@ -10,7 +10,8 @@ import gymnasium as gym
 import numpy as np
 
 from quad_composition.g1 import G1Region
-from quad_composition.rollout2d import normalize_angle, set_initial_state, state_from_env
+from quad_composition.rollout2d import (ctrl1_observation, ctrl1_observation_space, normalize_angle,
+                                        set_initial_state, state_from_env)
 
 # Nominal training target.  This is NOT the G1 that triggers handoff -- that is
 # calibrated later from measured exits (spec D1 step 2) and may be looser.
@@ -87,20 +88,29 @@ class FlipTrainingEnv(gym.Wrapper):
     (`rollout2d.state_from_env`), not on the env's gimbal-folded observation
     theta (Finding C1 -- see `potential`).
 
-    OPEN ITEM, deliberately NOT changed here: the OBSERVATION handed to the
-    policy is still the env's native folded one. Folding aliases true pitch t
-    with sign(t)*pi - t, so an upright drone and an inverted one can present
-    the identical observation while their dynamics are opposite (thrust up vs
-    thrust down). Controller 1 therefore trains on an aliased, partially
-    observed attitude. The fix dispatch that introduced `state_from_env`
-    ruled explicitly on which four decisions must use true attitude (G1
-    membership, the flip reward/potential, G_nom termination, G1 calibration)
-    and on leaving CONTROLLER 2's observation alone; it did not rule on
-    controller 1's observation, and unfolding it is a real design change (new
-    observation semantics for the training env, and a matching change to what
-    `rollout2d.rollout_composite` feeds ctrl1 at eval time). No controller-1
-    checkpoint has been trained yet, so nothing is invalidated by deferring
-    it -- but it must be ruled on before the 1M-step training run is launched.
+    OBSERVATION (spec D6, ruling on the open item flagged after the C1/C2 fix
+    wave -- see .superpowers/sdd/2026-08-16-quad2d-composition/final-fix-
+    report.md's "OPEN ITEM" section): the policy does NOT see the env's
+    native folded observation. Folding aliases true pitch t with
+    sign(t)*pi - t, so an upright drone and an inverted one would otherwise
+    present the identical observation while their dynamics are opposite
+    (thrust up vs thrust down) -- an unlearnable POMDP on exactly the
+    distinction controller 1 exists to make. Instead, `reset()`/`step()`
+    return `rollout2d.ctrl1_observation(env, obs)`: the env's native 6-dim
+    obs `[x, x_dot, z, z_dot, theta, theta_dot]` with the folded theta
+    element replaced by `(cos(true_theta), sin(true_theta))`, keeping the
+    other five elements unchanged and in their existing positions --
+
+        [x, x_dot, z, z_dot, cos(theta_true), sin(theta_true), theta_dot]
+
+    7-dim, matching `self.observation_space` (`rollout2d.
+    ctrl1_observation_space`). `rollout2d.rollout_composite` feeds
+    controller 1 the SAME transform at inference time via `_act_ctrl1`, and
+    `rollout2d.load_ctrl1` sizes controller 1's network to this same 7-dim
+    space -- all three must agree, or controller 1 sees a distribution it
+    never trained on. CONTROLLER 2's observation is untouched by any of this
+    (`rollout2d._act_ctrl2`) -- redefining it would redefine its region of
+    attraction and destroy comparability with the shipped baseline.
 
     Base class note (Ruling D-A/D-B): this codebase has no standalone `gym`
     package installed -- only `gymnasium`, imported as `gym` by every wrapper
@@ -119,19 +129,25 @@ class FlipTrainingEnv(gym.Wrapper):
         self.g_nom = g_nom
         self.rng = np.random.default_rng(seed)
         self._state = None
+        # 7-dim (spec D6): the env's native observation_space has the folded
+        # theta bound in its place. Built from `env`, not hardcoded, so this
+        # always matches whatever quadrotor config the caller wrapped.
+        self.observation_space = ctrl1_observation_space(env)
 
     def reset(self, **kwargs):
         init = sample_uniform_state(self.rng)
         obs, info = set_initial_state(self.env, init)
+        # state_from_env reads TRUE attitude for the reward/termination state
+        # (Finding C1); ctrl1_observation is the SEPARATE 7-dim transform
+        # (spec D6) returned to the policy -- see this class's docstring.
         self._state = np.asarray(state_from_env(self.env, obs), dtype=float)
-        return obs, info
+        return ctrl1_observation(self.env, obs), info
 
     def step(self, action):
         obs, _, done, info = self.env.step(action)
         # state_from_env, not state_from_obs: the reward and the G_NOM
         # termination test must see TRUE attitude, not the env's gimbal-folded
-        # observation (Finding C1 -- see `potential`). `obs` itself is returned
-        # untouched, so the policy keeps its native observation.
+        # observation (Finding C1 -- see `potential`).
         next_state = np.asarray(state_from_env(self.env, obs), dtype=float)
         in_g_nom = bool(self.g_nom.contains(abs(next_state[2]), abs(next_state[5])))
         # Reward depends only on attitude (shaped_reward) and never on why
@@ -141,4 +157,6 @@ class FlipTrainingEnv(gym.Wrapper):
         # shaped_reward's docstring).
         reward = shaped_reward(self._state, next_state, in_g_nom)
         self._state = next_state
-        return obs, reward, bool(done or in_g_nom), info
+        # The policy receives the 7-dim unfolded observation (spec D6), not
+        # the raw `obs` -- see this class's docstring and `ctrl1_observation`.
+        return ctrl1_observation(self.env, obs), reward, bool(done or in_g_nom), info
