@@ -31,13 +31,14 @@
 # rollouts at ~1.07 core-seconds each.
 #
 # BEFORE SUBMITTING: this cluster cannot see the shared dataset root, so
-# CP_DET_DIR (holding eval_states.txt) and CP_SIGMA0 (the deterministic labels)
-# must both be set and the files copied across. Without them every task fails
-# identically with 'eval_states.txt not found', which reads like a node fault.
+# CP_DET_DIR (holding eval_states.txt) must be set and the file copied across.
+# Without it every task fails identically with 'eval_states.txt not found',
+# which reads like a node fault. CP_SIGMA0 is NOT needed here -- cp_collect.py
+# never reads it; only cp_gauss_sweep.py does.
 #
 #   sbatch --exclude="$(sinfo -p main-redhat -h -o '%n' | grep '^halk' \
 #            | sort -u | paste -sd, -)" \
-#          --export=ALL,CP_DET_DIR=$HOME/cpdet,CP_SIGMA0=$HOME/cpdet/sigma_0.npz \
+#          --export=ALL,CP_DET_DIR=$HOME/cpdet \
 #          scripts/sbatch_cartpole_gauss_collect.sh
 #
 # Shards are idempotent -- an existing --out is skipped -- so a partial run can
@@ -62,7 +63,6 @@ export NPROC=${NPROC:-$(nproc)}
 PY=${PYTHON:-$HOME/miniforge3/envs/scg/bin/python}
 ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
 : "${CP_DET_DIR:?set CP_DET_DIR to the directory holding eval_states.txt}"
-: "${CP_SIGMA0:?set CP_SIGMA0 to the sigma_0 eval_success_prob.npz}"
 
 NAMES=(low med high)
 ALPHAS=(1.710 1.900 5.428)
