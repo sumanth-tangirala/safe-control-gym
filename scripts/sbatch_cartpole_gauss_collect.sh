@@ -4,7 +4,6 @@
 #SBATCH --account=general
 #SBATCH --nodes=1
 #SBATCH --exclusive
-#SBATCH --cpus-per-task=64
 #SBATCH --time=08:00:00
 #SBATCH --array=0-104
 #SBATCH --output=logs/cp_gcol_%A_%a.out
@@ -12,12 +11,18 @@
 # Full collection of the cartpole gaussian_signal family at the three chosen
 # levels. sigma = alpha + beta*|u| on the commanded cart force.
 #
-#   low    alpha 2.413  beta 0.635    delivered std  4.62 N
-#   med    alpha 3.317  beta 0.873                   6.35 N
-#   high   alpha 5.428  beta 1.429                  10.39 N
+#   low    alpha 1.710  beta 0.450    interior 0.1115   mean p 0.171
+#   med    alpha 1.900  beta 0.500    interior 0.1495   mean p 0.169
+#   high   alpha 5.428  beta 1.429    interior 0.2000   mean p 0.065
 #
-# Matched in delivered standard deviation to the published uniform levels
-# (sigma 8 / 11 / 18). See
+# Matched on the UNCERTAINTY BAND -- the fraction of eval cells with 0 < p < 1
+# at K=100 -- not on delivered variance. low reproduces the pendulum
+# gaussian_signal set's 11.2%; med and high span the rest of what this plant can
+# reach. Its ceiling is ~0.20, measured, against the pendulum's 82.4% at high:
+# cartpole's 2000 N actuator never saturates, so noise adds no authority and
+# cannot rescue failing cells the way post-saturation noise does on the
+# pendulum. Every value above is measured at 2,000 uniformly-sampled cells,
+# K=100, by cp_interior_sweep.py. See
 # docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md.
 #
 # 3 levels x (5 train shards + 30 eval shards) = 105 tasks x 64 cores = 6,720
@@ -52,6 +57,7 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
+export NPROC=${NPROC:-$(nproc)}
 
 PY=${PYTHON:-$HOME/miniforge3/envs/scg/bin/python}
 ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
@@ -59,8 +65,8 @@ ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
 : "${CP_SIGMA0:?set CP_SIGMA0 to the sigma_0 eval_success_prob.npz}"
 
 NAMES=(low med high)
-ALPHAS=(2.413 3.317 5.428)
-BETAS=(0.635 0.873 1.429)
+ALPHAS=(1.710 1.900 5.428)
+BETAS=(0.450 0.500 1.429)
 TRAIN_SHARDS=5
 EVAL_SHARDS=30
 PER_LEVEL=$((TRAIN_SHARDS + EVAL_SHARDS))

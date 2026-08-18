@@ -260,6 +260,14 @@ def main():
     with Pool(len(ranges), initializer=_init, initargs=(args,)) as pool:
         out = sorted(pool.map(_range, ranges), key=lambda r: r[0])
 
+    # Record the noise parameters in the shard itself. `level` alone is 0.0 for
+    # every gaussian run, so without these the three levels are distinguished
+    # only by the directory they happen to sit in, and a moved or merged file
+    # loses its provenance entirely. -1.0 marks "not this family".
+    noise = dict(level=args.level,
+                 alpha=-1.0 if args.alpha is None else args.alpha,
+                 beta=-1.0 if args.beta is None else args.beta)
+
     tmp = args.out + f'.tmp{os.getpid()}.npz'
     if args.split == 'train':
         states = np.concatenate([o[1] for o in out])
@@ -269,7 +277,7 @@ def main():
                  offsets=np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64),
                  starts=np.concatenate([o[5] for o in out]), labels=labels,
                  seeds=np.concatenate([o[4] for o in out]),
-                 lo=lo, hi=hi, level=args.level)
+                 lo=lo, hi=hi, **noise)
         print(f'  -> {int(labels.sum())}/{len(labels)} successes, '
               f'{len(states)} states', flush=True)
     else:
@@ -277,7 +285,7 @@ def main():
         trials = out[0][4]
         np.savez(tmp, starts=np.concatenate([o[1] for o in out]), hits=hits,
                  det_labels=np.concatenate([o[3] for o in out]), trials=trials,
-                 lo=lo, hi=hi, level=args.level)
+                 lo=lo, hi=hi, **noise)
         print(f'  -> p_success mean {hits.sum() / (len(hits) * trials):.4f} '
               f'over {trials} trials', flush=True)
     os.replace(tmp, args.out)
