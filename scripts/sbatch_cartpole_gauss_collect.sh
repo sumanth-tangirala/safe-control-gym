@@ -11,18 +11,30 @@
 # Full collection of the cartpole gaussian_signal family at the three chosen
 # levels. sigma = alpha + beta*|u| on the commanded cart force.
 #
-#   low    alpha 1.710  beta 0.450    interior 0.1115   mean p 0.171
-#   med    alpha 1.900  beta 0.500    interior 0.1495   mean p 0.169
-#   high   alpha 5.428  beta 1.429    interior 0.2000   mean p 0.065
+#   low    alpha 0.405  beta 1.500    mid 0.0380   interior 0.1375
+#   med    alpha 0.945  beta 3.500    mid 0.1270   interior 0.2165
+#   high   alpha 1.080  beta 4.000    mid 0.1520   interior 0.2120
 #
-# Matched on the UNCERTAINTY BAND -- the fraction of eval cells with 0 < p < 1
-# at K=100 -- not on delivered variance. low reproduces the pendulum
-# gaussian_signal set's 11.2%; med and high span the rest of what this plant can
-# reach. Its ceiling is ~0.20, measured, against the pendulum's 82.4% at high:
-# cartpole's 2000 N actuator never saturates, so noise adds no authority and
-# cannot rescue failing cells the way post-saturation noise does on the
-# pendulum. Every value above is measured at 2,000 uniformly-sampled cells,
-# K=100, by cp_interior_sweep.py. See
+# Matched on MID -- the fraction of eval cells with p in [0.2, 0.8] at K=100 --
+# against the pendulum gaussian_signal set's 0.0376 / 0.1334 / 0.6342. low is a
+# direct match and med is within 5%; high is not reachable and 0.1520 is this
+# ratio's ceiling.
+#
+# Not matched on `interior` (0 < p < 1), which was tried and abandoned: it
+# counts uncertain cells without regard to how uncertain they are. A level with
+# interior 0.1115, matching the pendulum low exactly, turned out to have 84.9%
+# of those cells below 0.1 or above 0.9 with a median of 0.98 -- a hard edge
+# with one frayed pixel, not a gradient.
+#
+# Ratio alpha = 0.27*beta throughout. A large alpha is a constant floor that
+# converts p=1 cells into p=0.98, which inflates `interior` cheaply but adds no
+# depth; beta acts in the transient and genuinely randomises the outcome. The
+# ratio is also what keeps the ladder monotone in delivered noise: at matched
+# mid, ratio 3.80 reaches the same haze at a third of the noise, so mixing the
+# two would put med above high in strength.
+#
+# Every value above is measured at 2,000 uniformly-sampled cells, K=100, by
+# cp_interior_sweep.py + cp_sweep_mid.py. See
 # docs/superpowers/specs/2026-08-17-cartpole-gaussian-signal-collection.md.
 #
 # 3 levels x (5 train shards + 30 eval shards) = 105 tasks x 64 cores = 6,720
@@ -67,8 +79,8 @@ ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
 : "${CP_DET_DIR:?set CP_DET_DIR to the directory holding eval_states.txt}"
 
 NAMES=(low med high)
-ALPHAS=(1.710 1.900 5.428)
-BETAS=(0.450 0.500 1.429)
+ALPHAS=(0.405 0.945 1.080)
+BETAS=(1.500 3.500 4.000)
 TRAIN_SHARDS=5
 EVAL_SHARDS=30
 PER_LEVEL=$((TRAIN_SHARDS + EVAL_SHARDS))
