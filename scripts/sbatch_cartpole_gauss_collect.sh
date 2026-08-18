@@ -58,7 +58,9 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export VECLIB_MAXIMUM_THREADS=1
-export NPROC=${NPROC:-$(nproc)}
+# NOT $(nproc): it honours OMP_NUM_THREADS, which is pinned to 1 four lines
+# above, so it returns 1 and the whole node runs a single worker.
+export NPROC=${NPROC:-${SLURM_CPUS_ON_NODE:-$(nproc --all)}}
 
 PY=${PYTHON:-$HOME/miniforge3/envs/scg/bin/python}
 ROOT=${CP_GAUSS_OUT:-/scratch/$USER/cartpole_gaussian_signal}
