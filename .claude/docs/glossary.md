@@ -276,4 +276,38 @@ rollout fixtures of their own.
 
 ---
 
+**Corridor / curtain.** A disturbance gated on one state coordinate rather than
+acting everywhere: `sigma(gate_coord)` is a gaussian bump, so the force is strong
+in a layer and negligible outside it. quad2d has one, gated on altitude. quad3d
+has two, gated on `x`, and the pair is called a twin curtain. Both push along a
+*different* axis from the one they gate on, so a crossing is shoved along the
+layer's face rather than back out of it.
+
+**Band (1% of peak).** The interval of the gate coordinate where a curtain's
+profile is above 1% of its own peak, `centre +- width*sqrt(2*ln(100))`. Outside
+it a crossing is effectively undisturbed by that curtain. Used to be the basis of
+a reachability shortcut; see the falsification in
+[corridor-noise.md](corridor-noise.md).
+
+**Coherent gust.** A disturbance whose randomness is drawn once per rollout and
+then held, here an amplitude `A ~ U(0,1)` and phase `phi ~ U(-pi,pi)` feeding a
+fixed-period sine. Contrast the per-step redraw every other family here uses. The
+force becomes a deterministic function of position and time for that flight, so a
+rollout sees a slow sway rather than hash.
+
+**Envelope vs mean force.** `sigma` bounds the draw, it is not a typical value.
+The corridor bracket `(0.5 + 0.5*A*sin(...))` averages 0.5, so the mean force at a
+curtain's centre is `sigma/2`. Quoting `sigma` as "the force" overstates it 2x.
+
+**k-window.** A shard file covering trials `[trial_lo, trials)` of an eval
+collection. Because `rollout_seed` is a pure function of `(index, trial)`, a
+finished collection can be extended by flying only the new trials and summing
+`hits` and `trials_used` across windows. What makes K a decision you can revisit.
+
+**Ungated noise buys more blur per newton.** Measured across the corridor
+configs: a weaker gust with a larger ambient term produces a *higher* interior
+fraction than the reverse, because the gated term only acts during a crossing
+while the ambient term acts on every state for the whole flight. Comparing two
+families by peak magnitude alone will therefore rank them wrong.
+
 Related: [datasets.md](datasets.md) where most of these terms are load-bearing, [architecture.md](architecture.md) for the code they name.
