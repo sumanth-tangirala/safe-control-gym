@@ -39,3 +39,21 @@ pymysql = "1.1.1"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+# Tests that spawn a real training run are opt-in.
+#
+# Four files launch `train_sb3` as a subprocess (test_train_sb3, test_eval_policy,
+# test_sparse_reward, test_export_sb3_pendulum). Even at total_timesteps=256 they
+# cost minutes and saturate every core on the box, which makes `pytest tests/`
+# unusable as a quick check during development.
+#
+# They still matter -- they are the only coverage of the trainer and of the
+# eval_policy acceptance bar -- so run them deliberately:
+#     pytest -m training
+# or everything at once:
+#     pytest -m 'training or not training'
+addopts = "-m 'not training'"
+markers = [
+    "training: spawns a real training subprocess; deselected by default (run with -m training)",
+]

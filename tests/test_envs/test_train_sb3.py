@@ -6,6 +6,9 @@ import sys
 import pytest
 import yaml
 
+# Spawns a real training subprocess; deselected unless -m training.
+pytestmark = pytest.mark.training
+
 REPO = os.path.join(os.path.dirname(__file__), '..', '..')
 
 # Base ids and composite ids both, because they are separate lookups: a
