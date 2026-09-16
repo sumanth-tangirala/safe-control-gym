@@ -1,0 +1,39 @@
+# Arm bounds: OUR plant and kills, dm_control's start distribution.
+#
+# Extends the physical regime, so the plant (2000 N, ctrl 100 Hz, pyb 5000 Hz)
+# and the positional-only kill box arrive unchanged [user, 2026-07-31: our
+# dynamics, not dm_control's]. What this file changes:
+#
+# - Initial states: dm_control swingup's hanging start, exactly -- theta =
+#   pi + 0.01*N(0,1), cart and both velocities 0.01*N(0,1). The randomizer is
+#   ADDITIVE over the zero default init, and a dict carrying `distrib` replaces
+#   the parent's spec wholesale (see _merge_bounds), so no uniform low/high
+#   keys leak in from the physical regime.
+# - curriculum: null -- a point start needs nothing annealed, and the
+#   goal-contracting curriculum would destroy the hanging start.
+#
+# The goal set stays OURS: success is the goal-ball hold that the success
+# callback and eval_policy measure. dm_control's +/-0.25 & cos > 0.995 region
+# is not used anywhere; its reward shapes, our goal set judges.
+
+extends: ../physical/cartpole.yaml
+
+init_state_randomization_info:
+  init_x:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+  init_x_dot:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+  init_theta:
+    distrib: normal
+    loc: 3.141592653589793
+    scale: 0.01
+  init_theta_dot:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+
+curriculum: null

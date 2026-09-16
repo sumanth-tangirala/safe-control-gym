@@ -1,0 +1,39 @@
+# SAC cartpole stabilization: the dm_control recipe at 50 N authority.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac_dmc_50n.yaml
+#
+# ONE lever changed from cartpole_stabilization_sac_dmc_recipe.yaml (the 2000 N
+# control): the force cap. Reward, start distribution, kills, frequencies and
+# horizon are identical, so the comparison isolates authority.
+#
+# Why: at 2000 N the recipe's optimal transport is a slam -- 1850 N in the first
+# control step, 18 m/s, dead under the collection velocity kills (0.017 vs 0.977
+# physical, n=29,060). Nothing in the multiplicative reward can price that (the
+# velocity factor watches theta_dot only and multiplies a near-zero upright term
+# during the swing), and pricing it additively un-taught travel entirely
+# (lqrvel: 0.000 reach). Authority is dm_control's own mechanism for the same
+# problem -- their gear-10 motor made fast transport physically impossible.
+#
+# Sizing: 600k rather than 1M. The control lost 6 points of physical coverage
+# between its 120k checkpoint and 1M at flat eval reward ~990 -- overtraining
+# invisible to the training metric -- so this arm runs shorter and checkpoints
+# 3x more often, and the keeper is chosen by the RoA eval, not by reward.
+
+task_config:
+  cost: shaped_dmc
+  episode_len_sec: 10
+  terminate_on_goal: false
+sb3_config:
+  total_timesteps: 600000
+  net_arch:
+  - 256
+  - 256
+  save_freq: 20000
+  eval_freq: 20000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/sb3/cartpole_dmc_recipe_50n.yaml
+  comparison_bounds: configs/collection/cartpole.yaml
+  gamma: 0.9975

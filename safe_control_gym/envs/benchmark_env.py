@@ -18,12 +18,29 @@ from safe_control_gym.envs.constraints import create_constraint_list
 from safe_control_gym.envs.disturbances import create_disturbance_list
 
 
+def _tolerance(value, bound, margin):
+    '''dm_control's tolerance: 1 inside `bound`, decaying smoothly outside it.
+
+    The decay is what matters. A hard indicator is zero everywhere outside the
+    band and gives no gradient; this falls off over `margin` so a policy far from
+    the goal still learns which direction is better. dm_control uses a long-tail
+    sigmoid; a Gaussian in units of the margin has the same character and is
+    strictly positive everywhere, which is the property being relied on.
+    '''
+    excess = np.maximum(0.0, np.abs(value) - bound)
+    if margin <= 0:
+        return float(np.all(excess <= 0))
+    return float(np.exp(-0.5 * np.sum((excess / margin) ** 2)))
+
+
 class Cost(str, Enum):
     '''Reward/cost functions enumeration class.'''
 
     RL_REWARD = 'rl_reward'  # Default RL reward function.
     QUADRATIC = 'quadratic'  # Quadratic cost.
     SPARSE = 'sparse'  # Outcome-only: goal bonus, out-of-bounds penalty, step cost.
+    SHAPED = 'shaped'  # dm_control-style product of smooth tolerance terms.
+    SHAPED_DMC = 'shaped_dmc'  # Faithful dm_control cartpole reward; cartpole only.
 
 
 class Task(str, Enum):
@@ -89,6 +106,13 @@ class BenchmarkEnv(gym.Env, ABC):
                  # hold position there (stabilization).
                  terminate_on_goal: bool = True,
                  # Sparse reward (Cost.SPARSE only; ignored otherwise).
+                 # Cost.SHAPED only. Bounds are where a term saturates; margins
+                 # set how far outside it still carries gradient.
+                 shaped_goal_bound=0.05,
+                 shaped_goal_margin=1.0,
+                 shaped_rate_bound=0.0,
+                 shaped_rate_margin=5.0,
+                 shaped_action_margin=1.0,
                  sparse_goal_reward=1.0,
                  sparse_oob_reward=-1.0,
                  sparse_step_reward=-0.01,
@@ -194,6 +218,11 @@ class BenchmarkEnv(gym.Env, ABC):
         self.adversary_disturbance_offset = adversary_disturbance_offset
         self.adversary_disturbance_scale = adversary_disturbance_scale
         self.terminate_on_goal = bool(terminate_on_goal)
+        self.shaped_goal_bound = float(shaped_goal_bound)
+        self.shaped_goal_margin = float(shaped_goal_margin)
+        self.shaped_rate_bound = float(shaped_rate_bound)
+        self.shaped_rate_margin = float(shaped_rate_margin)
+        self.shaped_action_margin = float(shaped_action_margin)
         self.sparse_goal_reward = float(sparse_goal_reward)
         self.sparse_oob_reward = float(sparse_oob_reward)
         self.sparse_step_reward = float(sparse_step_reward)
@@ -288,6 +317,74 @@ class BenchmarkEnv(gym.Env, ABC):
             prior_prop (dict): specify the prior inertial prop to use in the symbolic model.
         '''
         raise NotImplementedError
+
+    def _shaped_reward(self):
+        """Dense reward as a product of smooth tolerance terms.
+
+        Copied in structure from dm_control's cartpole-swingup, which is the
+        standard way this family of tasks is actually solved:
+
+            reward = upright * centered * small_control * small_velocity
+
+        Each factor lies in (0, 1], so the product is strictly positive
+        everywhere -- there is a usable gradient from any state, including the
+        pole hanging straight down. That is exactly what Cost.SPARSE lacked:
+        measured over 300 random episodes, cartpole, quadrotor2d and quadrotor3d
+        landed in the goal ball ZERO times, so their replay buffers contained no
+        positive reward and nothing for the critic to bootstrap from.
+
+        Velocity appears here as a shaped term with a margin rather than as a
+        termination bound -- dm_control shapes it, and we measured that
+        terminating on it merely relocates the failure to the next bound.
+
+        The goal bonus is kept on top so reaching the goal remains optimal
+        despite ending the episode. That inversion was real: on cartpole,
+        tightening the terminal error was worth +4.46 return while the early
+        termination it triggers cost -181.2.
+        """
+        state = np.asarray(self.state, dtype=float)
+        goal = np.asarray(self.X_GOAL, dtype=float)
+        # Error in units of the state space, not raw units. With raw units a
+        # margin has to be retuned per system and per channel: cartpole's x
+        # ranges over +/-12 while its theta ranges over +/-pi, so a single
+        # margin of 1.0 made exp(-0.5*(6/1)^2) ~ 1e-8 and the reward collapsed
+        # to zero exactly where gradient was most needed. Measured before this
+        # change: cartpole's median shaped reward over 16k random steps was
+        # 0.0000. Normalising makes one margin mean the same thing everywhere.
+        span = np.asarray(self.state_space.high, dtype=float) - np.asarray(
+            self.state_space.low, dtype=float)
+        span = np.where(np.isfinite(span) & (span > 0), span, 1.0)
+        span = np.minimum(span, 1e3)      # unbounded channels must not vanish
+        error = (state - goal) / (span / 2.0)
+
+        # Position channels drive the task; rate channels are damped, not gated.
+        rate_index = getattr(self, 'RATE_INDICES', None)
+        if rate_index is None:
+            rate_index = list(range(1, len(error), 2))
+        position_index = [i for i in range(len(error)) if i not in rate_index]
+
+        proximity = _tolerance(error[position_index], self.shaped_goal_bound,
+                               self.shaped_goal_margin)
+        settled = _tolerance(error[rate_index], self.shaped_rate_bound,
+                             self.shaped_rate_margin)
+        # Effort is normalised by the physical action range for the same reason
+        # the state error is: cartpole commands +/-10 N, so a raw margin of 1.0
+        # gave exp(-0.5*10^2) ~ 2e-22 and drove the whole product to zero.
+        action = np.asarray(self.current_noisy_physical_action, dtype=float).ravel()
+        bounds = getattr(self, 'physical_action_bounds', None)
+        if bounds is not None:
+            scale = np.maximum(np.abs(np.asarray(bounds[1], dtype=float).ravel()),
+                               np.abs(np.asarray(bounds[0], dtype=float).ravel()))
+            scale = np.where(scale > 0, scale, 1.0)
+            action = action / scale
+        effort = _tolerance(action, 0.0, self.shaped_action_margin)
+
+        reward = proximity * settled * effort
+        if getattr(self, 'goal_reached', False):
+            reward += self.sparse_goal_reward
+        if getattr(self, 'out_of_bounds', False):
+            reward += self.sparse_oob_reward
+        return float(reward)
 
     def _sparse_reward(self):
         '''Outcome-only reward: goal bonus, out-of-bounds penalty, step cost.
