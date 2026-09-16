@@ -98,7 +98,7 @@ class InitStateCurriculum(BaseCallback):
 
     def __init__(self, eval_env, env_setter, tolerance_setter, full_ranges, layout,
                  start=0.1, step=0.15, threshold=0.5, retreat_threshold=0.1,
-                 n_episodes=10,
+                 n_episodes=10, growth=None,
                  tolerance_start=None, tolerance_final=None,
                  eval_freq=10000, verbose=0):
         super().__init__(verbose)
@@ -109,6 +109,13 @@ class InitStateCurriculum(BaseCallback):
         self.fraction = float(start)
         self.start_fraction = float(start)
         self.step_size = float(step)
+        # Geometric widening. The additive step is catastrophic near a small
+        # start: 0.005 -> 0.155 is a 31x-per-axis jump, ~10^6 in 4-dim start
+        # volume, and both curriculum orders died on exactly that cliff --
+        # arm A (init-first) with forgetting, arm B' (tolerance-first) with a
+        # clean retreat loop. A growth factor widens by a constant volume
+        # ratio instead (x2 per axis = 16x volume per stage).
+        self.growth = float(growth) if growth else None
         self.threshold = float(threshold)
         self.retreat_threshold = float(retreat_threshold)
         self.n_episodes = int(n_episodes)
@@ -168,7 +175,10 @@ class InitStateCurriculum(BaseCallback):
         # fraction is above where it started, so a run that is working never
         # touches it.
         if rate < self.retreat_threshold and self.fraction > self.start_fraction:
-            self.fraction = max(self.start_fraction, self.fraction - self.step_size)
+            if self.growth:
+                self.fraction = max(self.start_fraction, self.fraction / self.growth)
+            else:
+                self.fraction = max(self.start_fraction, self.fraction - self.step_size)
             self._apply()
             if self.verbose:
                 print(f'curriculum: success {rate:.2f} -> RETREAT to fraction '
@@ -184,7 +194,10 @@ class InitStateCurriculum(BaseCallback):
                 self.tolerance = max(self.tolerance_final,
                                      self.tolerance * (1.0 - self.step_size))
             elif self.fraction < 1.0:
-                self.fraction = min(1.0, self.fraction + self.step_size)
+                if self.growth:
+                    self.fraction = min(1.0, self.fraction * self.growth)
+                else:
+                    self.fraction = min(1.0, self.fraction + self.step_size)
             self._apply()
             if self.verbose:
                 print(f'curriculum: success {rate:.2f} -> fraction '
