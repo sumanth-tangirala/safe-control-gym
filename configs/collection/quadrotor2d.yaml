@@ -1,34 +1,63 @@
-# The collection regime for the 2D quadrotor.
+# The COLLECTION regime for the 2D quadrotor: the system, killed where the
+# shipped dataset killed.
 #
 # Read by BOTH training (sb3_config.collection_bounds) and evaluation
-# (--eval_bounds).
+# (--eval_bounds). The plant, start region, observation contract and curriculum
+# live in configs/system/quadrotor2d.yaml; this file adds only the termination
+# box the dataset used and the reference numbers a run is compared against.
 #
-# Source: DATA_ROOT/deterministic/quadrotor2D_rl/dataset_description.json.
-#
-# No termination overrides needed: this box already fits inside the env's
-# state_space on every dimension it checks, and quadrotor.py masks the angle
-# indices out of its out_of_bounds test as periodic variables, so theta never
-# terminates however far it swings.
-#
-#   x        +/-1.0   inside +/-2.0
-#   x_dot    +/-1.0   inside +/-30
-#   z        0.1-1.5  inside -0.05-2.0
-#   z_dot    +/-1.0   inside +/-30
-#   theta    +/-pi    masked, never terminates
-#   theta_dot +/-8.0  inside +/-8.727   <- the only tight margin
-#
-# state_space_bounds is nonetheless stated explicitly rather than left implicit.
-# The alternative is relying on the env defaults happening to be wider, which is
-# true today and is not a property anything enforces.
+# Source: DATA_ROOT/deterministic/quadrotor2D_rl/dataset_description.json,
+# where initial_state_bounds and termination_thresholds are identical.
 
-init_state_randomization_info:
-  init_x: {distrib: 'uniform', low: -1.0, high: 1.0}
-  init_x_dot: {distrib: 'uniform', low: -1.0, high: 1.0}
-  init_z: {distrib: 'uniform', low: 0.1, high: 1.5}
-  init_z_dot: {distrib: 'uniform', low: -1.0, high: 1.0}
-  init_theta: {distrib: 'uniform', low: -3.141592653589793, high: 3.141592653589793}
-  init_theta_dot: {distrib: 'uniform', low: -8.0, high: 8.0}
+extends: ../system/quadrotor2d.yaml
 
+# THIS SYSTEM CANNOT BE REPRODUCED BIT-EXACTLY BY THE CURRENT LIBRARY.
+#
+# Every shipped quadrotor dataset ran at PyBullet's DEFAULT damping
+# (linearDamping = angularDamping = 0.04) rather than at zero. base_aviary's
+# changeDynamics call omitted physicsClientId, so it targeted client 0; the
+# collectors hold two envs (the controller builds one from env_func, then the
+# collector builds the one it rolls out), so the ROLLOUT env never received
+# `linearDamping=0, angularDamping=0`. See `.claude/docs/datasets.md`.
+#
+# The library has since been FIXED (base_aviary.py:234), so an env built from
+# this file today runs at zero damping and is a DIFFERENT PLANT from the one
+# that produced reference_success. Measured 2026-07-31 over three long shipped
+# trajectories, one open-loop step from each recorded state:
+#
+#   damping 0.04 (as collected)  step error 1.1e-6   <- the text-format floor
+#   damping 0.00 (as fixed)      step error 1.2e-2   <- four orders worse
+#
+# The value is a sharp minimum: 0.039 and 0.041 both give 3.1e-4.
+#
+# Damping is a post-construction p.changeDynamics call that _housekeeping
+# re-applies on every reset, so no constructor kwarg in the system file can
+# express it and this regime CANNOT be put back into the dataset's plant by
+# config alone. A replay harness must re-impose 0.04 after every reset.
+#
+# Consequence for reference_success below: it is a number from a plant this repo
+# no longer builds. Compare against it with that in mind. Whether to re-collect
+# is an open decision (`.claude/docs/datasets.md`).
+
+# The kill box. The quadrotors terminate on `state_space`, not on threshold
+# attributes, so a regime here moves state_space_bounds rather than
+# env_attributes -- generate_quadrotor_2d_trajectories_rl.py:611-623 assigns
+# exactly these six pairs.
+#
+# Corrects the env defaults in BOTH directions:
+#
+#   x         default 2.0        -> 1.0     the dataset kills earlier
+#   x_dot     default 30         -> 1.0     far looser than the dataset
+#   z         default -0.05..2.0 -> 0.1..1.5
+#   z_dot     default 30         -> 1.0
+#   theta     default 85 deg     -> pi/2    masked out of _get_done anyway
+#   theta_dot default 8.727      -> 8.0     the only channel that was close
+#
+# theta is stated as +/-pi/2 rather than the dataset's `inf`, and the difference
+# is inert: quadrotor._get_done masks the angle index out of its out-of-bounds
+# test as a periodic variable, so theta never terminates however far it swings.
+# The number survives only as the scale train_sb3 normalises that channel by,
+# and an infinite bound there would make the normalised channel identically zero.
 state_space_bounds:
   x: [-1.0, 1.0]
   x_dot: [-1.0, 1.0]
@@ -42,62 +71,85 @@ state_space_bounds:
 reference_success: 0.0802
 reference_dataset: 'deterministic/quadrotor2D_rl'
 
-# The reference above was measured under REACH semantics: every shipped dataset
-# was collected before terminate_on_goal existed, when entering the goal ball
-# ended the episode. A stabilization run, which must hold position there, is a
-# strictly harder problem -- so comparing a stabilization success rate against
-# this number is comparing two different tasks. eval_policy records both so the
-# mismatch is visible rather than assumed away.
+# REACH, and verified so rather than assumed. The dataset's rule is a pure
+# function of the TERMINAL state -- `||final - [0, 1, 0, 0, 0, 0]||_2 < 0.2`
+# (generate_quadrotor_2d_trajectories_rl.py:742-743) -- and the episode ends the
+# moment the env's own goal test fires, because the collector ran the env id's
+# default terminate_on_goal of True with stabilization_goal_tolerance 0.2. Same
+# radius in both places, so entry and terminal membership are the same event.
+#
+# It is NOT the invariant-ellipsoid rule. That is the generator's
+# --invariant_terminal_sets mode, which this dataset predates and did not use
+# (dataset_description.json success_criteria: {type: radius, threshold: 0.2}).
+#
+# A stabilization run, which must HOLD position there, is a strictly harder
+# problem, so comparing a stabilization success rate against reference_success
+# is comparing two different tasks. eval_policy records both so the mismatch is
+# visible rather than assumed away.
 reference_task: reach
 
-# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+# --- The generation config that produces reference_success, verified ---
 #
-# Declared here rather than in configs/sb3/ because which channel is an angle,
-# and what the state layout is, are facts about the system. Restating them per
-# training config invites two configs for one system to disagree.
+# Verified by replay 2026-07-31 with the plant built from THIS file through
+# load_collection_bounds, the shipped safe_explorer_ppo checkpoint as the
+# controller, and 0.04 damping re-imposed after every reset:
 #
-# state_layout also names the channels that state_space_bounds addresses, so the
-# layout is written once instead of being duplicated in train_sb3.
-state_layout: [x, x_dot, z, z_dot, theta, theta_dot]
+#   556 rows sampled from eval_states.txt (300 random + a balanced 128/128)
+#   555/556 agree; the balanced half is 256/256, zero disagreements either way.
+#
+# The single miss is a knife-edge, not a plant error: its shipped terminal state
+# sits 0.199225 from the goal, i.e. 0.00078 inside a 0.2 ball, so a 1e-6
+# difference in where the trajectory grazes the boundary moves the first entry
+# by one control step and the rollout misses the ball entirely. Its neighbour at
+# 0.199957 reproduces to 1e-6.
+#
+# Two ablations on the same balanced sample, both one-directional
+# shipped-1/replay-0, which is what a starved run looks like as against a
+# mislabelled one:
+#
+#   damping 0 (the FIXED library)   251/256   <- five successes lost
+#   horizon 500 (the env's 5 s)     249/256   <- seven successes lost
+#
+# reference_run below is documentation: nothing reads it. The subset that must
+# actually reach the env lives in configs/system/quadrotor2d.yaml's
+# task_config_overrides, which IS consumed -- keep the two in sync by hand
+# (tests/test_envs/test_regime_configs.py asserts the sync).
+reference_run:
+  controller: safe_explorer_ppo
+  model_path: examples/rl/models/safe_explorer_ppo/safe_explorer_ppo_model_quadrotor_2D_stab.pt
+  ctrl_freq: 100            # Hz
+  pyb_freq: 5000            # Hz -- 50 physics substeps per control step
+  linear_damping: 0.04      # NOT a constructor kwarg. PyBullet's default, in
+  angular_damping: 0.04     # effect only because of the physicsClientId bug.
+  max_steps: 1200           # 12 s at 100 Hz; zero timeouts were recorded
+  episode_len_sec: 12       # the generator ran 1000 and cut at max_steps
+  terminate_on_goal: true   # success is first ENTRY, so the episode ends there
+  randomized_init: false
+  cost: quadratic           # what populates info['goal_reached']
+  done_on_out_of_bound: true
+  done_on_violation: false  # the safety layer is advisory, not terminating
+  normalized_rl_action_space: true    # safe_explorer_ppo emits normalised
+                                      # thrust; unlike the cartpole and pendulum
+                                      # controllers this one WANTS the wrapper
+  # Success: ||terminal - goal||_2 < 0.2, over all six channels at once. A
+  # single L2 ball, not a per-channel box, and no hold requirement.
+  success_metric: l2_ball
+  success_goal: [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]  # file order [x, z, theta, x_dot, z_dot, theta_dot]
+  success_threshold: 0.2
+  success_hold_steps: 1
+  # The controller is wrapped in a safety layer whose constraint bounds are part
+  # of the closed loop, so they belong to the reference run.
+  constraints:
+    - constrained_variable: state    # env order [x, x_dot, z, z_dot, theta, theta_dot]
+      lower_bounds: [-2, -1, 0, -1, -0.2, -1.5]
+      upper_bounds: [2, 1, 2, 1, 0.2, 1.5]
+    - constrained_variable: input
+      lower_bounds: [0.06, 0.06]
+      upper_bounds: [0.29, 0.29]
 
-# No angle encoding: pitch here comes from an Euler convention bounded to
-# +/-pi/2, so it never wraps and (cos, sin) would buy nothing.
-angle_observation: null
-
-# Map every channel from its state_space bounds onto [-1, 1]. The channels are
-# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
-# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
-# +/-24 against position at +/-1.8.
-normalize_observation: true
-
-# Present the policy with a symmetric [-1, 1] action space; the env denormalises
-# to true units internally, so the dynamics are unchanged.
-#
-# Matters most for the quadrotors, whose raw action space is asymmetric and never
-# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
-# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
-# that box its natural output sits at the bottom of the thrust range and a zero
-# action means free fall rather than hover. SB3's check_env warns about exactly
-# this. Normalised, zero maps to mid-thrust, which is near hover.
-#
-# The collectors are unaffected: they build the base env ids and never read this
-# file.
-normalized_rl_action_space: true
-
-# Initial-state curriculum: start near the goal, widen as success is earned.
-#
-# Required, not optional. Measured over 300 random episodes, the number of steps
-# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
-# so under a sparse reward those runs see no positive signal at all and cannot
-# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
-#
-# fraction 0 is a point distribution at the goal, 1 is the full collection
-# region above. Ranges contract about the GOAL value rather than the midpoint,
-# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
-#
-# Advancement is driven by measured success rate, not by a step schedule: a
-# schedule has to be guessed per system and is wrong in both directions.
-curriculum:
-  start: 0.005
-  step: 0.15
-  threshold: 0.5
+# Known artifact, recorded in dataset_description.json and reproduced by any
+# faithful replay: states with theta within ~0.01 rad of +/-pi are set through
+# p.getQuaternionFromEuler and read back through getEulerFromQuaternion, which
+# resolves the gimbal lock by pushing the rotation into roll and yaw -- so the
+# effective pitch comes back near 0 and the state is spuriously near the goal.
+# It is a thin strip of the start region, not a labelling bug to correct.

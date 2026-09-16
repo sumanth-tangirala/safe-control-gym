@@ -1,78 +1,44 @@
-# The PHYSICAL regime: terminate only on bounds with a physical origin.
+# The PHYSICAL regime for the 2D quadrotor: terminate only on bounds with a
+# physical origin.
 #
-# Every bound here traces to a URDF joint limit or to the workspace. Everything
-# dropped was invented. Measured over 200 LQR episodes, the invented bounds were
-# doing most of the killing -- 61% of cartpole crashes came from a theta_dot
-# limit on a joint the URDF declares unlimited, and 99% of quadrotor2d crashes
-# from translational velocity limits on a free body that has no such limit.
+# The plant, start region, observation contract and curriculum live in
+# configs/system/quadrotor2d.yaml; this file adds only the termination box. Same
+# plant as the collection regime -- the two differ ONLY in where episodes die.
+#
+# Every bound here traces to the workspace or to the ground. Everything dropped
+# was invented. Measured over 200 LQR episodes, the invented bounds were doing
+# most of the killing -- 61% of cartpole crashes came from a theta_dot limit on
+# a joint the URDF declares unlimited, and 99% of quadrotor2d crashes from
+# translational velocity limits on a free body that has no such limit.
+#
+# A free rigid body: no joints, so no joint limits. The rotors bound THRUST, not
+# velocity, and that is already enforced by the action space. So every velocity
+# and rate bound is dropped; only the room and the ground remain.
+#
+# x and z are the workspace, widened to 2x the initial region. z's lower edge is
+# the ground -- the one bound that means "crashed" in the ordinary sense.
 #
 # This is the regime to TRAIN in. configs/collection/ stays as the datasets
 # define it, and eval_policy scores every run under both -- so a policy is
 # reported both on what it can actually do and on the number comparable to the
 # shipped datasets.
-#
-# Initial states and the observation encoding are inherited from the collection
-# config unchanged; only the termination box differs.
 
-# A free rigid body: no joints, so no joint limits. The rotors bound THRUST,
-# not velocity, and that is already enforced by the action space. So every
-# velocity and rate bound is dropped; only the room and the ground remain.
-#
-# x and z are the workspace, widened to 2x the initial region. z's lower edge is
-# the ground -- the one bound that means "crashed" in the ordinary sense.
+extends: ../system/quadrotor2d.yaml
 
-init_state_randomization_info:
-  init_x:
-    distrib: uniform
-    low: -1.0
-    high: 1.0
-  init_x_dot:
-    distrib: uniform
-    low: -1.0
-    high: 1.0
-  init_z:
-    distrib: uniform
-    low: 0.1
-    high: 1.5
-  init_z_dot:
-    distrib: uniform
-    low: -1.0
-    high: 1.0
-  init_theta:
-    distrib: uniform
-    low: -3.141592653589793
-    high: 3.141592653589793
-  init_theta_dot:
-    distrib: uniform
-    low: -8.0
-    high: 8.0
-state_layout:
-- x
-- x_dot
-- z
-- z_dot
-- theta
-- theta_dot
-angle_observation: null
-normalize_observation: true
-normalized_rl_action_space: true
-curriculum:
-  start: 0.005
-  step: 0.15
-  threshold: 0.5
 state_space_bounds:
-  x:
-  - -2.0
-  - 2.0
-  z:
-  - 0.05
-  - 2.0
-  x_dot:
-  - -1000000.0
-  - 1000000.0
-  z_dot:
-  - -1000000.0
-  - 1000000.0
-  theta_dot:
-  - -1000000.0
-  - 1000000.0
+  x: [-2.0, 2.0]
+  z: [0.05, 2.0]
+  # 1000000.0 rather than .inf is deliberate, not sloppiness: the two encodings
+  # of "no limit" take different code paths in train_sb3. A finite bound is used
+  # as the normalisation scale and then caught by the > 1e5 unbounded test in
+  # normalisation_bounds (train_sb3.py:206, guarding a measured bug where
+  # normalising by 1e6 made velocity channels std 0.0000).
+  x_dot: [-1000000.0, 1000000.0]
+  z_dot: [-1000000.0, 1000000.0]
+  theta_dot: [-1000000.0, 1000000.0]
+  # theta is absent on purpose, so it keeps the env's own 85 deg. The system
+  # file carries no state_space_bounds, so each regime states its whole box and
+  # neither inherits the other's; the collection regime pins theta at +/-pi/2.
+  # Either way _get_done masks the angle out of its out-of-bounds test, so the
+  # number is only a normalisation scale -- and an unbounded one there would
+  # make the channel identically zero.
