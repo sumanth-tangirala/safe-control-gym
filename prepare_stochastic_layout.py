@@ -49,8 +49,27 @@ N_CAL = 10_000            # matches the consumer's N_CAL_STARTS
 # eval_states.txt is <state...>,p_success -- one column per state channel, then
 # the probability. The consumer reads the dimension from the column count, so
 # this works for the pendulum's 2-D state and the cartpole's 4-D one alike.
-STATE_NAMES = {2: ['theta', 'theta_dot'],
-               4: ['x', 'x_dot', 'theta', 'theta_dot']}
+DEFAULT_STATE_NAMES = {2: ['theta', 'theta_dot']}
+
+
+def declared_state_names(level_dir, dim):
+    '''Read coordinate names from collection metadata instead of guessing.'''
+    description_path = os.path.join(level_dir, 'train_description.json')
+    if os.path.exists(description_path):
+        description = json.load(open(description_path))
+        names = description.get('state_order')
+        if names is not None:
+            if not isinstance(names, list) or len(names) != dim:
+                raise ValueError(
+                    f'{description_path}: state_order {names!r} does not match dimension {dim}'
+                )
+            return names
+    if dim in DEFAULT_STATE_NAMES:
+        return DEFAULT_STATE_NAMES[dim]
+    raise ValueError(
+        f'{description_path}: state_order is required for a {dim}-D dataset; '
+        'refusing to infer physical coordinates from dimension alone'
+    )
 
 
 def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
@@ -89,7 +108,7 @@ def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
     # sampling box. Measured over every stored state, not the start states.
     st = train['states']
     dim = st.shape[1]
-    names = STATE_NAMES[dim]
+    names = declared_state_names(level_dir, dim)
     units = {'x': 'm', 'x_dot': 'm/s', 'theta': 'rad', 'theta_dot': 'rad/s'}
     achieved = {n: {'min': float(st[:, i].min()), 'max': float(st[:, i].max()),
                     'unit': units[n]} for i, n in enumerate(names)}
@@ -134,7 +153,7 @@ def prepare(level_dir, n_cal=N_CAL, seed=SHUFFLE_SEED):
             'dataset_description.json': 'achieved_bounds -- REQUIRED by PendulumSystem',
             'train_test_splits/shuffled_indices_0.txt': 'row ids into train.npz',
             'train_test_splits/shuffled_labels_0.txt': 'aligned 0/1 labels',
-            'eval_states.txt': 'theta, theta_dot, p_success per grid cell, shuffle order',
+            'eval_states.txt': f'{", ".join(names)}, p_success per grid cell, shuffle order',
             'cal_set.txt': f'first {n_cal} rows of eval_states.txt',
             'test_set.txt': 'the remainder',
         },
@@ -162,13 +181,15 @@ def verify(level_dir, n_cal=N_CAL):
     dd = json.load(open(dd_path))
     b = dd['achieved_bounds']
     st = train['states']
-    for i, n in enumerate(STATE_NAMES[st.shape[1]]):
+    names = dd['state_space']['state_order']
+    assert len(names) == st.shape[1], 'state_order dimension mismatch'
+    for i, n in enumerate(names):
         assert abs(b[n]['max'] - float(st[:, i].max())) < 1e-6, f'{n} bound stale'
         assert abs(b[n]['min'] - float(st[:, i].min())) < 1e-6, f'{n} bound stale'
 
-    es = np.loadtxt(os.path.join(level_dir, 'eval_states.txt'), delimiter=',')
-    cal = np.loadtxt(os.path.join(level_dir, 'cal_set.txt'), delimiter=',')
-    tst = np.loadtxt(os.path.join(level_dir, 'test_set.txt'), delimiter=',')
+    es = np.loadtxt(os.path.join(level_dir, 'eval_states.txt'), delimiter=',', ndmin=2)
+    cal = np.loadtxt(os.path.join(level_dir, 'cal_set.txt'), delimiter=',', ndmin=2)
+    tst = np.loadtxt(os.path.join(level_dir, 'test_set.txt'), delimiter=',', ndmin=2)
     assert es.shape[1] == train['states'].shape[1] + 1, 'eval_states column count'
     assert len(es) == len(ev['p_success']), 'eval_states lost cells'
     assert np.array_equal(np.vstack([cal, tst]), es), 'cal + test != eval_states'
