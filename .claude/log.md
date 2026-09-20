@@ -1,7 +1,46 @@
 # Log
 
 Append-only, newest first. One entry per ingest, per filed query answer, per
-lint pass. Keep the `## [2026-08-17] ingest | gaussian_signal becomes the standard family; cartpole port
+lint pass. Keep the `## [2026-08-26] ingest | corridor noise for both quadrotors; a cartpole description defect
+
+New page `docs/corridor-noise.md`. The `corridor_sine_ambient` families had no
+wiki coverage at all across 37 commits. Gave them their own page rather than
+growing `datasets.md` (already the longest at 643 lines) because the mechanism is
+genuinely separate: gated on one coordinate, coherent in time, and it carries a
+top-up scheme nothing else here uses.
+
+Four things that change or qualify what was written before.
+
+The reachability shortcut is unsound whenever an ungated ambient term is present.
+Of 10 skipped quad2d starts re-flown 20 times, 7 varied; they had been recorded
+as `p_success = 1.0` and came back 13 to 18 of 20. Both collectors now gate it.
+
+quad3d pushes along `y`, not `x`. `mask [0, 1, 0]` selects index 1 of the
+`disturb_force` vector and `THREE_D` passes that vector through unchanged.
+Measured at a curtain peak: `[0, 0.068, 0]`. The registered function name
+`altitude_gated_sine` is legacy from quad2d and misleads on both axes.
+
+quad3d's splits run different deadlines, 2000 steps on eval against 1000 on
+train, because they go through different functions with their own `HORIZON`.
+Impact is 1 truncated trajectory in 800,000 at `f_max 0.25` and 0 at `0.30`, so
+it was recorded rather than triggering a recollect.
+
+Interior fraction only rises with K and the returns halve at each doubling: on
+`f_0.25`, 20 to 50 bought 1.91 points, 50 to 100 bought 0.96. That monotonicity
+is now the acceptance check for a window merge.
+
+Separately, filed against `datasets.md`: the published cartpole `gaussian_signal`
+descriptions state alpha/beta the collection never used. The submit script ran
+(2.413, 0.635), (3.317, 0.873), (5.428, 1.429); the descriptions claim (0.405,
+1.5), (0.945, 3.5), (1.08, 4.0), numbers that appear nowhere in this repo. Read
+literally the `med` description overstates its own noise 3x. Labels are
+unaffected. Nothing regenerates those files, so the fix is manual.
+
+Also added six glossary terms the new page leans on, and recorded that the
+corridor descriptions in `DATA_ROOT` still say `mean_trials: 20` against
+K=50 data, left alone deliberately.
+
+## [2026-08-17] ingest | gaussian_signal becomes the standard family; cartpole port
 
 `gaussian_signal` is now the canonical stochastic family for both pendulum and
 cartpole [user, 2026-08-17]. `noisy_torque` and the state-additive presets are

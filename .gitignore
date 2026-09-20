@@ -59,5 +59,22 @@ rollout_visualizations_backup_*/
 # Agent worktrees
 .claude/worktrees/
 
-# SLURM logs written next to the clone by the collection arrays
-logs/
+# Job output from collection and training campaigns. These land at the repo
+# root because that is the sbatch working directory, and there are hundreds of
+# them: 199 campaign/top-up logs alone by 2026-09-16. The runs they describe are
+# reproducible from the collectors, and their data lives on Amarel and under
+# the shared data root, so none of it belongs in git.
+/*.log
+/logs/
+/slurm-*.out
+
+# Scratch arrays from parameter sweeps and smoke tests, written beside the
+# script that made them. Real datasets go to the shared root, never here.
+/*.npz
+
+# PyBullet writes a per-process copy of the cartpole URDF next to the caller
+# (pid-<pid>_id-<n>_cartpole.urdf) and does not clean it up.
+/pid-*_cartpole.urdf
+
+# A shell redirect typo (`2>=64`) leaves an empty file called =64.
+/=64

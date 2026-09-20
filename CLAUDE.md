@@ -115,6 +115,27 @@ Report what you find before fixing it.
   The prefix is load-bearing; `grep '^## \[' .claude/log.md | head -5` is how
   you find out what happened recently.
 
+## Explaining measurements: human readable, strictly
+
+Any measurement, metric, or result presented to the human follows this form,
+no exceptions:
+
+1. **Recipe before numbers.** Say how the quantity is measured as plain
+   numbered steps ("fly each start 30 times, count successes") before quoting
+   a single value. A metric name (`fraction_interior`, retention, ROA) is
+   never used without its plain-language meaning at first use.
+2. **Counts beside percentages.** "10 of 400 starts" travels with "2.5%";
+   a percentage alone hides the sample size.
+3. **Fair comparisons, yardstick stated.** When comparing against a
+   reference, normalise for what differs and say so ("fuzzy mass relative to
+   success mass, because the two systems' success regions differ 5x").
+4. **Caveats in plain words**, with their direction ("30 trials undercount
+   mild fuzziness — equally for all models, so the ranking stands").
+
+This applies to chat, spec prose, and dataset descriptions alike. Wiki pages
+may additionally carry the terse technical form, but the human-readable
+statement comes first.
+
 ## Resident invariants
 
 Hold regardless of the task.

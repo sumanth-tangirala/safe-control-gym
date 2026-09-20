@@ -1,0 +1,46 @@
+# SAC cartpole stabilization: velocity pricing PHASE 2 -- warm start from the
+# pure-dmc control, then charge for speed.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac_dmc_lqrvel_ft.yaml
+#
+# The user's lambda-schedule idea ("zero velocity cost first, increase later")
+# implemented across a run boundary instead of inside one run: an in-run ramp
+# leaves SAC's 1M replay buffer a mixture of two reward functions and the old
+# rewards never age out. Phase 1 is the finished pure-dmc control
+# (cartpole_stabilization_6): swings up and reaches 98% of the collection box
+# under physical kills, but slam-style (x_dot ~18 m/s; 0.017 under collection
+# kills, n=29,060). Phase 2 = same recipe + shaped_dmc_velocity_weight 0.02
+# from step one, weights restored -- the penalty reshapes transport it does
+# not have to teach.
+#
+# Controls: cartpole_stabilization_sac_dmc_lqrvel.yaml (same reward, from
+# scratch -- does the valley-crossing need the warm start at all?) and the
+# pure-dmc control itself.
+#
+# Fine-tune guards, both paid for in the arm ledger (.claude/log.md
+# 2026-07-31): learning_starts 25000 (arm J: 0.8 first tick, 0.00 two ticks
+# later when updates hit a near-empty buffer); learning_rate 5e-5 (arm I5 at
+# the from-scratch 3e-4 drifted 0.80 -> 0.40 -> 0.00 off its donor).
+
+task_config:
+  cost: shaped_dmc
+  shaped_dmc_velocity_weight: 0.02
+  episode_len_sec: 10
+  terminate_on_goal: false
+sb3_config:
+  total_timesteps: 1000000
+  net_arch:
+  - 256
+  - 256
+  save_freq: 60000
+  eval_freq: 60000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/sb3/cartpole_dmc_recipe.yaml
+  comparison_bounds: configs/collection/cartpole.yaml
+  gamma: 0.9975
+  restore_weights: logs/sac/cartpole_stabilization_6/checkpoints/step_540000_steps.zip
+  learning_starts: 25000
+  learning_rate: 5.0e-5

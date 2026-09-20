@@ -46,17 +46,28 @@ from generate_inverted_pendulum_trajectories import (EVAL_SPLIT_ID, TRAIN_SPLIT_
 from safe_control_gym.utils.registration import make
 
 INF = float('inf')
-BOX_TOL = np.array([0.1, 0.1, 0.1, 0.1])      # x, x_dot, theta, theta_dot
+BOX_TOL = np.array([0.1, 0.1, 0.1, 0.1])      # native: x, x_dot, theta, theta_dot
 FORCE = 100.0
 CUT = {'x': 6.0, 'x_dot': 20.0, 'theta_dot': 20.0}
 SAMPLE = {'x': 6.0, 'x_dot': 5.0, 'theta': math.pi, 'theta_dot': 5.0}
 DATA_ROOT = '/common/users/shared/pracsys/genMoPlan/data_trajectories'
-STATE_ORDER = ['x', 'x_dot', 'theta', 'theta_dot']
+ENV_STATE_ORDER = ['x', 'x_dot', 'theta', 'theta_dot']
+STATE_ORDER = ['x', 'theta', 'x_dot', 'theta_dot']
+SERIALIZATION_PERMUTATION = [0, 2, 1, 3]
 
 
 def default_output_dir(sigma):
-    return os.path.join(DATA_ROOT, 'stochastic', 'cartpole', 'noisy_action', 'lqr',
+    return os.path.join(DATA_ROOT, 'stochastic', 'cartpole', 'noisy_action',
+                        'lqr_canonical_v2',
                         f'sigma_{sigma:05.1f}')
+
+
+def to_serialized_state_order(states):
+    '''Convert native env/controller states to adaptive-ROA canonical order.'''
+    states = np.asarray(states)
+    if states.shape[-1] != len(ENV_STATE_ORDER):
+        raise ValueError(f'expected final state dimension 4, got shape {states.shape}')
+    return states[..., SERIALIZATION_PERMUTATION]
 
 
 def grid_states(resolution):
@@ -200,7 +211,12 @@ def describe(split, sigma, horizon, seed, n, extra):
          'noise_mechanism': ('uniform on the commanded cart force, pre-saturation'
                              if sigma > 0 else 'none'),
          'control_bound': FORCE, 'fraction_of_control_bound': sigma / FORCE,
-         'state_order': STATE_ORDER, 'ctrl_freq': 100, 'pyb_freq': 5000,
+         'state_order': STATE_ORDER, 'environment_state_order': ENV_STATE_ORDER,
+         'serialization': {
+             'target_from_environment_indices': SERIALIZATION_PERMUTATION,
+             'note': ('simulation and LQR use environment_state_order; persisted state arrays '
+                      'use state_order')},
+         'schema_version': 2, 'ctrl_freq': 100, 'pyb_freq': 5000,
          'steps_per_control': 50, 'horizon_steps': horizon, 'seed': seed,
          'termination_cut': {**CUT, 'theta': 'unbounded',
                              'note': ('RELAXED from the shipped x_dot/theta_dot of 5.0, which '
@@ -233,7 +249,8 @@ def collect_train(sigma, out_dir, num_trajs, seed, horizon, workers):
                 allst[i], lengths[i], labels[i], seeds[i] = st[j], ln[j], lb[j], sd[j]
     offsets = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int64)
     atomic_savez(os.path.join(out_dir, 'train.npz'),
-                 states=np.concatenate(allst, 0), offsets=offsets, starts=starts,
+                 states=to_serialized_state_order(np.concatenate(allst, 0)),
+                 offsets=offsets, starts=to_serialized_state_order(starts),
                  labels=labels, seeds=seeds)
     desc = describe('train', sigma, horizon, seed, num_trajs,
                     {'success_rate': float(labels.mean()),
@@ -293,7 +310,8 @@ def main():
     if args.merge_eval_shards:
         grid = grid_states(args.resolution)
         desc = describe('eval', args.sigma, args.horizon, args.seed, len(grid), {})
-        stats = merge_eval_shards(out, grid, np.array([]), np.array([]), desc)
+        stats = merge_eval_shards(out, to_serialized_state_order(grid),
+                                  np.array([]), np.array([]), desc)
         print(f"merged {stats['shards']} shards, {stats['n_batches']} batches, "
               f"mean p {stats['success_rate']:.4f}, mean SE {stats['mean_se']:.5f}")
         return

@@ -521,6 +521,45 @@ is worth having, and the reason a level set has to declare which of the two it
 matches.
 
 
+### The published cartpole `gaussian_signal` descriptions state the wrong alpha/beta
+
+The collection ran the spec's levels. `scripts/sbatch_cartpole_gauss_collect.sh`
+holds `ALPHAS=(2.413 3.317 5.428)` and `BETAS=(0.635 0.873 1.429)`, which are the
+values above and which deliver 4.62 / 6.35 / 10.39 N, matching the uniform family
+they were built to pair with.
+
+The shipped `dataset_description.json` files claim something else: alpha/beta of
+(0.405, 1.5), (0.945, 3.5) and (1.08, 4.0), with a note asserting
+`alpha = 0.27*beta throughout`. That ratio is the reciprocal of the real 3.80,
+but the values are not a swap of the real ones either, and none of the four
+numbers appears anywhere in this repo. They were written by whatever produced
+the descriptions, not by the collector.
+
+The consequence is a description that misstates its own data by roughly 3x.
+Read literally, `med` would deliver `sqrt(E[sigma^2]) = 18.31 N`; the data beside
+it was collected at 6.35 N. Found 2026-08-26 by checking the descriptions against
+the submit script. The labels themselves are unaffected, the noise law they were
+generated under is the spec's. Nothing regenerates these files, so fixing them
+means writing them by hand or giving the family a reducer.
+
+## Corridor families (`corridor_sine_ambient`)
+
+A spatially gated, time-coherent mechanism unlike anything else here, collected
+for both quadrotors. Full account, geometry, the falsified reachability shortcut,
+the k-window top-up scheme and the acceptance checks:
+[corridor-noise.md](corridor-noise.md).
+
+```
+DATA_ROOT/stochastic/quadrotor2D/corridor_sine_ambient/rl/{baseline,sharp,smooth}/
+DATA_ROOT/stochastic/quadrotor3D/corridor_sine_ambient/lqr/{f_0.25,f_0.30}/
+```
+
+Eval is published at K=50. The K=100 reduction exists but is staged, not
+published, and the description JSONs in both trees still state `mean_trials: 20`
+from the original collection [user, 2026-08-22 — deliberate, the descriptions are
+owned by another account and were left alone].
+
+
 ## Unmatched-force datasets: quad3d, quad2d, and the cartpole re-collection
 
 ```

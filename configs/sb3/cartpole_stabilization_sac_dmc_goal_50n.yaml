@@ -1,0 +1,46 @@
+# SAC cartpole stabilization: dm_control recipe + GOAL INCOME, at 50 N.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac_dmc_goal_50n.yaml
+#
+# One lever added to the recipe: shaped_dmc_goal_reward 1.0, paid EVERY step the
+# state is inside the 0.05 goal ball (terminate_on_goal false, so it is an
+# occupancy bonus -- dm_control's own sparse-variant idiom, +1 per step in the
+# region, layered on their dense product).
+#
+# Why, measured 2026-08-03: dm_control's centered factor is far too flat to say
+# WHERE to balance. Standing 0.8 m off-centre costs ~0.017 of a ~0.95 step
+# reward (1.8% of return). Consequences seen in every arm so far -- the 50 N and
+# 10 N arms swing up and balance perfectly then hold x = -0.77 and -1.41 as
+# EXACT fixed points (x_dot = 0.000 still at 20,000 steps), scoring 0.000 reach;
+# the 2000 N control only reaches the ball because its authority makes the slow
+# homing drift finish inside the horizon (crosses 0.1 at ~step 600 of 1000).
+# The bonus makes standing at the goal worth ~2.0/step against ~0.98 elsewhere.
+#
+# Two authorities, because the risk differs. At 2000 N the policy already visits
+# the ball, so the bonus should anchor it -- converting reach into hold. At 50 N
+# the policy parks 0.8 m out and must first FIND a 0.05 ball for the bonus to
+# ever pay; if it never does, the dense product still trains swing-up and this
+# arm degenerates to the plain 50 N arm rather than failing.
+#
+# 600k, checkpoints every 20k, keeper chosen by the RoA eval: the 2000 N control
+# lost 6 points of coverage between 120k and 1M at flat eval reward.
+
+task_config:
+  cost: shaped_dmc
+  shaped_dmc_goal_reward: 1.0
+  episode_len_sec: 10
+  terminate_on_goal: false
+sb3_config:
+  total_timesteps: 600000
+  net_arch:
+  - 256
+  - 256
+  save_freq: 20000
+  eval_freq: 20000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/sb3/cartpole_dmc_recipe_50n.yaml
+  comparison_bounds: configs/collection/cartpole.yaml
+  gamma: 0.9975

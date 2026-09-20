@@ -1,0 +1,144 @@
+# The inverted pendulum SYSTEM: one plant, one observation contract, one start
+# region.
+#
+# Facts about the dynamical system and how a policy sees it -- shared by every
+# regime. The regime files (configs/collection/inverted_pendulum.yaml,
+# configs/physical/inverted_pendulum.yaml) extend this file and add only what
+# actually differs between them, which for this system is nothing but the
+# dataset reference numbers: the pendulum has no termination box at all.
+# `extends:` is resolved by load_collection_bounds (train_sb3.py), child keys
+# win on conflict.
+
+# --- Plant, matched EXACTLY to the reference dataset ---
+#
+# Constructor kwargs, merged into task_config by with_collection_init; they
+# change the dynamical system, not just its start/stop box, so they cannot be
+# applied after the env is built.
+#
+# pyb_freq 300 is the one value here that is NOT the env default, and it was
+# not guessed -- it was solved for. Measured 2026-07-31 against the shipped
+# trajectory files: with the env's default pyb_freq of 100 (one 0.01 s
+# explicit-Euler step per control step) the very FIRST step already misses the
+# recorded next state by 1.2e-3, which no choice of torque can explain, because
+# theta += dt * theta_dot does not depend on u. Sweeping the substep count over
+# 1..6 puts a sharp minimum at 3 -- error 1.9e-6, i.e. the rounding floor of
+# the dataset's 6-decimal text format, against 3.0e-4 at 2 substeps and 1.5e-4
+# at 4. Over four whole 502-state trajectories the peak deviation falls from
+# 5.4e-2 (pyb 100) to 1.2e-3 (pyb 300). RK4 at dt = 0.01, which is the exact
+# ODE solution to well past this precision, is 5.9e-4 off at step one -- so the
+# integrator really is explicit Euler and only the substep count was wrong.
+#
+# It changes labels: on 300 random eval_states.txt rows, pyb 100 reproduces
+# 299/300 and pyb 300 reproduces 300/300, and the worst terminal-state error
+# drops from 4.19 rad (a rollout that wrapped a whole revolution the other way)
+# to 0.059.
+#
+# NOTE the two places this contradicts, both left alone because changing them
+# is a generator change, not a config change: inverted_pendulum.yaml's comment
+# "pyb_freq == ctrl_freq == 100 gives the source system's dt = 0.01
+# explicit-Euler step", and generate_inverted_pendulum_trajectories.py's
+# hardcoded `ctrl_freq = pyb_freq = 100  # matching the trained-on physics`.
+# A re-collection with the current generator would NOT reproduce the shipped
+# pendulum datasets.
+#
+# Every OTHER value here already equals the env default
+# (safe_control_gym/envs/gym_control/inverted_pendulum.py:65-84 and its yaml).
+# They are pinned anyway: the point of this file is that a change to an env
+# default cannot move the plant a shipped dataset was collected under without
+# the change showing up as a diff here.
+#
+# u_sat 0.6371781908344007 is the pendulum's analogue of cartpole's
+# action_scale -- the control authority, an ML4KP-derived torque saturation. It
+# is applied twice: PendulumLQR.select_action clips to it, and the env clips
+# again in _preprocess_control. The LQR gain also depends on it, because
+# PendulumLQR normalises B by Tu = u_sat before solving the ARE, so changing it
+# changes the controller and not only the actuator.
+#
+# theta_dot_max is a CLIP, not a kill: inverted_pendulum._get_done has no
+# out-of-bounds test at all (inverted_pendulum.py:347-355). This is why neither
+# regime file carries an env_attributes block.
+#
+# ctrl_freq 100 is the dataset's control rate (dataset_description.json
+# simulation_parameters: dt 0.01, ctrl_freq 100). pyb_freq 300 is the
+# INTEGRATOR rate underneath it -- three 1/300 s explicit-Euler substeps per
+# control step, with the torque held across them. dataset_description.json does
+# not record it; it says only "dt: 0.01", which describes the control hold and
+# was read as the integrator step by both the env yaml and the generator.
+#
+# The four physical constants are load-bearing twice over: they set the
+# dynamics AND the LQR gain (PendulumLQR linearises analytically from
+# env.GRAVITY_ACC / PENDULUM_LENGTH / DAMPING / inertia).
+task_config_overrides:
+  ctrl_freq: 100
+  pyb_freq: 300
+  u_sat: 0.6371781908344007
+  theta_dot_max: 6.283185307179586
+  goal_threshold: 0.075
+  gravity: 9.81
+  pendulum_mass: 0.15
+  pendulum_length: 0.5
+  damping: 0.1
+
+# --- Start region: the collection region, used by every regime ---
+#
+# Transcribed from the dataset's initial_state_bounds. theta covers the whole
+# circle and theta_dot the whole clip range, so this is the entire state space
+# rather than a box inside it -- the pendulum was the one system whose training
+# distribution was correct from the start.
+init_state_randomization_info:
+  init_theta:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: uniform
+    low: -6.283185307179586
+    high: 6.283185307179586
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [theta, theta_dot]
+
+# Encode this angle as (cos, sin) and scale its rate. Unlike the cartpole's,
+# this theta IS wrapped to [-pi, pi] by the env itself -- so the encoding buys
+# continuity across the +/-pi seam rather than generalisation across
+# revolutions, which for a system whose start region is the whole circle is the
+# seam a policy would otherwise have to learn around.
+angle_observation:
+  angle: theta
+  rate: theta_dot
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8. On this system it is only 2.0 (pi against
+# 2*pi), so it costs nothing and keeps the systems uniform.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env
+# denormalises to true units internally, so the dynamics are unchanged.
+#
+# NOT what a replay of the reference dataset wants. PendulumLQR.select_action
+# returns a physical torque already clipped to u_sat, and under this setting
+# the env's denormalize_action would multiply it by u_sat a second time --
+# collapsing authority by 1.57x. The collectors are unaffected because they
+# build the base env id directly and never read this file; a replay harness has
+# to pass normalized_rl_action_space=False explicitly.
+normalized_rl_action_space: true
+
+# Initial-state curriculum: start near the goal, widen as success is earned.
+#
+# Required, not optional. Measured over 300 random episodes, the number of
+# steps landing inside the goal ball was 0 for cartpole, quadrotor2d and
+# quadrotor3d; the pendulum managed 4 hits in 99,049 steps, which is barely
+# better -- under a sparse reward that is nearly no positive signal at all.
+#
+# fraction 0 is a point distribution at the goal, 1 is the full start region
+# above. Ranges contract about the GOAL value rather than the midpoint.
+# Advancement is driven by measured success rate, not by a step schedule.
+curriculum:
+  start: 0.02
+  step: 0.15
+  threshold: 0.5

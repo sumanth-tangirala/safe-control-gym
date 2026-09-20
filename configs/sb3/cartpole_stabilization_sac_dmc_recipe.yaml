@@ -1,0 +1,42 @@
+# SAC on cartpole stabilization: dm_control's recipe on OUR plant.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac_dmc_recipe.yaml
+#
+# First arm of the fresh redo on the synced plant (2000 N, 100 Hz control,
+# 5000 Hz physics). From dm_control: the swingup reward, ported constant for
+# constant (cost: shaped_dmc, cartpole.py), and the hanging start (in the
+# bounds file). From us: the dynamics, the physical kill box, and the goal set
+# -- success is our goal-ball hold, measured by the success callback and
+# eval_policy, never by the reward.
+#
+# episode_len_sec 10 = 1000 steps at the synced 100 Hz -- dm_control's exact
+# horizon, and no goal termination: terminate_on_goal false so the episode
+# runs full length and parking keeps paying, as upstream.
+#
+# gamma 0.9975: the time-equivalent of the old 0.995 at 50 Hz (same real-time
+# discount horizon; ledger entry 2026-07-31 in .claude/log.md). No sparse step
+# cost -- the dense product is the reward.
+#
+# save_freq/eval_freq are ENV steps (divided by n_envs in train_sb3); sized to
+# tick every ~60 episodes at 1000 steps each.
+
+task_config:
+  cost: shaped_dmc
+  episode_len_sec: 10
+  terminate_on_goal: false
+sb3_config:
+  total_timesteps: 1000000
+  net_arch:
+  - 256
+  - 256
+  save_freq: 60000
+  eval_freq: 60000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/sb3/cartpole_dmc_recipe.yaml
+  # Scored against the collection regime too, for comparability bookkeeping;
+  # a stabilization run under the hold rule is task-matched to the reference.
+  comparison_bounds: configs/collection/cartpole.yaml
+  gamma: 0.9975

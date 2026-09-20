@@ -1,0 +1,159 @@
+# The 2D quadrotor SYSTEM: one plant, one observation contract, one start
+# region.
+#
+# Facts about the dynamical system and how a policy sees it -- shared by every
+# regime. The regime files (configs/collection/quadrotor2d.yaml,
+# configs/physical/quadrotor2d.yaml) extend this file and add only what actually
+# differs between them: the termination box (which for the quadrotors is
+# `state_space_bounds`, not `env_attributes`) and any dataset reference numbers.
+# `extends:` is resolved by load_collection_bounds (train_sb3.py), child keys
+# win on conflict.
+
+# --- Plant, matched to the reference dataset as closely as a constructor can ---
+#
+# Constructor kwargs, merged into task_config by with_collection_init; they
+# change the dynamical system, not just its start/stop box, so they cannot be
+# applied after the env is built.
+#
+# ctrl_freq/pyb_freq: the env defaults of 60/240 take four 4.2 ms PyBullet steps
+# per 16.7 ms control step. The dataset integrated at 0.2 ms with a 10 ms hold
+# -- 50 substeps -- which is what generate_quadrotor_2d_trajectories_rl.py
+# computes (ctrl_freq = max(30, 1/save_freq) = 100, pyb_freq = 50 * ctrl_freq).
+#
+# Verified rather than trusted, because dataset_description.json records the
+# control hold and not always the integrator step (the pendulum's said dt 0.01
+# while the data ran three substeps). Measured 2026-07-31 by driving the env
+# open-loop from every recorded state of three long shipped trajectories and
+# comparing the single resulting step:
+#
+#   pyb_freq   4000     5000     6000
+#   step error 5.9e-5   1.1e-6   4.0e-5
+#
+# 5000 is a sharp minimum at the 6-decimal rounding floor of the text format.
+# The description's number is correct for this system.
+#
+# episode_len_sec 12 = 1200 control steps, the dataset's max_steps. The
+# generator ran episode_len_sec 1000 with a Python-side
+# `for step in range(max_steps)` cut at 1200, which is the same horizon by a
+# different mechanism -- and it recorded ZERO timeouts in 489,789 trajectories,
+# so nothing in the dataset was shaped by the cut at all.
+#
+# The env default of 5 s is 500 steps and does NOT reach: the longest shipped
+# trajectory is 709 states (708 steps). Measured on a balanced 128/128 sample of
+# eval_states.txt, cutting at 500 steps reproduces 249/256 labels against
+# 256/256 at 1200, and all seven losses are one-directional shipped-1/replay-0
+# -- the signature of horizon starvation rather than of a wrong plant.
+#
+# task_info carries the dataset's goal and its 0.2 m success radius. Two traps:
+# (1) benchmark_env.py:170 assigns TASK_INFO WHOLESALE rather than merging, so
+# this dict replaces the class default in full -- fine for stabilization/reach,
+# which read only `stabilization_goal`, but a trajectory-tracking task built
+# from this file would KeyError on the trajectory_* keys. (2) The env's own
+# default tolerance is 0.05, four times tighter; under terminate_on_goal it is
+# the tolerance that decides where an episode ends and therefore what the
+# terminal state -- and so the label -- is.
+#
+# NOT pinnable here, and the reason this system does not reproduce bit-exactly:
+# the shipped dataset ran at PyBullet's DEFAULT damping (linearDamping =
+# angularDamping = 0.04), not at zero. See the loud note in
+# configs/collection/quadrotor2d.yaml. Damping is a post-construction
+# p.changeDynamics call that base_aviary re-applies on every reset, so no
+# constructor kwarg can express it.
+#
+# The physical parameters (mass 0.027 kg, Iyy 1.4e-5, arm 0.0397 m, and the
+# thrust coefficients that set the action bounds) come from
+# assets/cf2x.urdf and are deliberately NOT restated as `inertial_prop`:
+# that kwarg assigns self.MASS after loadURDF has already built the body, so
+# pinning it there would desynchronise the simulated body from the model the
+# goal and the symbolic dynamics are computed from. They are guarded by
+# tests/test_envs/test_regime_configs.py instead.
+task_config_overrides:
+  ctrl_freq: 100
+  pyb_freq: 5000
+  episode_len_sec: 12
+  task_info:
+    stabilization_goal: [0, 1]
+    stabilization_goal_tolerance: 0.2
+
+# --- Start region: the collection region, used by every regime ---
+#
+# Transcribed from the dataset's initial_state_bounds. For this system the
+# start box and the collection kill box are the same box, on every channel --
+# the dataset was built that way ("state space closure"), so a start state is
+# never outside the region it is scored in.
+init_state_randomization_info:
+  init_x:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_x_dot:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_z:
+    distrib: uniform
+    low: 0.1
+    high: 1.5
+  init_z_dot:
+    distrib: uniform
+    low: -1.0
+    high: 1.0
+  init_theta:
+    distrib: uniform
+    low: -3.141592653589793
+    high: 3.141592653589793
+  init_theta_dot:
+    distrib: uniform
+    low: -8.0
+    high: 8.0
+
+# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+#
+# state_layout also names the channels that state_space_bounds addresses, so the
+# layout is written once instead of being duplicated in train_sb3.
+state_layout: [x, x_dot, z, z_dot, theta, theta_dot]
+
+# No angle encoding: pitch here comes from an Euler convention bounded to
+# +/-pi/2, so it never wraps and (cos, sin) would buy nothing.
+angle_observation: null
+
+# Map every channel from its state_space bounds onto [-1, 1]. The channels are
+# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
+# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
+# +/-24 against position at +/-1.8.
+normalize_observation: true
+
+# Present the policy with a symmetric [-1, 1] action space; the env denormalises
+# to true units internally, so the dynamics are unchanged.
+#
+# Matters most for the quadrotors, whose raw action space is asymmetric and never
+# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
+# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
+# that box its natural output sits at the bottom of the thrust range and a zero
+# action means free fall rather than hover. SB3's check_env warns about exactly
+# this. Normalised, zero maps to mid-thrust, which is near hover.
+#
+# Unlike the cartpole and the pendulum, this is ALSO what the reference dataset
+# ran: safe_explorer_ppo was trained on the normalised action space and the
+# collector passes normalized_rl_action_space True. So a replay harness for this
+# system must keep it True -- the opposite of the other two systems, where the
+# analytic controllers emit physical units and the env would denormalise twice.
+normalized_rl_action_space: true
+
+# Initial-state curriculum: start near the goal, widen as success is earned.
+#
+# Required, not optional. Measured over 300 random episodes, the number of steps
+# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
+# so under a sparse reward those runs see no positive signal at all and cannot
+# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
+#
+# fraction 0 is a point distribution at the goal, 1 is the full collection
+# region above. Ranges contract about the GOAL value rather than the midpoint,
+# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
+#
+# Advancement is driven by measured success rate, not by a step schedule: a
+# schedule has to be guessed per system and is wrong in both directions.
+curriculum:
+  start: 0.005
+  step: 0.15
+  threshold: 0.5

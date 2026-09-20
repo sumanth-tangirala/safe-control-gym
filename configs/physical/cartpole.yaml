@@ -1,62 +1,61 @@
-# The PHYSICAL regime: terminate only on bounds with a physical origin.
+# The PHYSICAL regime for the cartpole: the system, killed only at bounds with
+# a physical origin.
 #
-# Every bound here traces to a URDF joint limit or to the workspace. Everything
-# dropped was invented. Measured over 200 LQR episodes, the invented bounds were
-# doing most of the killing -- 61% of cartpole crashes came from a theta_dot
-# limit on a joint the URDF declares unlimited, and 99% of quadrotor2d crashes
-# from translational velocity limits on a free body that has no such limit.
+# The plant, start region, observation contract and curriculum live in
+# configs/system/cartpole.yaml; this file adds only the termination box. Same
+# plant as the collection regime -- the two differ ONLY in where episodes die.
+# "Physical" means physically-traceable kills, not physical authority: the
+# shared plant runs the dataset's 2000 N, 2x the URDF's own effort limit.
+#
+# Measured over 200 LQR episodes, the invented bounds were doing most of the
+# killing -- 61% of cartpole crashes came from a theta_dot limit on a joint the
+# URDF declares unlimited.
+#
+# With one shared plant, this kill box is a strict relaxation of the collection
+# regime's, so its ROA is a superset -- measured 2026-07-31 by replaying
+# eval_states.txt samples under both regimes: zero collection successes lost,
+# and 25/300 random (and 17/128 shipped failures) flip to success once the
+# velocity kills are gone. LQR's ROA grows roughly 18% -> 26% for free.
 #
 # This is the regime to TRAIN in. configs/collection/ stays as the datasets
 # define it, and eval_policy scores every run under both -- so a policy is
 # reported both on what it can actually do and on the number comparable to the
 # shipped datasets.
-#
-# Initial states and the observation encoding are inherited from the collection
-# config unchanged; only the termination box differs.
 
-# slider_to_cart is prismatic with a declared URDF velocity limit of 5.0 m/s,
-# so x_dot 5.0 is REAL and kept. cart_to_pole is `type="continuous"` with no
-# <limit> tag at all -- PyBullet reports pos_limits=[0, -1] and max_velocity=0,
-# its encoding for unlimited -- so theta_dot has no physical basis and is
-# dropped. It caused 61% of all cartpole crashes and forbids swing-up, which is
-# exactly the manoeuvre LQR cannot do and RL might.
-#
-# x keeps a workspace bound, widened to 2x the initial region: init == termination
-# means a state sampled at the boundary dies whatever the controller does.
+extends: ../system/cartpole.yaml
 
-init_state_randomization_info:
-  init_x:
-    distrib: uniform
-    low: -6.0
-    high: 6.0
-  init_x_dot:
-    distrib: uniform
-    low: -5.0
-    high: 5.0
-  init_theta:
-    distrib: uniform
-    low: -3.141592653589793
-    high: 3.141592653589793
-  init_theta_dot:
-    distrib: uniform
-    low: -5.0
-    high: 5.0
-state_layout:
-- x
-- x_dot
-- theta
-- theta_dot
-angle_observation:
-  angle: theta
-  rate: theta_dot
-normalize_observation: true
-normalized_rl_action_space: true
-curriculum:
-  start: 0.005
-  step: 0.15
-  threshold: 0.5
 env_attributes:
-  x_threshold: 12.0
-  x_dot_threshold: 5.0
+  # x keeps the collection regime's workspace bound of 6.0 [user, 2026-07-31],
+  # so the regimes agree on where the rail ends and their success rates stay
+  # directly comparable. Note the edge cost: init == termination means a state
+  # sampled exactly at +/-6 dies whatever the controller does. The URDF rail is
+  # actually +/-15 (`slider_to_cart` lower/upper), so 6.0 is a workspace
+  # choice, not a hardware limit.
+  x_threshold: 6.0
+  # Dropped, not kept. The URDF declares velocity="5" on slider_to_cart, but a
+  # URDF velocity tag is advisory -- PyBullet honours it only under velocity
+  # control, and this cart is driven by an applied force, so nothing in the
+  # simulator enforces it. Terminating on it was our modelling choice.
+  #
+  # Measured, it buys nothing: with the bound LQR scores 7% and all 169 crashes
+  # are x_dot; without it LQR scores 8% and all 165 crashes are x. The failure
+  # just moves. DM Control's cartpole-swingup shapes velocity as a reward term
+  # with a margin rather than terminating on it.
+  #
+  # Termination is purely positional: cart off the rail, nothing else.
+  x_dot_threshold: 1000000.0
+  # cart_to_pole is `type="continuous"` with no <limit> tag at all -- PyBullet
+  # reports pos_limits=[0, -1] and max_velocity=0, its encoding for unlimited
+  # -- so neither theta bound has a physical basis. The theta_dot limit caused
+  # 61% of all cartpole crashes and forbids swing-up, which is exactly the
+  # manoeuvre LQR cannot do and RL might.
+  #
+  # 1000000.0 next to .inf is deliberate, not sloppiness: the two encodings of
+  # "no limit" take different code paths in train_sb3. A finite bound is
+  # mirrored into state_space and then caught by the > 1e5 unbounded test in
+  # normalisation_bounds (train_sb3.py:206, guarding a measured bug where
+  # normalising by 1e6 made velocity channels std 0.0000); .inf takes the skip
+  # branch in mirror_thresholds_into_state_space (train_sb3.py:395). Both
+  # converge for cartpole -- do not "unify" them without re-checking both paths.
   theta_threshold_radians: .inf
   theta_dot_threshold: 1000000.0

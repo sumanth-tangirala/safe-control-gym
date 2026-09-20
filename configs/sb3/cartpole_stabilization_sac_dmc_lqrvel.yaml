@@ -1,0 +1,42 @@
+# SAC cartpole stabilization: dm_control recipe + LQR-style velocity pricing.
+#
+#   python -m safe_control_gym.experiments.train_sb3 \
+#       --env_id cartpole_stabilization --algo sac --output_dir logs \
+#       --overrides configs/sb3/cartpole_stabilization_sac_dmc_lqrvel.yaml
+#
+# One lever changed from cartpole_stabilization_sac_dmc_recipe.yaml (the
+# control): shaped_dmc_velocity_weight 0.02, an additive
+# -0.02*(x_dot^2 + theta_dot^2) per step on top of the dm_control product.
+#
+# Why additive, and why 0.02: the multiplicative product cannot price
+# transport speed (any velocity factor multiplies a near-zero upright during
+# the swing), so the pure port slams -- first action ~1850 N, x_dot 18 m/s,
+# legal under physical kills but dead at step one under the collection box
+# (measured: same policy 0.980 physical vs 0.098 collection over 5221 RoA
+# states). The slam saves ~200 steps of ~1.0 upright income and lasts ~20
+# steps, so a per-step penalty flips it only above ~10 per slam step. At 0.02:
+# a slam step (18 m/s) costs ~6.5 -- decisively bad; a collection-legal 5 m/s
+# transport costs 0.5/step -- uncomfortable, survivable; parking costs ~0.
+# The same term LQR's Q charges, scaled to the product's [0, 1] range.
+#
+# Everything else identical to the control arm: our plant (2000 N, 100 Hz,
+# 5000 Hz), physical kills, hanging Gaussian start, no curriculum, our goal
+# set doing the judging.
+
+task_config:
+  cost: shaped_dmc
+  shaped_dmc_velocity_weight: 0.02
+  episode_len_sec: 10
+  terminate_on_goal: false
+sb3_config:
+  total_timesteps: 1000000
+  net_arch:
+  - 256
+  - 256
+  save_freq: 60000
+  eval_freq: 60000
+  n_eval_episodes: 10
+  n_envs: 4
+  collection_bounds: configs/sb3/cartpole_dmc_recipe.yaml
+  comparison_bounds: configs/collection/cartpole.yaml
+  gamma: 0.9975

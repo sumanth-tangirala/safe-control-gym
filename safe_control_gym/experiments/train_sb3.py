@@ -90,23 +90,54 @@ def apply_env_id_alias(argv=None):
             for a in argv]
 
 
-def load_collection_bounds(path):
-    '''The collection regime for one system, read from a single file.
+def _merge_bounds(base, child):
+    '''Recursive dict merge for regime inheritance; the child wins on conflict.
 
-    `configs/collection/<env_id>.yaml` records what a dataset was actually
-    collected under: where episodes start, and where they terminate. Both
-    training and evaluation read the same file, so the regime a policy learns in
-    cannot drift from the one it is scored in -- which is the whole reason the
-    numbers mean anything.
+    A dict carrying a `distrib` key is a distribution SPEC -- a value, not a
+    namespace -- and replaces the parent's wholesale. Merging into it instead
+    leaves the parent's kwargs behind: a child `{distrib: normal, loc, scale}`
+    over a parent `{distrib: uniform, low, high}` would call
+    `normal(low=..., high=..., loc=..., scale=...)` and crash at reset.
+    '''
+    merged = dict(base)
+    for key, value in child.items():
+        if (isinstance(value, dict) and isinstance(merged.get(key), dict)
+                and 'distrib' not in value):
+            merged[key] = _merge_bounds(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
-    Transcribed from each dataset's dataset_description.json, where
-    initial_state_bounds and termination_thresholds are identical: collection
-    starts anywhere it will not immediately die.
+
+def load_collection_bounds(path, _seen=None):
+    '''One regime for one system, read from a single file.
+
+    A regime file (`configs/collection/<env_id>.yaml`,
+    `configs/physical/<env_id>.yaml`) records where episodes terminate, plus any
+    dataset reference numbers. The plant and everything else shared between
+    regimes lives in `configs/system/<env_id>.yaml`, pulled in via an `extends:`
+    key -- a path relative to the extending file, resolved here recursively with
+    the extending file's own keys winning. One system file means the two regimes
+    cannot disagree about the dynamical system, only about where it is killed.
+
+    Both training and evaluation read the same files, so the regime a policy
+    learns in cannot drift from the one it is scored in -- which is the whole
+    reason the numbers mean anything.
     '''
     if not path:
         return {}
-    with open(path) as handle:
-        return yaml.safe_load(handle) or {}
+    resolved = os.path.abspath(path)
+    _seen = set() if _seen is None else _seen
+    if resolved in _seen:
+        raise ValueError(f'extends cycle through {path}')
+    _seen.add(resolved)
+    with open(resolved) as handle:
+        bounds = yaml.safe_load(handle) or {}
+    parent = bounds.pop('extends', None)
+    if parent:
+        parent_path = os.path.join(os.path.dirname(resolved), parent)
+        bounds = _merge_bounds(load_collection_bounds(parent_path, _seen), bounds)
+    return bounds
 
 
 def apply_collection_bounds(env, env_id, bounds):
@@ -138,6 +169,18 @@ def with_collection_init(task_config, bounds):
         merged['init_state_randomization_info'] = randomization
     if 'normalized_rl_action_space' in bounds:
         merged['normalized_rl_action_space'] = bool(bounds['normalized_rl_action_space'])
+    # Plant parameters, merged last so the regime file wins.
+    #
+    # These are constructor kwargs that change the DYNAMICAL SYSTEM, not just
+    # where it starts or stops -- so they cannot be applied post-hoc the way
+    # env_attributes are. Cartpole's action_scale is the case that forced this:
+    # physical_action_bounds is computed from it during __init__, so setting the
+    # attribute afterwards leaves the clip at its old value.
+    #
+    # Without this merge a policy was trained and scored at the env's 10 N
+    # default while reference_success came from a 2000 N dataset, and the two
+    # numbers were printed side by side as though they described one system.
+    merged.update(bounds.get('task_config_overrides', {}))
     return merged
 
 
@@ -153,8 +196,24 @@ def normalisation_bounds(env, angle_obs, rotation_obs, layout):
     (cos and sin), and the rate contributes its own scaled bound.
     """
     base = env.unwrapped
-    low = np.asarray(base.state_space.low, dtype=np.float64)
-    high = np.asarray(base.state_space.high, dtype=np.float64)
+    # The scale a channel is normalised by is NOT the bound it terminates at.
+    # Conflating them silently killed channels: unbounding the velocities for
+    # termination set their state_space to 1e6, so normalising by that delivered
+    # x_dot in +/-5 to the policy as +/-5e-6. Measured, cartpole's x_dot channel
+    # and all three of quadrotor2d's velocity channels had std 0.0000 -- the
+    # policy was blind to velocity entirely, while every position channel looked
+    # healthy, so nothing about the observation appeared wrong.
+    #
+    # Take the tightest FINITE scale available: the regime's state_space where it
+    # is meaningful, the env's own observation_space where the regime has
+    # deliberately unbounded the channel.
+    state_low = np.asarray(base.state_space.low, dtype=np.float64)
+    state_high = np.asarray(base.state_space.high, dtype=np.float64)
+    obs_low = np.asarray(base.observation_space.low, dtype=np.float64)
+    obs_high = np.asarray(base.observation_space.high, dtype=np.float64)
+    unbounded = (state_high - state_low) > 1e5
+    low = np.where(unbounded, obs_low, state_low)
+    high = np.where(unbounded, obs_high, state_high)
 
     if rotation_obs:
         # Three Euler channels become nine matrix entries, each already in
@@ -216,10 +275,16 @@ def build_env(config, regime=None):
     bounds = encoding if regime is None else regime
     task_config = with_collection_init(dict(config.task_config), bounds)
     env = make(config.task, **task_config)
-    # Applied to the bare env before any wrapper, since the thresholds live on
-    # the env itself, and before normalisation so the bounds it reads are the
-    # collection ones.
-    apply_collection_bounds(env, config.task, bounds)
+    # ENCODING bounds first, always -- not the evaluation regime's. The
+    # normalisation wrapper below captures its scales from state_space at
+    # construction, and those scales are part of the trained model: applying a
+    # different regime's kill box here re-scaled the velocity channels 20 -> 5
+    # (measured: state [3, 2, 0, 2] read x_dot 0.4 instead of the 0.1 the
+    # policy was trained on) and every cross-regime evaluation fed the policy
+    # distorted observations. The regime's kill box is applied AFTER the
+    # wrappers, where it can move where episodes die but no longer what the
+    # policy sees.
+    apply_collection_bounds(env, config.task, encoding)
     apply_env_attributes(env, sb3_config.get('env_attributes', {}))
 
     layout = encoding.get('state_layout')
@@ -252,6 +317,12 @@ def build_env(config, regime=None):
     repeat = int(sb3_config.get('action_repeat', 1))
     if repeat > 1:
         env = ActionRepeat(env, repeat)
+    if regime is not None:
+        # The evaluation regime, applied to the wrapped env: the helpers reach
+        # through to env.unwrapped, thresholds and state_space move (the
+        # quadrotors terminate on state_space), and the normalisation scales
+        # captured above stay the training ones.
+        apply_collection_bounds(env, config.task, regime)
     return env
 
 
@@ -516,7 +587,27 @@ def train():
                  tensorboard_log=run_dir,
                  gradient_steps=int(sb3_config.get('gradient_steps', -1 if n_envs > 1 else 1)),
                  gamma=float(sb3_config.get('gamma', 0.99)),
+                 # For warm starts: updates on a near-empty fresh buffer wreck a
+                 # loaded actor (measured: arm J scored 0.8 on its first tick,
+                 # then 0.00 two ticks later). Delay updates until the buffer
+                 # holds real experience from the restored policy.
+                 learning_starts=int(sb3_config.get('learning_starts', 100)),
+                 # Fine-tuning wants a gentler rate than from-scratch: at the
+                 # default 3e-4 a warm-started actor drifts off its donor as
+                 # sparse successes thin out (I5: gate 0.80 -> 0.40 -> 0.00
+                 # while the ball tightened).
+                 learning_rate=float(sb3_config.get('learning_rate', 3e-4)),
                  policy_kwargs={'net_arch': list(sb3_config.get('net_arch', [256, 256]))})
+    # Warm start: load weights (actor, critics, entropy coefficient) from a
+    # previous run's checkpoint into the freshly configured model, so a policy
+    # trained under one reward can be fine-tuned under another. set_parameters
+    # rather than SAC.load keeps THIS run's hyperparameters and env. Lives in
+    # sb3_config rather than --restore, which upstream already defines as
+    # "re-read config.yml from this run directory".
+    restore_weights = sb3_config.get('restore_weights', None)
+    if restore_weights:
+        model.set_parameters(restore_weights, device=config.device)
+        print(f'restored weights from {restore_weights}')
     callbacks = [
         # Periodic checkpoints, not only best: the shipped strong/weak model pairs
         # are best-vs-intermediate checkpoints of one run, so dropping intermediates
@@ -563,6 +654,7 @@ def train():
             layout=bounds.get('state_layout'),
             start=float(curriculum_cfg.get('start', 0.1)),
             step=float(curriculum_cfg.get('step', 0.15)),
+            growth=curriculum_cfg.get('growth'),
             threshold=float(curriculum_cfg.get('threshold', 0.5)),
             retreat_threshold=float(curriculum_cfg.get('retreat_threshold', 0.1)),
             n_episodes=int(curriculum_cfg.get('n_episodes', n_eval_episodes)),

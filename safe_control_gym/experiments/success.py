@@ -44,6 +44,13 @@ def goal_tolerance(env):
 
 
 def at_goal(env, tolerance):
-    '''The envs' own stabilization test, applied to the current state.'''
+    '''The envs' own stabilization test, applied to the current state.
+
+    Defers to the env's `goal_error` where one exists -- cartpole wraps its
+    pole angle there, so a wound-up arrival at theta = 2*pi counts as the
+    physical goal it is. Envs without windable angles keep the raw norm.
+    '''
     base = env.unwrapped
+    if hasattr(base, 'goal_error'):
+        return bool(base.goal_error() < tolerance)
     return bool(np.linalg.norm(np.asarray(base.state) - np.asarray(base.X_GOAL)) < tolerance)

@@ -1,0 +1,38 @@
+# Arm bounds: the dmc recipe at 50 N authority.
+#
+# Identical to configs/sb3/cartpole_dmc_recipe.yaml except action_scale. The
+# merge is recursive, so ctrl_freq 100 / pyb_freq 5000 still arrive from
+# configs/system/cartpole.yaml -- only the force cap changes.
+#
+# Calibration (2026-08-03, 400 states, reach < 0.1): LQR scores 0.1725
+# collection / 0.2525 physical at 50 N, 100 N, 200 N, 500 N and 2000 N alike --
+# its closed loop lives under ~50 N, so capping there costs the reference
+# controller nothing. At 10 N the shipped-label replay loses 6.6% of successes
+# to force starvation (one-directional), so 10 N IS a real constraint on this
+# box; it is dm_control's own authority (gear 10) and is run here as the
+# faithful-plant end of the sweep.
+
+extends: ../physical/cartpole.yaml
+
+task_config_overrides:
+  action_scale: 50.0
+
+init_state_randomization_info:
+  init_x:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+  init_x_dot:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+  init_theta:
+    distrib: normal
+    loc: 3.141592653589793
+    scale: 0.01
+  init_theta_dot:
+    distrib: normal
+    loc: 0.0
+    scale: 0.01
+
+curriculum: null

@@ -15,6 +15,9 @@ import pytest
 
 from safe_control_gym.experiments.eval_policy import baseline_id, episode_seeds
 
+# Spawns a real training subprocess; deselected unless -m training.
+pytestmark = pytest.mark.training
+
 REPO = os.path.join(os.path.dirname(__file__), '..', '..')
 
 TRAIN = ['--kv_overrides', 'sb3_config.total_timesteps=256',
@@ -110,15 +113,14 @@ def test_eval_bounds_override_the_training_region(trained_run):
     assert report['eval_bounds'] == bounds
     assert report['reference_success'] == pytest.approx(0.1797)
 
-    # The reference is a reach number -- every shipped dataset was collected
-    # before terminate_on_goal existed, when entering the goal ball ended the
-    # episode. This run is cartpole_stabilization, which must hold position
-    # there instead, so the two are not the same problem and the comparison is
-    # deliberately withheld rather than made misleadingly.
-    assert report['reference_task'] == 'reach'
+    # The reference is a stabilization number: the dataset's own success rule
+    # is a hold (verified 2026-07-31 by exact label replay; recorded in
+    # configs/collection/cartpole.yaml). This run is cartpole_stabilization, so
+    # the tasks match and the comparison must be made.
+    assert report['reference_task'] == 'stabilization'
     assert report['terminate_on_goal'] is False
-    assert report['beats_reference'] is None, (
-        'a stabilization run was compared against a reach reference')
+    assert report['beats_reference'] is not None, (
+        'a stabilization run was not compared against the stabilization reference')
 
     # cartpole's default box is +/-0.05; the collection box is +/-6 in x and
     # +/-pi in theta. Starts must reflect that, which also proves the
@@ -130,11 +132,15 @@ def test_eval_bounds_override_the_training_region(trained_run):
         default_report['policy']['mean_episode_length']
 
 
-def test_reach_run_is_compared_against_the_reach_reference(tmp_path):
-    '''The mirror of the above: matching tasks, so the comparison IS made.
+def test_reach_run_is_not_compared_against_the_hold_reference(tmp_path):
+    '''The mirror of the above: mismatched tasks, so the comparison is WITHHELD.
 
-    Without this, "beats_reference is None" would pass whether the withholding
-    logic worked or the field were simply never populated.
+    A reach policy terminates at first goal entry and has untrained post-entry
+    behaviour; the reference measures a hold. For the reference LQR the two
+    labellings happen to coincide (measured 2026-07-31, 556/556), but that is a
+    property of that controller, not of the task -- so for arbitrary policies
+    the honest report is None. Without this test, the withholding logic could
+    rot and every reach run would quote a number it did not earn.
     '''
     result = subprocess.run(
         [sys.executable, '-m', 'safe_control_gym.experiments.train_sb3',
@@ -147,9 +153,9 @@ def test_reach_run_is_compared_against_the_reach_reference(tmp_path):
     bounds = os.path.join(REPO, 'configs/collection/cartpole.yaml')
     report = _evaluate(run, seed=0, n_episodes=6, eval_bounds=bounds)
     assert report['terminate_on_goal'] is True
-    assert report['reference_task'] == 'reach'
-    assert report['beats_reference'] is not None, (
-        'a reach run was not compared against the reach reference')
+    assert report['reference_task'] == 'stabilization'
+    assert report['beats_reference'] is None, (
+        'a reach run was compared against the stabilization reference')
 
 
 def test_skip_baseline_yields_no_verdict(trained_run):
@@ -180,8 +186,13 @@ def test_evaluates_a_wrapped_env(tmp_path):
     result = subprocess.run(
         [sys.executable, '-m', 'safe_control_gym.experiments.train_sb3',
          '--env_id', 'inverted_pendulum_stabilization', '--algo', 'sac', '--seed', '1',
-         '--output_dir', str(tmp_path),
-         '--overrides', 'configs/sb3/inverted_pendulum_stabilization_sac.yaml'] + TRAIN,
+         '--output_dir', str(tmp_path)] + TRAIN + [
+            # The sb3 training configs are archived; the wrapped setup this test
+            # exercises needs only the encoding (AngleObservation, from the regime
+            # file) and ActionRepeat. Appended to TRAIN's --kv_overrides values: a
+            # repeated flag would REPLACE them (nargs='+', no append action).
+            'sb3_config.collection_bounds=configs/physical/inverted_pendulum.yaml',
+            'sb3_config.action_repeat=4'],
         cwd=REPO, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-3000:]
     run = sorted((tmp_path / 'sac').glob('inverted_pendulum_stabilization_*'))[0]

@@ -18,6 +18,9 @@ import pytest
 from safe_control_gym.envs.benchmark_env import Cost
 from safe_control_gym.utils.registration import get_config, make
 
+# Spawns a real training subprocess; deselected unless -m training.
+pytestmark = pytest.mark.training
+
 SYSTEMS = ['cartpole_stabilization', 'inverted_pendulum_stabilization',
            'quadrotor2d_stabilization']
 

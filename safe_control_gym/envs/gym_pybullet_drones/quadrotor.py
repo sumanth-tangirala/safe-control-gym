@@ -862,6 +862,8 @@ class Quadrotor(BaseAviary):
             reward (float): The evaluated reward/cost.
         '''
         # RL cost.
+        if self.COST == Cost.SHAPED:
+            return self._shaped_reward()
         if self.COST == Cost.SPARSE:
             return self._sparse_reward()
         if self.COST == Cost.RL_REWARD:

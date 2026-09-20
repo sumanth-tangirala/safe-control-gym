@@ -1,91 +1,93 @@
-# The collection regime for the inverted pendulum.
+# The COLLECTION regime for the inverted pendulum: the system, killed where the
+# shipped dataset killed -- which is nowhere.
 #
 # Read by BOTH training (sb3_config.collection_bounds) and evaluation
 # (--eval_bounds), so the regime a policy learns in cannot drift from the one it
-# is scored in.
+# is scored in. The plant, start region, observation contract and curriculum
+# live in configs/system/inverted_pendulum.yaml; this file adds only the
+# reference numbers a run is compared against.
 #
-# Source: DATA_ROOT/deterministic/pendulum_lqr_50k/dataset_description.json.
-#
-# This system needs no termination overrides at all. inverted_pendulum's
-# _get_done ends an episode only on reaching the goal -- there is no
-# out-of-bounds test -- and theta_dot is clipped at theta_dot_max rather than
-# terminated. Start range and env already agree, which is why the pendulum was
-# the one system whose training distribution was correct from the start.
+# Source: DATA_ROOT/deterministic/pendulum/lqr/dataset_description.json
+# (DATA_ROOT/deterministic/pendulum_lqr_50k is a symlink to it).
 
-init_state_randomization_info:
-  init_theta:
-    distrib: 'uniform'
-    low: -3.141592653589793
-    high: 3.141592653589793
-  init_theta_dot:
-    distrib: 'uniform'
-    low: -6.283185307179586
-    high: 6.283185307179586
+extends: ../system/inverted_pendulum.yaml
+
+# No env_attributes, and none is missing. inverted_pendulum._get_done has no
+# out-of-bounds test -- theta is wrapped to [-pi, pi] and theta_dot is CLIPPED
+# at theta_dot_max rather than terminated -- so there is no termination box for
+# a regime to move. The collection and physical regimes therefore resolve to
+# byte-identical env behaviour and differ only in the reference block below.
 
 # 19204/49770 of eval_states.txt labelled 1, produced by pendulum_lqr.
 reference_success: 0.3859
 reference_dataset: 'deterministic/pendulum_lqr_50k'
 
-# The reference above was measured under REACH semantics: every shipped dataset
-# was collected before terminate_on_goal existed, when entering the goal ball
-# ended the episode. A stabilization run, which must hold position there, is a
-# strictly harder problem -- so comparing a stabilization success rate against
-# this number is comparing two different tasks. eval_policy records both so the
-# mismatch is visible rather than assumed away.
+# REACH, and verified so rather than assumed. The dataset's own rule is first
+# entry into the 0.075 L2 ball around [0, 0]: the trajectory is cut at (and
+# includes) that state, which is terminate_on_goal True. Confirmed in the data
+# itself -- across all 49,770 rows the largest terminal ||s|| among labelled
+# successes is 0.0749995 and the smallest among labelled failures is 0.1178,
+# so the label is exactly `terminal state inside the ball`.
+#
+# A stabilization run, which must HOLD position there, is a strictly harder
+# problem, so comparing a stabilization success rate against reference_success
+# is comparing two different tasks. eval_policy records both so the mismatch is
+# visible rather than assumed away.
 reference_task: reach
 
-# --- Observation encoding: properties of the SYSTEM, not of a training run ---
+# --- The generation config that produces reference_success, verified ---
 #
-# Declared here rather than in configs/sb3/ because which channel is an angle,
-# and what the state layout is, are facts about the system. Restating them per
-# training config invites two configs for one system to disagree.
+# Recorded because it is not recoverable from this repo: the shipped artifacts
+# predate the current generator (trajectories 2025-07, roa_labels 2025-11) and
+# dataset_description.json was written 2026-07-07.
 #
-# state_layout also names the channels that state_space_bounds addresses, so the
-# layout is written once instead of being duplicated in train_sb3.
-state_layout: [theta, theta_dot]
-
-# Encode this angle as (cos, sin) and scale its rate. The cartpole's theta is
-# not wrapped -- measured over this region it reaches +/-4.4 during rollouts, so
-# theta and theta - 2*pi are the same physical state shown to the policy as
-# different observations, and it cannot generalise across revolutions.
-angle_observation:
-  angle: theta
-  rate: theta_dot
-
-# Map every channel from its state_space bounds onto [-1, 1]. The channels are
-# badly commensurate otherwise -- widest/narrowest width ratio is 6.4 on
-# cartpole, 11.4 on quadrotor2d and 16.6 on quadrotor3d, where body rates run to
-# +/-24 against position at +/-1.8.
-normalize_observation: true
-
-# Present the policy with a symmetric [-1, 1] action space; the env denormalises
-# to true units internally, so the dynamics are unchanged.
+# Control authority is NOT the trap here that it was on the cartpole: u_sat
+# already equals the env default. pyb_freq is -- the dataset integrated at
+# 1/300 s with a 10 ms control hold, three substeps, while both the env yaml
+# and generate_inverted_pendulum_trajectories.py assume one. See
+# configs/system/inverted_pendulum.yaml for how it was solved for.
 #
-# Matters most for the quadrotors, whose raw action space is asymmetric and never
-# negative -- [0.056, 0.297] N per motor pair on quadrotor2d, [0.028, 0.148] on
-# quadrotor3d. SAC's policy is a tanh-squashed Gaussian centred at zero, so on
-# that box its natural output sits at the bottom of the thrust range and a zero
-# action means free fall rather than hover. SB3's check_env warns about exactly
-# this. Normalised, zero maps to mid-thrust, which is near hover.
+# Verified by replay 2026-07-31 with the plant built from THIS file through
+# load_collection_bounds -- zero disagreements in either direction on 300
+# random + 256 balanced eval_states.txt rows. At the env's pyb_freq of 100 the
+# same 300 random rows reproduce 299/300.
 #
-# The collectors are unaffected: they build the base env ids and never read this
-# file.
-normalized_rl_action_space: true
-
-# Initial-state curriculum: start near the goal, widen as success is earned.
+# reference_run below is documentation: nothing reads it. The subset that must
+# actually reach the env lives in configs/system/inverted_pendulum.yaml's
+# task_config_overrides, which IS consumed -- keep the two in sync by hand
+# (tests/test_envs/test_regime_configs.py asserts the sync).
+reference_run:
+  controller: pendulum_lqr
+  q_lqr: [1, 1]             # normalized-coordinate weights; PendulumLQR normalises
+  r_lqr: [1]                # A/B by Tx = diag(pi, theta_dot_max) and Tu = u_sat
+  control_bound: 0.6371781908344007   # u_sat, N*m. IS the env default (unlike cartpole)
+  ctrl_freq: 100            # Hz
+  pyb_freq: 300             # Hz -- three 1/300 s explicit-Euler substeps per
+                            # control step. NOT the env default of 100, and not
+                            # recorded in dataset_description.json: recovered by
+                            # matching the shipped trajectory files step by step.
+  theta_dot_max: 6.283185307179586    # CLIPPED to this, not terminated at it
+  goal_threshold: 0.075     # L2 ball around [0, 0]; also the env's own goal test
+  max_steps: 501            # 502 states per trajectory = initial state + 501 steps
+  episode_len_sec: 5.02
+  terminate_on_goal: true   # success is first ENTRY, so the episode ends there
+  randomized_init: false
+  cost: quadratic
+  normalized_rl_action_space: false   # the LQR emits physical torque; see the
+                                      # system file's note on double-denormalisation
+  # Success: ||[theta, theta_dot]||_2 < 0.075. A single L2 ball, not a
+  # per-channel box, and no hold requirement.
+  success_metric: l2_ball
+  success_goal: [0.0, 0.0]
+  success_threshold: 0.075
+  success_hold_steps: 1
 #
-# Required, not optional. Measured over 300 random episodes, the number of steps
-# landing inside the goal ball was 0 for cartpole, quadrotor2d and quadrotor3d --
-# so under a sparse reward those runs see no positive signal at all and cannot
-# learn. The pendulum managed 4 hits in 99,049 steps, which is barely better.
-#
-# fraction 0 is a point distribution at the goal, 1 is the full collection
-# region above. Ranges contract about the GOAL value rather than the midpoint,
-# so quadrotor2d's altitude starts at its 1.0 m goal rather than at 0.8 m.
-#
-# Advancement is driven by measured success rate, not by a step schedule: a
-# schedule has to be guessed per system and is wrong in both directions.
-curriculum:
-  start: 0.02
-  step: 0.15
-  threshold: 0.5
+# max_steps is documentation only and deliberately NOT pinned into
+# task_config_overrides: the env default episode_len_sec of 10 (1000 steps) is
+# left in place. Measured 2026-07-31 over 400 random eval_states.txt rows, the
+# label is horizon-insensitive across the whole range 400..1200 steps --
+# agreement 400/400 at every cut-off, because under this LQR a state either
+# enters the ball early or never enters it. The latest entry into the goal ball
+# anywhere in that sample is step 377, comfortably inside 501. Doubling the
+# horizon buys the reference controller exactly zero extra successes, so
+# training at 10 s stays comparable to reference_success.

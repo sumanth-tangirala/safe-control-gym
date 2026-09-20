@@ -16,6 +16,9 @@ import sys
 import numpy as np
 import pytest
 
+# Spawns a real training subprocess; deselected unless -m training.
+pytestmark = pytest.mark.training
+
 REPO = os.path.join(os.path.dirname(__file__), '..', '..')
 
 THETA_DOT_MAX = 2 * math.pi
